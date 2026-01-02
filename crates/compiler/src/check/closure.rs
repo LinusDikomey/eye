@@ -25,6 +25,7 @@ pub struct CheckedClosure {
 
 impl<'a, H: Hooks> Ctx<'a, H> {
     pub fn closure(&mut self, id: FunctionId, closed_over: &mut LocalScope) -> (Node, TypeInfo) {
+        let _enter = tracing::info_span!("closure", id = ?id, module = ?self.module).entered();
         let function = &self.ast[id];
         let body = function
             .body
@@ -169,6 +170,7 @@ impl<'a, H: Hooks> Ctx<'a, H> {
                         .intern(crate::types::TypeFull::Generic(i)),
                 )
             }));
+        tracing::debug!(target: "closure", "Creating closure {:?} : {id:?}", self.module);
         let params_tuple = self
             .hir
             .types

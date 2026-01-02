@@ -115,7 +115,9 @@ pub fn translate(
                     }
                 }
             }
-            TypeFull::Generic(_) | TypeFull::Const(_) => unreachable!(),
+            TypeFull::Generic(_) | TypeFull::FunctionItem { .. } | TypeFull::Const(_) => {
+                unreachable!()
+            }
         },
     }
     Ok(())

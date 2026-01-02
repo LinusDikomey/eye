@@ -8,7 +8,7 @@ use color_format::cwrite;
 use dmap::DHashMap;
 use fxhash::FxHasher;
 use hashbrown::HashTable;
-use parser::ast::{self, ModuleId};
+use parser::ast::{self, FunctionId, ModuleId};
 use segment_list::SegmentList;
 
 use crate::{
@@ -24,6 +24,7 @@ pub struct Types {
 
     instances: SegmentList<(u32, Box<[Type]>)>,
     bases: SegmentList<ResolvableTypeDef>,
+    function_items: SegmentList<((ModuleId, FunctionId), Box<[Type]>)>,
     consts: SegmentList<u64>,
 }
 impl Types {
@@ -34,6 +35,7 @@ impl Types {
 
         let instances = SegmentList::new();
         let bases = SegmentList::new();
+        let function_items = SegmentList::new();
         let consts = SegmentList::new();
 
         for (builtin, i) in BuiltinType::VARIANTS.into_iter().zip(0..) {
@@ -68,7 +70,14 @@ impl Types {
                 let value = TypeFull::Instance(base, &[]);
                 let hash = hash_full(&value);
                 map.insert_unique(hash, Type(i), |&ty| {
-                    hash_full(&Self::lookup_type(&tags, &indices, &instances, &consts, ty))
+                    hash_full(&Self::lookup_type(
+                        &tags,
+                        &indices,
+                        &instances,
+                        &function_items,
+                        &consts,
+                        ty,
+                    ))
                 });
             }
         }
@@ -80,6 +89,7 @@ impl Types {
 
             instances,
             bases,
+            function_items,
             consts,
         }
     }
@@ -97,6 +107,10 @@ impl Types {
                 TypeFull::Instance(base, generics) => {
                     (Tag::Instance, self.instances.add((base.0, generics.into())))
                 }
+                TypeFull::FunctionItem { function, generics } => (
+                    Tag::FunctionItem,
+                    self.function_items.add((function, generics.into())),
+                ),
                 TypeFull::Generic(i) => (Tag::Generic, i as u32),
                 TypeFull::Const(value) => (Tag::Const, self.consts.add(value)),
             };
@@ -108,6 +122,7 @@ impl Types {
                     &self.tags,
                     &self.indices,
                     &self.instances,
+                    &self.function_items,
                     &self.consts,
                     ty,
                 ))
@@ -117,13 +132,21 @@ impl Types {
     }
 
     pub fn lookup<'a>(&'a self, ty: Type) -> TypeFull<'a> {
-        Self::lookup_type(&self.tags, &self.indices, &self.instances, &self.consts, ty)
+        Self::lookup_type(
+            &self.tags,
+            &self.indices,
+            &self.instances,
+            &self.function_items,
+            &self.consts,
+            ty,
+        )
     }
 
     fn lookup_type<'a>(
         tags: &'a SegmentList<Tag>,
         indices: &'a SegmentList<u32>,
         instances: &'a SegmentList<(u32, Box<[Type]>)>,
+        function_items: &'a SegmentList<((ModuleId, FunctionId), Box<[Type]>)>,
         consts: &'a SegmentList<u64>,
         ty: Type,
     ) -> TypeFull<'a> {
@@ -132,6 +155,10 @@ impl Types {
             Tag::Instance => {
                 let (base, generics) = instances.get(idx);
                 TypeFull::Instance(BaseType(*base), generics)
+            }
+            Tag::FunctionItem => {
+                let (function, ref generics) = *function_items.get(idx);
+                TypeFull::FunctionItem { function, generics }
             }
             Tag::Generic => TypeFull::Generic(idx as u8),
             Tag::Const => TypeFull::Const(*consts.get(idx)),
@@ -176,18 +203,41 @@ impl Types {
     }
 
     pub fn instantiate(&self, ty: Type, generics: &[Type]) -> Type {
+        // fast path if there are no generics
+        if generics.is_empty() {
+            return ty;
+        }
         // PERF: temporary Vec for storage of allocated types
         // PERF: could save an allocation by not calling intern() which takes a reference to generics
         // because we have an owned type already
         match self.lookup(ty) {
             TypeFull::Instance(base, instance_generics) => {
+                if instance_generics.is_empty() {
+                    return ty;
+                }
                 let instance_generics: Box<[Type]> = instance_generics.into();
-                let instance_generics: Box<[_]> = instance_generics
-                    .clone()
-                    .iter()
-                    .map(|&ty| self.instantiate(ty, generics))
+                let instance_generics: Box<[Type]> = instance_generics
+                    .into_iter()
+                    .map(|ty| self.instantiate(ty, generics))
                     .collect();
                 self.intern(TypeFull::Instance(base, &instance_generics))
+            }
+            TypeFull::FunctionItem {
+                function,
+                generics: item_generics,
+            } => {
+                if item_generics.is_empty() {
+                    return ty;
+                }
+                let item_generics: Box<[Type]> = item_generics.into();
+                let item_generics: Box<[Type]> = item_generics
+                    .into_iter()
+                    .map(|ty| self.instantiate(ty, generics))
+                    .collect();
+                self.intern(TypeFull::FunctionItem {
+                    function,
+                    generics: &item_generics,
+                })
             }
             TypeFull::Generic(i) => generics[usize::from(i)],
             TypeFull::Const(_) => ty,
@@ -252,6 +302,17 @@ impl<'a> fmt::Display for TypeDisplay<'a> {
                     self.write_generics(f, generics)
                 }
             },
+            TypeFull::FunctionItem { function, generics } => {
+                // TODO: display function items differently than just their id, maybe by the
+                // showing the function's mangled name
+                cwrite!(
+                    f,
+                    "#m<fn item>{}:{}",
+                    function.0.into_inner(),
+                    function.1.into_inner()
+                )?;
+                self.write_generics(f, generics)
+            }
             TypeFull::Generic(i) => write!(f, "{}", self.generics.get_name(i)),
             TypeFull::Const(n) => write!(f, "{n}"),
         }
@@ -287,6 +348,7 @@ impl<'a> TypeDisplay<'a> {
 pub enum Tag {
     #[default]
     Instance,
+    FunctionItem,
     Generic,
     Const,
 }

@@ -28,7 +28,7 @@ use crate::{
     InvalidTypeError, ProjectId, Type,
     check::{
         self, Hooks, ProjectErrors,
-        traits::{self, Candidates, Impl},
+        traits::{self, Candidates, SelectedInstance},
     },
     eval::{self, ConstValue, ConstValueId},
     helpers::IteratorExt,
@@ -738,7 +738,7 @@ impl Compiler {
         instance: Option<BaseType>,
         trait_instance: impl Clone + ExactSizeIterator<Item = T>,
         mut type_fits: impl FnMut(Type, T, &Types, &mut [Option<T>]) -> bool,
-    ) -> Candidates<((ModuleId, &Impl), Box<[T]>)> {
+    ) -> Candidates<'_, T> {
         tracing::debug!(target: "traitsolve", "❓ Finding instance of {trait_id:?}");
         // TODO: this is definitely wrong in some edge cases
         let mut impl_generics = Vec::new();
@@ -779,10 +779,16 @@ impl Compiler {
                 tracing::debug!(target: "traitsolve", "⚠️ Multiple qualifying candidates");
                 return Candidates::Multiple;
             }
-            found = Some(((impl_.impl_module, impl_), impl_generics));
+            found = Some(SelectedInstance {
+                module: impl_.impl_module,
+                impl_generics,
+                impl_ty: impl_.impl_ty,
+                trait_instance: &impl_.trait_instance,
+                functions: &impl_.functions,
+            });
         }
         if let Some(instance) = found {
-            Candidates::Unique { instance }
+            Candidates::Unique(instance)
         } else {
             Candidates::None
         }
@@ -852,7 +858,7 @@ impl Compiler {
                     false
                 }
             }
-            TypeFull::Const(_) => false,
+            TypeFull::FunctionItem { .. } | TypeFull::Const(_) => false,
         })
     }
 

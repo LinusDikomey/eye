@@ -117,7 +117,7 @@ pub fn get(
             }
         }
         TypeFull::Generic(i) => get(compiler, ir, ir_types, instance[i], instance.outer())?,
-        TypeFull::Const(_) => ir::Type::UNIT,
+        TypeFull::FunctionItem { .. } | TypeFull::Const(_) => ir::Type::UNIT,
     })
 }
 

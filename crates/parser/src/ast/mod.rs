@@ -19,6 +19,10 @@ macro_rules! ids {
                     Self(inner)
                 }
 
+                pub const fn into_inner(self) -> u32 {
+                    self.0
+                }
+
                 pub fn idx(self) -> usize {
                     self.0 as usize
                 }

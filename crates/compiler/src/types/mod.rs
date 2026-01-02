@@ -2,7 +2,7 @@ mod intern;
 
 pub use intern::Types;
 
-use parser::ast::{FloatType, IntType, Primitive};
+use parser::ast::{FloatType, FunctionId, IntType, ModuleId, Primitive};
 
 use crate::compiler::Generics;
 
@@ -73,18 +73,23 @@ macro_rules! builtin_types {
 
         #[derive(Clone, Copy, PartialEq, Eq, Debug)]
         pub enum BuiltinType {
+            Invalid,
+            Unit,
             $($name,)*
             $($generic_name,)*
         }
         impl BuiltinType {
             pub const COUNT: u32 = $count;
-            pub const VARIANTS: [Self; $count] = [
+            pub const VARIANTS: [Self; $count + 2] = [
+                Self::Invalid,
+                Self::Unit,
                 $(Self::$name,)*
                 $(Self::$generic_name,)*
             ];
 
             pub fn size(self) -> Option<u64> {
                 match self {
+                    Self::Invalid | Self::Unit => Some(0),
                     $(Self::$name => Some($size),)*
                     _ => None,
                 }
@@ -99,6 +104,8 @@ macro_rules! builtin_types {
 
             pub fn name(self) -> &'static str {
                 match self {
+                    Self::Invalid => "invalid",
+                    Self::Unit => "()",
                     $( Self::$name => $name_str, )*
                     $( Self::$generic_name => stringify!($generic_name), )*
                 }
@@ -106,21 +113,22 @@ macro_rules! builtin_types {
         }
         #[allow(non_upper_case_globals)]
         impl BaseType {
+            pub const Invalid: Self = Self(BuiltinType::Invalid as u32);
             $( pub const $name: Self = Self(BuiltinType::$name as u32); )*
             $( pub const $generic_name: Self = Self(BuiltinType::$generic_name as u32); )*
         }
         #[allow(non_upper_case_globals)]
         impl Type {
+            pub const Invalid: Self = Self(BuiltinType::Invalid as u32);
+            pub const Unit: Self = Self(BuiltinType::Unit as u32);
             $( pub const $name: Self = Self(BuiltinType::$name as u32); )*
         }
     };
 }
 
 builtin_types! {
-    19
+    17
 
-    Invalid = 0 "invalid"
-    Unit = 0 "()" // this is just an empty tuple but this alias is added so that no interning is needed for unit
     I8 = 1 "i8"
     U8 = 1 "u8"
     I16 = 2 "i16"
@@ -151,6 +159,10 @@ builtin_types! {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TypeFull<'a> {
     Instance(BaseType, &'a [Type]),
+    FunctionItem {
+        function: (ModuleId, FunctionId),
+        generics: &'a [Type],
+    },
     Generic(u8),
     Const(u64),
 }

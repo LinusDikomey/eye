@@ -931,7 +931,11 @@ impl<'a, H: Hooks> Ctx<'a, H> {
             },
             |_| span,
         );
-        Node::FunctionItem(function_module, function, generics)
+        Node::FunctionItem {
+            function: (function_module, function),
+            generics,
+            ty: expected,
+        }
     }
 
     fn check_member_access(
@@ -1039,7 +1043,7 @@ impl<'a, H: Hooks> Ctx<'a, H> {
                             generics,
                         );
                     }
-                    TypeFull::Generic(_) | TypeFull::Const(_) => {
+                    TypeFull::Generic(_) | TypeFull::FunctionItem { .. } | TypeFull::Const(_) => {
                         self.emit(Error::NonexistantMember(None).at_span(name_span));
                         self.invalidate(expected);
                         return Node::Invalid;
@@ -1304,7 +1308,11 @@ impl<'a, H: Hooks> Ctx<'a, H> {
                 },
                 span,
             );
-            return Node::FunctionItem(module, method, call_generics);
+            return Node::FunctionItem {
+                function: (module, method),
+                generics: call_generics,
+                ty: expected,
+            };
         }
         if let ResolvedTypeContent::Enum(def) = &ty.def
             && let Some((_, ordinal, args)) = def.get_by_name(name)

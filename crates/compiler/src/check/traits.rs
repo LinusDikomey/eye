@@ -162,11 +162,20 @@ pub fn check_impl(
 }
 
 #[derive(Debug)]
-pub enum Candidates<I> {
+pub enum Candidates<'a, Ty> {
     None,
     Invalid,
     Multiple,
-    Unique { instance: I },
+    Unique(SelectedInstance<'a, Ty>),
+}
+
+#[derive(Debug)]
+pub struct SelectedInstance<'a, Ty> {
+    pub module: ModuleId,
+    pub impl_generics: Box<[Ty]>,
+    pub impl_ty: Type,
+    pub trait_instance: &'a [Type],
+    pub functions: &'a [FunctionId],
 }
 
 pub fn match_instance(
@@ -202,8 +211,11 @@ pub fn match_instance(
                 }
                 true
             }
-            TypeFull::Generic(_) | TypeFull::Const(_) => false,
+            _ => false,
         },
+        TypeFull::FunctionItem { .. } => {
+            unreachable!("FunctionItems are un-nameable and shouldn't occur in impls")
+        }
         TypeFull::Const(implemented_n) => {
             let TypeFull::Const(n) = types.lookup(ty) else {
                 return false;

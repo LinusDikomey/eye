@@ -525,6 +525,35 @@ impl TypeTable {
         generics
     }
 
+    pub fn try_specify_base(
+        &mut self,
+        ty: LocalTypeId,
+        base: BaseType,
+        generic_count: u32,
+        function_generics: &Generics,
+        compiler: &Compiler,
+        fresh_generics: impl FnOnce(&mut Self) -> LocalTypeIds,
+    ) -> Option<LocalTypeIds> {
+        let (idx, info) = self.find_shorten(ty);
+        // check if the type is already correct to avoid adding unnecessary variables
+        if let TypeInfo::Instance(existing_base, generics) = info
+            && existing_base == base
+            && generics.count == generic_count
+        {
+            return Some(generics);
+        }
+        let generics = fresh_generics(self);
+        let info = TypeInfo::Instance(base, generics);
+        if self
+            .try_specify(idx, info, function_generics, compiler)
+            .is_err()
+        {
+            // TODO: better errors
+            return None;
+        };
+        Some(generics)
+    }
+
     pub fn specify_type_instance(
         &mut self,
         id: LocalTypeId,
@@ -700,6 +729,25 @@ impl TypeTable {
                     self.replace(var, info);
                 }
                 TypeInfo::Instance(base, type_generic_vars).into()
+            }
+            TypeFull::FunctionItem {
+                function,
+                generics: item_generics,
+            } => {
+                if generics.is_empty() {
+                    return TypeInfo::Known(ty).into();
+                }
+                let item_instance_vars = self.add_multiple_unknown(item_generics.len() as _);
+                for (&generic, var) in item_generics.iter().zip(item_instance_vars.iter()) {
+                    let info = self.from_type_instance(types, generic, generics);
+                    self.replace(var, info);
+                }
+                TypeInfo::FunctionItem {
+                    module: function.0,
+                    function: function.1,
+                    generics: item_instance_vars,
+                }
+                .into()
             }
             TypeFull::Generic(i) => match generics {
                 LocalOrGlobalInstance::Local(generics) => {
@@ -912,7 +960,22 @@ impl TypeTable {
                 s.push('>');
             }
             TypeInfo::TraitItem { .. } => s.push_str("<trait item>"),
-            TypeInfo::FunctionItem { .. } => s.push_str("<function item>"),
+            TypeInfo::FunctionItem {
+                module,
+                function,
+                generics,
+            } => {
+                let name = compiler.get_function_name(module, function);
+                s.push_str("fn ");
+                s.push_str(name);
+                if !generics.is_empty() {
+                    s.push('[');
+                    for generic in generics.iter() {
+                        self.display(compiler, function_generics, generic);
+                    }
+                    s.push(']');
+                }
+            }
             TypeInfo::ModuleItem(_) => s.push_str("<module item>"),
             TypeInfo::MethodItem { .. } => s.push_str("<method item>"),
             TypeInfo::TraitMethodItem { .. } => s.push_str("<trait method item>"),
@@ -1131,14 +1194,33 @@ impl TypeTable {
                 buf.truncate(start);
                 ty
             }
+            TypeInfo::FunctionItem {
+                module: function_module,
+                function: function_id,
+                generics,
+            } => {
+                let start = buf.len();
+                buf.reserve(generics.count as usize);
+                for generic in generics.iter() {
+                    let generic = self.intern_var(compiler, module, generic, buf);
+                    buf.push(generic);
+                }
+                debug_assert_eq!(buf.len() - start, generics.count as usize);
+                let ty = compiler.types.intern(TypeFull::FunctionItem {
+                    function: (function_module, function_id),
+                    generics: &buf[start..],
+                });
+                buf.truncate(start);
+                ty
+            }
+            // TODO: item types without a use just get turned into Unit for now, might cause problems later
             TypeInfo::BaseTypeItem(_)
             | TypeInfo::TypeItem(_)
             | TypeInfo::TraitItem { .. }
-            | TypeInfo::FunctionItem { .. }
             | TypeInfo::ModuleItem(_)
             | TypeInfo::MethodItem { .. }
             | TypeInfo::TraitMethodItem { .. }
-            | TypeInfo::EnumVariantItem { .. } => Type::Invalid, // TODO: what to return here?
+            | TypeInfo::EnumVariantItem { .. } => Type::Unit,
         };
         self.types[idx.idx()] = TypeInfo::Known(ty).into();
         ty
@@ -1283,29 +1365,30 @@ impl TypeTable {
         compiler: &Compiler,
         function_generics: &Generics,
     ) -> Result<bool, InvalidTypeError> {
-        if let TypeInfo::Known(other_ty) = info {
-            return Ok(ty == other_ty);
+        match info {
+            TypeInfo::Known(other_ty) => return Ok(ty == other_ty),
+            TypeInfo::Unknown(bounds) => {
+                for bound in bounds.iter() {
+                    let bound = *self.get_bound(bound);
+                    if self
+                        .unify_bound_with_info(
+                            compiler,
+                            function_generics,
+                            TypeInfo::Known(ty),
+                            bound,
+                        )?
+                        .is_none()
+                    {
+                        return Ok(false);
+                    }
+                }
+                return Ok(true);
+            }
+            _ => {}
         }
         Ok(match compiler.types.lookup(ty) {
             TypeFull::Instance(BaseType::Invalid, _) => return Err(InvalidTypeError),
             TypeFull::Instance(base, instance) => match info {
-                TypeInfo::Unknown(bounds) => {
-                    for bound in bounds.iter() {
-                        let bound = *self.get_bound(bound);
-                        if self
-                            .unify_bound_with_info(
-                                compiler,
-                                function_generics,
-                                TypeInfo::Known(ty),
-                                bound,
-                            )?
-                            .is_none()
-                        {
-                            return Ok(false);
-                        }
-                    }
-                    true
-                }
                 TypeInfo::Integer if base.is_int() => true,
                 TypeInfo::Float if base.is_float() => true,
                 TypeInfo::Enum(enum_id) => unify::local_enum_with_instance(
@@ -1328,53 +1411,36 @@ impl TypeTable {
                 }
                 _ => false,
             },
-            TypeFull::Generic(i) => match info {
-                TypeInfo::Unknown(bounds) => bounds.iter().all(|bound| {
-                    function_generics.check_bound_satisfied(
-                        i,
-                        *self.get_bound(bound),
-                        self,
-                        compiler,
-                    )
-                }),
-                _ => false,
-            },
+
+            TypeFull::FunctionItem {
+                function: a_function,
+                generics: a_generics,
+            } => {
+                let TypeInfo::FunctionItem {
+                    module,
+                    function,
+                    generics: b_generics,
+                } = info
+                else {
+                    return Ok(false);
+                };
+                if a_function != (module, function) {
+                    return Ok(false);
+                }
+                debug_assert_eq!(a_generics.len(), b_generics.count as usize);
+                a_generics
+                    .iter()
+                    .zip(b_generics.iter())
+                    .try_all(|(&ty, info)| {
+                        self.unify_with_generic_type(info, ty, compiler, function_generics)
+                    })?
+            }
+
+            // can only unify with itself or Unknown, both already handled above
+            TypeFull::Generic(_) => false,
             TypeFull::Const(_) => matches!(info, TypeInfo::UnknownConst),
         })
     }
-
-    // fn unify_bound_with_type(
-    //     &mut self,
-    //     ty: Type,
-    //     bound: Bound,
-    //     compiler: &Compiler,
-    // ) -> Result<bool, InvalidTypeError> {
-    //     let mut has_invalid_type = false;
-    //     let known_instance =
-    //         if let TypeFull::Instance(self_base, self_instance) = compiler.types.lookup(ty) {
-    //             Some((self_base, self_instance))
-    //         } else {
-    //             None
-    //         };
-    //     let candidates =
-    //         self.unify_bound_with_info(compiler, TypeInfo::Known(ty), known_instance, bound)?;
-    //     match candidates {
-    //         traits::Candidates::None => Ok(false),
-    //         traits::Candidates::Invalid => Err(InvalidTypeError),
-    //         traits::Candidates::Multiple => Ok(true),
-    //         traits::Candidates::Unique {
-    //             instance: ((_, impl_), impl_generics),
-    //         } => {
-    //             let impl_generics = self.add_multiple_info_or_idx(impl_generics);
-    //             for (var, &ty) in bound.generics.iter().zip(&impl_.trait_instance) {
-    //                 let (var, _) = self.find_shorten(var);
-    //                 let ty = self.from_type_instance(&compiler.types, ty, impl_generics);
-    //                 self.replace(var, ty);
-    //             }
-    //             Ok(true)
-    //         }
-    //     }
-    // }
 
     pub fn unify_bound_with_info(
         &mut self,
@@ -1383,6 +1449,7 @@ impl TypeTable {
         ty: TypeInfo,
         bound: Bound,
     ) -> Result<Option<TypeInfoOrIdx>, InvalidTypeError> {
+        // TODO: improve errors to provide the concrete bound/type that failed
         let mut has_invalid_type = false;
         let base = match ty {
             TypeInfo::Known(known) => match compiler.types.lookup(known) {
@@ -1397,6 +1464,51 @@ impl TypeTable {
             TypeInfo::Instance(base, _) => Some(base),
             TypeInfo::Unknown(bounds) if bounds.is_empty() => {
                 return Ok(Some(TypeInfo::Unknown(self.add_bounds([bound])).into()));
+            }
+            TypeInfo::FunctionItem {
+                module: function_module,
+                function,
+                generics,
+            } if bound.trait_id == builtins::get_fn_trait(compiler) => {
+                let signature = compiler.get_signature(function_module, function);
+                debug_assert!(
+                    !signature.varargs && signature.named_params.is_empty(),
+                    "TODO: support calls with"
+                );
+                let params_tuple = bound.generics.nth(0).unwrap();
+                let return_ty = bound.generics.nth(1).unwrap();
+                let param_count = signature.params.len() as u32;
+                let Some(param_types) = self.try_specify_base(
+                    params_tuple,
+                    BaseType::Tuple,
+                    param_count,
+                    function_generics,
+                    compiler,
+                    |types| types.add_multiple_unknown(param_count),
+                ) else {
+                    return Ok(None);
+                };
+                for (&(_, ty), var) in signature.params.iter().zip(param_types.iter()) {
+                    if self
+                        .try_specify_type_instance(var, ty, generics, function_generics, compiler)
+                        .is_err()
+                    {
+                        return Ok(None);
+                    }
+                }
+                if self
+                    .try_specify_type_instance(
+                        return_ty,
+                        signature.return_type,
+                        generics,
+                        function_generics,
+                        compiler,
+                    )
+                    .is_err()
+                {
+                    return Ok(None);
+                }
+                return Ok(Some(ty.into()));
             }
             TypeInfo::Closure {
                 params,
@@ -1472,18 +1584,16 @@ impl TypeTable {
             traits::Candidates::None => Ok(None),
             traits::Candidates::Invalid => Err(InvalidTypeError),
             traits::Candidates::Multiple => Ok(Some(ty.into())),
-            traits::Candidates::Unique {
-                instance: ((_, impl_), impl_generics),
-            } => {
-                let impl_generics = self.add_multiple_info_or_idx(impl_generics);
-                for (var, &ty) in bound.generics.iter().zip(&impl_.trait_instance) {
+            traits::Candidates::Unique(selected) => {
+                let impl_generics = self.add_multiple_info_or_idx(selected.impl_generics);
+                for (var, &ty) in bound.generics.iter().zip(selected.trait_instance) {
                     let (var, _) = self.find_shorten(var);
                     let ty = self.from_type_instance(&compiler.types, ty, impl_generics);
                     self.replace(var, ty);
                 }
                 Ok(Some(self.from_type_instance(
                     &compiler.types,
-                    impl_.impl_ty,
+                    selected.impl_ty,
                     impl_generics,
                 )))
             }
@@ -1672,7 +1782,7 @@ pub enum TypeInfo {
         enum_type: BaseType,
         generics: LocalTypeIds,
         ordinal: u64,
-        /// always includes the ordinal type as it's first type
+        /// always includes the ordinal type as its' first type
         arg_types: LocalTypeIds,
     },
     Closure {
@@ -1695,6 +1805,58 @@ impl TypeInfo {
 
     pub fn is_invalid(&self) -> bool {
         matches!(self, Self::Known(Type::Invalid))
+    }
+
+    pub fn as_base<'c>(
+        &self,
+        compiler: &'c Compiler,
+        base: BaseType,
+    ) -> Option<BaseTypeGenerics<'c>> {
+        match *self {
+            Self::Known(ty) => match compiler.types.lookup(ty) {
+                TypeFull::Instance(ty_base, generics) if ty_base == base => {
+                    Some(BaseTypeGenerics::Global(generics))
+                }
+                _ => None,
+            },
+            Self::Instance(ty_base, generics) if ty_base == base => {
+                Some(BaseTypeGenerics::Local(generics))
+            }
+            _ => None,
+        }
+    }
+}
+
+pub enum BaseTypeGenerics<'a> {
+    Global(&'a [Type]),
+    Local(LocalTypeIds),
+}
+impl<'a> Iterator for BaseTypeGenerics<'a> {
+    type Item = TypeInfoOrIdx;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Global(tys) => tys.get(0).map(|&a| {
+                *tys = &tys[1..];
+                TypeInfoOrIdx::TypeInfo(TypeInfo::Known(a))
+            }),
+            // xys.split_first_mut().map(|(first, rest)| {
+            //     *tys = rest;
+            //     TypeInfoOrIdx::TypeInfo(TypeInfo::Known(*first))
+            // }),
+            Self::Local(tys) => tys
+                .nth(0)
+                .inspect(|_| *tys = tys.skip(1))
+                .map(TypeInfoOrIdx::Idx),
+        }
+    }
+}
+impl BaseTypeGenerics<'_> {
+    pub fn nth(&self, index: u32) -> TypeInfoOrIdx {
+        match self {
+            Self::Global(tys) => TypeInfo::Known(tys[index as usize]).into(),
+            Self::Local(tys) => tys.nth(index).unwrap().into(),
+        }
     }
 }
 
@@ -1819,7 +1981,7 @@ impl Compiler {
                     }
                 }
                 TypeFull::Generic(i) => self.resolved_layout(generics[i], generics.outer())?,
-                TypeFull::Const(_) => Layout::EMPTY,
+                TypeFull::FunctionItem { .. } | TypeFull::Const(_) => Layout::EMPTY,
             },
         })
     }

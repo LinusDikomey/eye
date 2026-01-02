@@ -70,9 +70,18 @@ pub fn function<H: Hooks>(
     let ast = &compiler.modules[module.idx()].ast.get().unwrap().ast;
 
     let function = &ast[id];
+    let name = crate::compiler::function_name(ast, function, module, id);
+
+    let _enter = tracing::span!(
+        tracing::Level::INFO,
+        "check_function",
+        module = ?module,
+        id = ?id,
+        function = name,
+    )
+    .entered();
 
     let signature = compiler.get_signature(module, id);
-
     let mut types = TypeTable::new();
 
     let param_types = types.add_multiple_unknown(signature.total_arg_count() as u32);
@@ -85,8 +94,6 @@ pub fn function<H: Hooks>(
 
     let generic_count = signature.generics.count();
     let varargs = signature.varargs;
-
-    let name = crate::compiler::function_name(ast, function, module, id);
 
     let body_or_types = if let Some(body) = function.body {
         let hir = HIRBuilder::new(types);

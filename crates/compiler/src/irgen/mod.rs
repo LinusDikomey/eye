@@ -820,7 +820,12 @@ fn lower_expr(ctx: &mut Ctx, node: NodeId) -> Result<ValueOrPlace> {
             noreturn,
         } => {
             let return_ty = ctx.get_hir_type(return_ty)?;
-            let res = if let Node::FunctionItem(module, id, call_generics) = ctx.hir[function] {
+            let res = if let Node::FunctionItem {
+                function: (module, id),
+                generics: call_generics,
+                ty: _,
+            } = ctx.hir[function]
+            {
                 if (module, id) == builtins::get_intrinsic(ctx.compiler) {
                     let arg_refs = args
                         .iter()
@@ -880,6 +885,55 @@ fn lower_expr(ctx: &mut Ctx, node: NodeId) -> Result<ValueOrPlace> {
                 .iter()
                 .map(|ty| ctx.compiler.types.instantiate(ctx.hir[ty], ctx.generics))
                 .collect();
+
+            // HACK(fn-trait): special-cased calling convention only for function trait
+            let fn_trait_call = |skip_self: bool, ctx: &mut Ctx, func| -> Result<ValueOrPlace> {
+                debug_assert_eq!(
+                    trait_instance.len(),
+                    2,
+                    "Fn trait should have 2 generic parameters"
+                );
+                let args_ty = trait_instance[0];
+                let TypeFull::Instance(BaseType::Tuple, arg_types) =
+                    ctx.compiler.types.lookup(args_ty)
+                else {
+                    panic!(
+                        "Fn trait should be called with tuples. TODO: manual impls can't \
+                                enforce this requirement right now"
+                    );
+                };
+                let mut arg_refs = Vec::with_capacity((!skip_self) as usize + arg_types.len());
+                debug_assert_eq!(args.count, 2, "Fn trait call should have 2 arguments");
+                if !skip_self {
+                    arg_refs.push(lower(ctx, args.nth(0).unwrap())?);
+                }
+                let args_arg = lower(ctx, args.nth(1).unwrap())?;
+                for (&ty, i) in arg_types.iter().zip(0..) {
+                    let ty = ctx.get_type(ty)?;
+                    let ty = ctx.builder.types.add(ty);
+                    let arg = ctx.builder.append(tuple.MemberValue(args_arg, i, ty));
+                    arg_refs.push(arg);
+                }
+                let return_ty = ctx.get_hir_type(return_ty)?;
+                let return_ty = ctx.builder.types.add(return_ty);
+                let res = ctx.builder.append((func, arg_refs, return_ty));
+                if noreturn {
+                    ctx.terminate_noreturn()?;
+                }
+                Ok(ValueOrPlace::Value(res))
+            };
+
+            if let TypeFull::FunctionItem { function, generics } =
+                ctx.compiler.types.lookup(self_ty)
+                && trait_id == builtins::get_fn_trait(ctx.compiler)
+            {
+                let Some(func) = ctx.get_ir_id(function.0, function.1, generics.into()) else {
+                    crash_point!(ctx)
+                };
+
+                return fn_trait_call(true, ctx, func);
+            }
+
             let TypeFull::Instance(self_base, _) = ctx.compiler.types.lookup(self_ty) else {
                 unreachable!("instantiated TraitCall self type should be an instance")
             };
@@ -890,58 +944,32 @@ fn lower_expr(ctx: &mut Ctx, node: NodeId) -> Result<ValueOrPlace> {
                 trait_instance.iter().copied(),
                 traits::match_instance,
             ) {
-                Candidates::Unique {
-                    instance: ((functions_module, impl_), impl_generics),
-                } => {
-                    let function = impl_.functions[method_index as usize];
+                Candidates::Unique(selected) => {
+                    let function = selected.functions[method_index as usize];
 
                     // TODO: handle impl/method generics
-                    let Some(func) = ctx.get_ir_id(functions_module, function, impl_generics)
+                    let Some(func) =
+                        ctx.get_ir_id(selected.module, function, selected.impl_generics)
                     else {
-                        crash_point!(ctx)
+                        crash_point!(ctx);
                     };
 
-                    let mut arg_refs;
-                    // HACK(fn-trait): special-cased calling convention only for function trait
                     if trait_id == builtins::get_fn_trait(ctx.compiler) {
-                        debug_assert_eq!(
-                            trait_instance.len(),
-                            2,
-                            "Fn trait should have 2 generic parameters"
-                        );
-                        let args_ty = trait_instance[0];
-                        let TypeFull::Instance(BaseType::Tuple, arg_types) =
-                            ctx.compiler.types.lookup(args_ty)
-                        else {
-                            panic!(
-                                "Fn trait should be called with tuples. TODO: manual impls can't enforce this requirement right now"
-                            );
-                        };
-                        arg_refs = Vec::with_capacity(1 + arg_types.len());
-                        debug_assert_eq!(args.count, 2, "Fn trait call should have 2 arguments");
-                        arg_refs.push(lower(ctx, args.nth(0).unwrap())?);
-                        let args_arg = lower(ctx, args.nth(1).unwrap())?;
-                        for (&ty, i) in arg_types.iter().zip(0..) {
-                            let ty = ctx.get_type(ty)?;
-                            let ty = ctx.builder.types.add(ty);
-                            let arg = ctx.builder.append(tuple.MemberValue(args_arg, i, ty));
-                            arg_refs.push(arg);
-                        }
+                        return fn_trait_call(false, ctx, func);
                     } else {
-                        arg_refs = Vec::with_capacity(args.iter().count());
+                        let mut arg_refs = Vec::with_capacity(args.count as usize);
                         for arg in args.iter() {
                             let arg = lower(ctx, arg)?;
                             arg_refs.push(arg);
                         }
+                        let return_ty = ctx.get_hir_type(return_ty)?;
+                        let return_ty = ctx.builder.types.add(return_ty);
+                        let res = ctx.builder.append((func, arg_refs, return_ty));
+                        if noreturn {
+                            ctx.terminate_noreturn()?;
+                        }
+                        res
                     }
-
-                    let return_ty = ctx.get_hir_type(return_ty)?;
-                    let return_ty = ctx.builder.types.add(return_ty);
-                    let res = ctx.builder.append((func, arg_refs, return_ty));
-                    if noreturn {
-                        ctx.terminate_noreturn()?;
-                    }
-                    res
                 }
                 candidates => {
                     // FIXME: this trace could crash since Generics::EMPTY is passed which is not always correct
@@ -969,19 +997,31 @@ fn lower_expr(ctx: &mut Ctx, node: NodeId) -> Result<ValueOrPlace> {
             let ty = ctx.builder.types.add(ir::Primitive::I64);
             ctx.builder.append(arith.Int(value, ty))
         }
-        &Node::FunctionItem(module, id, generics) => {
-            let generics = generics
-                .iter()
-                .map(|generic| {
-                    ctx.compiler
-                        .types
-                        .instantiate(ctx.hir[generic], ctx.generics)
-                })
-                .collect();
-            let Some(id) = ctx.get_ir_id(module, id, generics) else {
-                crash_point!(ctx)
-            };
-            ctx.builder.append(mem.FunctionPtr(id, ctx.ptr_ty))
+        &Node::FunctionItem {
+            function,
+            generics,
+            ty,
+        } => {
+            match ctx.compiler.types.lookup(ctx.hir[ty]) {
+                TypeFull::Instance(BaseType::Invalid, _) => crash_point!(ctx),
+                TypeFull::Instance(BaseType::Function, _) => {
+                    // type was coerced to function pointer, generate a pointer to the function
+                    let generics = generics
+                        .iter()
+                        .map(|generic| {
+                            ctx.compiler
+                                .types
+                                .instantiate(ctx.hir[generic], ctx.generics)
+                        })
+                        .collect();
+                    let Some(id) = ctx.get_ir_id(function.0, function.1, generics) else {
+                        crash_point!(ctx)
+                    };
+                    ctx.builder.append(mem.FunctionPtr(id, ctx.ptr_ty))
+                } // function items have unit value
+                TypeFull::FunctionItem { .. } => Ref::UNIT,
+                _ => unreachable!(),
+            }
         }
         &Node::Capture(i) => {
             let (captures, captures_ty) = ctx.vars[ctx.hir.params[0].idx()];

@@ -105,7 +105,11 @@ impl<'a, H: Hooks> Ctx<'a, H> {
                 generics,
             } => {
                 let signature = self.compiler.get_signature(module, function);
-                let function = self.hir.add(Node::FunctionItem(module, function, generics));
+                let function = self.hir.add(Node::FunctionItem {
+                    function: (module, function),
+                    generics,
+                    ty: called_ty,
+                });
                 match self.check_call_args(
                     scope,
                     return_ty,
@@ -242,7 +246,11 @@ impl<'a, H: Hooks> Ctx<'a, H> {
                         */
 
                         return Node::Call {
-                            function: self.hir.add(Node::FunctionItem(module, function, generics)),
+                            function: self.hir.add(Node::FunctionItem {
+                                function: (module, function),
+                                generics,
+                                ty: called_ty,
+                            }),
                             args,
                             return_ty: expected,
                             arg_types,

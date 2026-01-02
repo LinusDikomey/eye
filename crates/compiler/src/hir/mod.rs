@@ -335,7 +335,11 @@ pub enum Node {
         noreturn: bool,
     },
     TypeProperty(LocalTypeId, TypeProperty),
-    FunctionItem(ModuleId, FunctionId, LocalTypeIds),
+    FunctionItem {
+        function: (ModuleId, FunctionId),
+        generics: LocalTypeIds,
+        ty: LocalTypeId,
+    },
     Capture(CaptureId),
     Break(u32),
     Continue(u32),

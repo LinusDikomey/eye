@@ -396,8 +396,12 @@ impl<'a> fmt::Display for HirDisplay<'a> {
                 };
                 cwrite!(f, "(#b<type_prop> #c<{prop}> #r<{}>)", display_ty(hir[ty]))?;
             }
-            &Node::FunctionItem(module, function, generics) => {
-                let name = compiler.get_function_name(module, function);
+            &Node::FunctionItem {
+                function,
+                generics,
+                ty,
+            } => {
+                let name = compiler.get_function_name(function.0, function.1);
                 cwrite!(f, "(#b<{name}>[")?;
                 for (i, generic) in generics.iter().enumerate() {
                     if i != 0 {
@@ -405,7 +409,8 @@ impl<'a> fmt::Display for HirDisplay<'a> {
                     }
                     cwrite!(f, "{}", display_ty(hir[generic]))?;
                 }
-                cwrite!(f, "])")?;
+                cwrite!(f, "]): ")?;
+                display_ty(hir[ty]);
             }
             &Node::Capture(id) => cwrite!(f, "(#b<capture> #y<{}>)", id.0)?,
             &Node::Break(n) => cwrite!(f, "(#b<break> #y<{n}>)")?,

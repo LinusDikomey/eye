@@ -143,59 +143,12 @@ pub fn unify(
             }
             TypeInfo::Enum(a)
         }
-        (
-            FunctionItem {
-                module,
-                function,
-                generics,
-            },
-            func @ Instance(BaseType::Function, return_and_params),
-        )
-        | (
-            func @ Instance(BaseType::Function, return_and_params),
-            FunctionItem {
-                module,
-                function,
-                generics,
-            },
-        ) => {
-            _ = (module, function, generics, return_and_params, func);
-            todo!("check function items")
-            // func
-        }
         (BaseTypeItem(a_ty), BaseTypeItem(b_ty)) if a_ty == b_ty => a,
         (TypeItem(a_ty), TypeItem(b_ty)) => {
             if !types.try_unify(a_ty, b_ty, function_generics, compiler) {
                 return None;
             }
             a
-        }
-        (
-            FunctionItem {
-                module: a_m,
-                function: a_f,
-                generics: a_g,
-            },
-            FunctionItem {
-                module: b_m,
-                function: b_f,
-                generics: b_g,
-            },
-        ) => {
-            if a_m == b_m && a_f == b_f {
-                debug_assert_eq!(
-                    a_g.count, b_g.count,
-                    "invalid generics count, incorrect type info constructed"
-                );
-                for (a, b) in a_g.iter().zip(b_g.iter()) {
-                    if !types.try_unify(a, b, function_generics, compiler) {
-                        return None;
-                    }
-                }
-                a
-            } else {
-                todo!("unify different function items")
-            }
         }
         (
             MethodItem {
