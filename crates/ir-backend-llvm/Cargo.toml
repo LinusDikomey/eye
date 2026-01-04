@@ -5,5 +5,5 @@ edition = "2024"
 
 [dependencies]
 ir = { version = "0.1.0", path = "../ir" }
-llvm-sys = "191.0.0"
+llvm-sys = "211.0.0"
 tracing.workspace = true
