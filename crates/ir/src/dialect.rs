@@ -1,4 +1,4 @@
-use crate::{Type, instructions, primitives};
+use crate::{Parameter, Type, instructions, primitives};
 
 primitives! {
     I1 = 1
@@ -217,11 +217,11 @@ instructions! {
     MemberPtr ptr: Ref ty: TypeId idx: Int32 !pure;
     IntToPtr value: Ref !pure;
     PtrToInt value: Ref !pure;
-    FunctionPtr function: FunctionId !pure;
     Global global: GlobalId !pure;
-    // CallPtr  (TODO: dynamic argument list)
     ArrayIndex array_ptr: Ref elem_ty: TypeId a: Ref !pure;
     Offset ptr: Ref offset: Int32 !pure;
+    FunctionPtr function: FunctionId !pure;
+    CallPtr ptr: Ref !varargs = Some(Parameter::Ref);
 }
 
 instructions! {

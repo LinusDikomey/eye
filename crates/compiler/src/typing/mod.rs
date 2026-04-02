@@ -11,8 +11,6 @@ use parser::ast::{self, ModuleId, Primitive, TraitId, UnresolvedType};
 mod display;
 mod unify;
 
-use unify::unify;
-
 use crate::{
     Compiler, InvalidTypeError, Type,
     check::{
@@ -440,20 +438,32 @@ impl TypeTable {
             return;
         }
         self.types[b.idx()] = TypeInfoOrIdx::Idx(a);
-        let new = unify(a_ty, b_ty, self, generics, compiler).unwrap_or_else(|| {
-            let mut expected = String::new();
-            tracing::debug!(target: "infer", "unification failed of {a_ty:?} and {b_ty:?}");
-            self.type_to_string_inner(compiler, generics, a_ty, &mut expected);
-            let mut found = String::new();
-            self.type_to_string_inner(compiler, generics, b_ty, &mut found);
-            let ModuleSpan { module, span } = span();
-            compiler.errors.emit(
-                module,
-                Error::MismatchedType { expected, found }.at_span(span),
-            );
-            TypeInfo::INVALID.into()
-        });
+        let new = self.unify_infos_or_error(a_ty, b_ty, generics, compiler, span);
         self.types[a.idx()] = new;
+    }
+
+    pub fn unify_infos_or_error(
+        &mut self,
+        a: TypeInfo,
+        b: TypeInfo,
+        generics: &Generics,
+        compiler: &Compiler,
+        span: impl FnOnce() -> ModuleSpan,
+    ) -> TypeInfoOrIdx {
+        self.unify_infos(a, b, generics, compiler)
+            .unwrap_or_else(|| {
+                let mut expected = String::new();
+                tracing::debug!(target: "infer", "unification failed of {a:?} and {b:?}");
+                self.type_to_string_inner(compiler, generics, a, &mut expected);
+                let mut found = String::new();
+                self.type_to_string_inner(compiler, generics, b, &mut found);
+                let ModuleSpan { module, span } = span();
+                compiler.errors.emit(
+                    module,
+                    Error::MismatchedType { expected, found }.at_span(span),
+                );
+                TypeInfo::INVALID.into()
+            })
     }
 
     fn try_unify(
@@ -477,7 +487,8 @@ impl TypeTable {
             }
         };
         a == b
-            || unify(a_ty, b_ty, self, generics, compiler)
+            || self
+                .unify_infos(a_ty, b_ty, generics, compiler)
                 .map(|unified| {
                     self.types[a.idx()] = unified;
                     self.types[b.idx()] = TypeInfoOrIdx::Idx(a);
@@ -774,7 +785,7 @@ impl TypeTable {
                 TypeInfoOrIdx::TypeInfo(info) => break info,
             }
         };
-        let Some(info) = unify(a_ty, info, self, function_generics, compiler) else {
+        let Some(info) = self.unify_infos(a_ty, info, function_generics, compiler) else {
             self.types[a.idx()] = TypeInfoOrIdx::TypeInfo(TypeInfo::INVALID);
             return Err((a_ty, info));
         };
@@ -1836,7 +1847,7 @@ impl<'a> Iterator for BaseTypeGenerics<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         match self {
-            Self::Global(tys) => tys.get(0).map(|&a| {
+            Self::Global(tys) => tys.first().map(|&a| {
                 *tys = &tys[1..];
                 TypeInfoOrIdx::TypeInfo(TypeInfo::Known(a))
             }),
@@ -1848,6 +1859,14 @@ impl<'a> Iterator for BaseTypeGenerics<'a> {
                 .nth(0)
                 .inspect(|_| *tys = tys.skip(1))
                 .map(TypeInfoOrIdx::Idx),
+        }
+    }
+}
+impl<'a> ExactSizeIterator for BaseTypeGenerics<'a> {
+    fn len(&self) -> usize {
+        match self {
+            Self::Global(tys) => tys.len(),
+            Self::Local(tys) => tys.count as usize,
         }
     }
 }

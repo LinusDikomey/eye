@@ -1174,7 +1174,7 @@ fn decode_args<'a, 'args>(
 }
 
 pub struct TypedInstruction<I: Inst> {
-    inst: I,
+    pub inst: I,
     args: [u32; 2],
     ty: TypeId,
 }
@@ -1549,6 +1549,17 @@ macro_rules! instruction {
 }
 
 #[macro_export]
+macro_rules! filter_varargs_param {
+    (varargs = $value: expr $(, $($t: tt)*)?) => {
+        $value
+    };
+    ($a: ident $(= $value: expr)? $(, $($t: tt)* )?) => {
+        $crate::filter_varargs_param!($($($t)*)*)
+    };
+    () => { ::core::option::Option::None };
+}
+
+#[macro_export]
 macro_rules! instructions {
     (
         $module_name: ident
@@ -1636,7 +1647,15 @@ macro_rules! instructions {
                 }
             }
 
-            fn varargs(self) -> Option<$crate::Parameter> { None }
+            fn varargs(self) -> Option<$crate::Parameter> {
+                match self {
+                    $(
+                        Self::$instruction => $crate::filter_varargs_param!(
+                            $($attr $(= $attr_value)*),*
+                        ),
+                    )*
+                }
+            }
 
             fn inst_table(module: &$crate::ModuleOf<Self>) -> &Self::InstTable {
                 unsafe { ::core::mem::transmute(module) }

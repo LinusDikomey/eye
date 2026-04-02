@@ -490,6 +490,29 @@ impl<H: Hooks> Ctx<'_, H> {
             }
         }
     }
+
+    pub fn specify_or_unify(
+        &mut self,
+        a: TypeInfoOrIdx,
+        b: TypeInfoOrIdx,
+        span: impl FnOnce(&Ast) -> TSpan,
+    ) {
+        match (a, b) {
+            (TypeInfoOrIdx::TypeInfo(a), TypeInfoOrIdx::TypeInfo(b)) => {
+                self.hir
+                    .types
+                    .unify_infos_or_error(a, b, self.generics, self.compiler, || ModuleSpan {
+                        module: self.module,
+                        span: span(self.ast),
+                    });
+            }
+            (TypeInfoOrIdx::Idx(v), TypeInfoOrIdx::TypeInfo(info))
+            | (TypeInfoOrIdx::TypeInfo(info), TypeInfoOrIdx::Idx(v)) => {
+                self.specify(v, info, span);
+            }
+            (TypeInfoOrIdx::Idx(a), TypeInfoOrIdx::Idx(b)) => self.unify(a, b, span),
+        }
+    }
 }
 
 pub fn verify_main_signature(

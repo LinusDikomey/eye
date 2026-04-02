@@ -922,15 +922,35 @@ impl<'a, H: Hooks> Ctx<'a, H> {
             signature
                 .generics
                 .instantiate(&mut self.hir.types, &self.compiler.types, span);
-        self.specify(
-            expected,
-            TypeInfo::FunctionItem {
-                module: function_module,
-                function,
-                generics,
-            },
-            |_| span,
-        );
+        // a function item immediately becomes a fn() type only if it was expected to become one
+        // already from the type, meaning passing to functions or assigning to an annotated variable
+        // work without requiring subtyping.
+        if let Some(mut args_and_return) =
+            self.hir.types[expected].as_base(self.compiler, BaseType::Function)
+            // TODO: emit more specific error when one of the following conditions fail
+            && signature.named_params.is_empty()
+            && !signature.varargs
+            && args_and_return.len() == signature.params.len() + 1
+        {
+            let return_ty = args_and_return.next().unwrap();
+            let signature_return_ty = self.from_type_instance(signature.return_type, generics);
+            self.specify_or_unify(signature_return_ty, return_ty, |_| span);
+            let args = args_and_return;
+            for (&(_, signature_ty), ty) in signature.params.iter().zip(args) {
+                let signature_ty = self.from_type_instance(signature_ty, generics);
+                self.specify_or_unify(signature_ty, ty, |_| span);
+            }
+        } else {
+            self.specify(
+                expected,
+                TypeInfo::FunctionItem {
+                    module: function_module,
+                    function,
+                    generics,
+                },
+                |_| span,
+            );
+        }
         Node::FunctionItem {
             function: (function_module, function),
             generics,

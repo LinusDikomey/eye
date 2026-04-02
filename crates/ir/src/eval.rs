@@ -648,6 +648,7 @@ pub fn eval<E: EvalEnvironment>(
                         let offset = idx * layout.stride();
                         Val::Ptr(ptr.add_offset(offset.try_into().map_err(|_| ProvenanceError)?)?)
                     }
+                    I::CallPtr => todo!("indirect calls"),
                 }
             } else if let Some(typed_inst) = inst.as_module(dialects.cf) {
                 use crate::dialect::Cf as I;

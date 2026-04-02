@@ -102,10 +102,6 @@ pub struct Args {
     #[clap(global = true, long)]
     pub timings: bool,
 
-    /// prints out all tokens after lexing.
-    #[clap(global = true, long)]
-    pub tokens: bool,
-
     /// Crash once a single error is encountered. Mostly used for debugging the compiler.
     #[clap(global = true, long)]
     pub crash_on_error: bool,

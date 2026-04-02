@@ -571,7 +571,7 @@ impl IrModify {
             }
         }
         visited_blocks.visit_unset_bits(|i| {
-            if i < ir.blocks.len() as usize {
+            if i < ir.blocks.len() {
                 removed_blocks.insert(BlockId(i as _));
             }
         });
@@ -580,7 +580,7 @@ impl IrModify {
         // let mut removed_block_iter = removed_blocks.iter().copied().peekable();
         'remove_blocks: while !removed_blocks.is_empty() {
             let last = BlockId(ir.blocks.len() as u32 - 1);
-            while removed_blocks.contains(&last) {
+            if removed_blocks.contains(&last) {
                 ir.blocks.pop();
                 removed_blocks.remove(&last);
                 continue 'remove_blocks;

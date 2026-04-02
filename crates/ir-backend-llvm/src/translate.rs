@@ -725,16 +725,6 @@ unsafe fn build_func(
                         let ty = llvm_ty(ctx, types[inst.ty()], types).unwrap();
                         core::LLVMBuildPtrToInt(builder, val, ty, NONE)
                     }
-                    I::FunctionPtr => {
-                        let func_id: FunctionId = ir.typed_args(&inst);
-                        if func_id.module != module {
-                            panic!(
-                                "unsupported: can't take function pointer of function in different module"
-                            )
-                        }
-                        let (llvm_func, _) = llvm_funcs[func_id.function.idx()];
-                        llvm_func
-                    }
                     I::Global => {
                         let id: GlobalId = ir.typed_args(&inst);
                         if id.module != module {
@@ -753,6 +743,52 @@ unsafe fn build_func(
                             ptr,
                             indices.as_mut_ptr(),
                             indices.len() as _,
+                            NONE,
+                        )
+                    }
+                    I::FunctionPtr => {
+                        let func_id: FunctionId = ir.typed_args(&inst);
+                        if func_id.module != module {
+                            panic!(
+                                "unsupported: can't take function pointer of function in different module"
+                            )
+                        }
+                        let (llvm_func, _) = llvm_funcs[func_id.function.idx()];
+                        llvm_func
+                    }
+                    I::CallPtr => {
+                        let mut args = ir.typed_args_iter(&inst);
+                        let Some(Argument::Ref(ptr)) = args.next() else {
+                            unreachable!()
+                        };
+                        let mut arg_refs = Vec::new();
+                        let mut arg_types = Vec::new();
+                        for arg in args {
+                            let Argument::Ref(arg) = arg else {
+                                unreachable!()
+                            };
+                            if let (Some(r), ty) = get_ref_and_type(&instructions, arg) {
+                                arg_refs.push(r);
+                                let ty = llvm_ty(ctx, ty, func.types()).unwrap();
+                                arg_types.push(ty);
+                            }
+                        }
+                        let ptr = get_ref(&instructions, ptr).unwrap();
+                        let return_ty = llvm_ty(ctx, func[inst.ty()], func.types())
+                            .unwrap_or_else(|| LLVMVoidTypeInContext(ctx));
+
+                        let ty = LLVMFunctionType(
+                            return_ty,
+                            arg_types.as_mut_ptr(),
+                            arg_types.len() as _,
+                            FALSE,
+                        );
+                        LLVMBuildCall2(
+                            builder,
+                            ty,
+                            ptr,
+                            arg_refs.as_mut_ptr(),
+                            arg_refs.len() as _,
                             NONE,
                         )
                     }

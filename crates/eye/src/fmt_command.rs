@@ -81,8 +81,7 @@ fn check(file: &Path, a: &str, b: &str) -> bool {
             before_lines.push(line);
         }
         let mut content = String::new();
-        loop {
-            let Some(line) = diff.get(i) else { break };
+        while let Some(line) = diff.get(i) {
             match line {
                 diff::Result::Left(l) => cwriteln!(content, "|  #r<-{}>", l).unwrap(),
                 diff::Result::Right(r) => cwriteln!(content, "|  #g<+{}>", r).unwrap(),

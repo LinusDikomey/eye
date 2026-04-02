@@ -308,10 +308,8 @@ impl Ctx<'_> {
         Err(NoReturn)
     }
 
-    fn get_instantiated_ty(&mut self, self_ty: LocalTypeId) -> Type {
-        self.compiler
-            .types
-            .instantiate(self.hir[self_ty], self.generics)
+    fn get_instantiated_ty(&mut self, ty: LocalTypeId) -> Type {
+        self.compiler.types.instantiate(self.hir[ty], self.generics)
     }
 }
 
@@ -859,10 +857,18 @@ fn lower_expr(ctx: &mut Ctx, node: NodeId) -> Result<ValueOrPlace> {
             } else {
                 debug_assert_eq!(args.count, arg_types.count);
                 let func = lower(ctx, function)?;
-                let arg_types = ctx.get_multiple_types(arg_types)?;
-                todo!("call_ptr: {func} {arg_types:?}")
-                //ctx.builder.
-                //    .build_call_ptr(func, arg_refs, arg_types, return_ty)
+                let call_ptr = ir::FunctionId {
+                    module: mem.id(),
+                    function: ir::dialect::Mem::CallPtr.id(),
+                };
+                // PERF: reuse allocation in the future?
+                let mut call_ptr_args = Vec::with_capacity(args.count as usize + 1);
+                call_ptr_args.push(func);
+                for arg in args.iter() {
+                    call_ptr_args.push(lower(ctx, arg)?);
+                }
+                let return_ty = ctx.builder.types.add(return_ty);
+                ctx.builder.append((call_ptr, call_ptr_args, return_ty))
             };
             if noreturn {
                 let ret = ctx.builder.append_undef(ctx.return_ty);
