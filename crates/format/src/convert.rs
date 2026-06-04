@@ -1,7 +1,7 @@
 use error::span::TSpan;
 use parser::ast::{
-    Ast, Attribute, BaseImpl, Definition, Expr, ExprId, ExprIds, Generics, IdentPath, ScopeId,
-    Token, UnresolvedType,
+    Ast, Attribute, BaseImpl, Definition, Expr, ExprId, ExprIds, Generics, IdentPath, InherentImpl,
+    ScopeId, Token, UnresolvedType,
 };
 
 use crate::{
@@ -360,19 +360,22 @@ impl<'a> Converter<'a> {
                     self.method(&mut group, method);
                 }
 
-                for impl_ in &def.impls {
+                for InherentImpl {
+                    attributes,
+                    t_impl,
+                    implemented_trait,
+                    base,
+                } in &def.impls
+                {
                     self.keep_user_newlines();
-                    self.tok(&mut group, impl_.t_impl);
-                    self.generics(&mut group, &impl_.base.generics);
+                    self.attributes(&mut group, attributes);
+                    self.tok(&mut group, *t_impl);
+                    self.generics(&mut group, &base.generics);
                     group.push(" ".into());
-                    self.path(&mut group, impl_.implemented_trait);
-                    self.generics_instance(
-                        &mut group,
-                        impl_.base.t_brackets,
-                        &impl_.base.trait_generics,
-                    );
+                    self.path(&mut group, *implemented_trait);
+                    self.generics_instance(&mut group, base.t_brackets, &base.trait_generics);
                     group.push(" ".into());
-                    self.impl_body(&mut group, &impl_.base);
+                    self.impl_body(&mut group, base);
                     group.push("\n".into());
                 }
                 self.close_group(nodes, group, def.t_rbrace);
