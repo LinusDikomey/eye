@@ -10,7 +10,7 @@ Foo :: struct {
   x i32
 
   impl Fn[(str, f32), f32] {
-    call :: fn(self *Foo, args (str, f32)) -> f32 {
+    call :: @callconv(fn_trait) fn(self Foo, args (str, f32)) -> f32 {
       print("Called Foo(")
       print(self.x)
       print(") with ")

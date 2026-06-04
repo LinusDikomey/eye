@@ -10,10 +10,10 @@ main :: fn {
 
 ReturnOverload :: struct {
   @hidden impl Fn[(), i32] {
-    call :: fn(this *ReturnOverload, args ()) -> i32: 5
+    call :: @callconv(fn_trait) fn(this ReturnOverload, args ()) -> i32: 5
   }
 
   @hidden impl Fn[(), str] {
-    call :: fn(this *ReturnOverload, args ()) -> str: "hello"
+    call :: @callconv(fn_trait) fn(this ReturnOverload, args ()) -> str: "hello"
   }
 }

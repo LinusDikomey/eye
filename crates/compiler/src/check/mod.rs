@@ -12,17 +12,19 @@ use std::cell::RefCell;
 
 use dmap::DHashMap;
 use error::{CompileError, Error, Errors, span::TSpan};
-use parser::ast::{Ast, ExprId, ModuleId, ScopeId};
+use parser::ast::{self, Ast, Expr, ExprId, ModuleId, ScopeId};
 pub use traits::trait_def;
 pub use type_def::type_def;
 
 use crate::{
     Compiler, InvalidTypeError, Type,
+    callconv::CallConv,
     check::closure::CheckedClosure,
     compiler::{
         BodyOrTypes, CheckedFunction, Generics, LocalScope, LocalScopeParent, ModuleSpan,
         Signature, VarId, builtins,
     },
+    eval::ConstValueId,
     hir::{CastId, HIRBuilder, Hir, LValue, Node},
     types::{BaseType, TypeFull},
     typing::{Bound, LocalTypeId, LocalTypeIds, TypeInfo, TypeInfoOrIdx, TypeTable},
@@ -370,17 +372,29 @@ impl<H: Hooks> Ctx<'_, H> {
             );
             symbols.function_signatures[closure.id.idx()].start_resolving();
             let generic_count = closure.generics.count();
+            let params: Box<[_]> = closure
+                .params
+                .iter()
+                .map(|(name, id)| (name.clone(), hir[hir.vars[id.idx()].ty()]))
+                .collect();
+            let named_params: Box<[_]> = Box::new([]); // TODO: named closure params
+            let callconv = self
+                .compiler
+                .get_and_check_function_callconv(
+                    self.ast,
+                    &self.ast[closure.id],
+                    &params,
+                    &named_params,
+                )
+                .expect("todo: handle invalid callconv");
             symbols.function_signatures[closure.id.idx()].put(Signature {
-                params: closure
-                    .params
-                    .iter()
-                    .map(|(name, id)| (name.clone(), hir[hir.vars[id.idx()].ty()]))
-                    .collect(),
-                named_params: Box::new([]), // TODO: named closure params
+                params,
+                named_params,
                 varargs: false,
                 return_type: hir[closure.return_type],
                 generics: closure.generics,
                 span: parsed.ast[closure.id].signature_span,
+                callconv,
             });
             symbols.functions[closure.id.idx()].start_resolving();
             symbols.functions[closure.id.idx()].put(CheckedFunction {
@@ -565,4 +579,72 @@ fn get_string_literal(src: &str, span: TSpan) -> Box<str> {
         }
     }
     out.into_boxed_str()
+}
+
+impl Compiler {
+    pub fn get_and_check_function_callconv(
+        &self,
+        ast: &Ast,
+        function: &ast::Function,
+        params: &[(Box<str>, Type)],
+        named_params: &[(Box<str>, Type, Option<ConstValueId>)],
+    ) -> Result<CallConv, CompileError> {
+        // TODO: replace with proper attribute resolval in the future
+        let Some(attr) = function
+            .attributes
+            .iter()
+            .find(|attr| &ast[attr.path.span()] == "callconv")
+        else {
+            return Ok(CallConv::default());
+        };
+        if attr.args.count != 1 {
+            return Err(CompileError {
+                err: Error::InvalidArgCount {
+                    expected: 1,
+                    varargs: false,
+                    found: attr.args.count,
+                },
+                span: attr.span,
+            });
+        }
+        let arg = &ast[attr.args][0];
+        let &Expr::Ident { span, .. } = arg else {
+            return Err(CompileError {
+                err: Error::InvalidCallConv,
+                span: ast[attr.args][0].span(ast),
+            });
+        };
+        let callconv = match &ast[span] {
+            "eye" => CallConv::Eye,
+            "fn_trait" => CallConv::FnTrait,
+            _ => {
+                return Err(CompileError {
+                    err: Error::InvalidCallConv,
+                    span: arg.span(ast),
+                });
+            }
+        };
+        if callconv == CallConv::FnTrait {
+            // TODO: proper errors here
+            if params.len() != 2 || !named_params.is_empty() {
+                panic!(
+                    "fn_trait callconv violated: need 2 parameters but got {}",
+                    params.len() + named_params.len()
+                );
+            }
+            if !matches!(
+                self.types.lookup(params[1].1),
+                TypeFull::Instance(BaseType::Tuple, _)
+            ) {
+                // TODO: this exception will not be allowed in the future without a T: Trait bound
+                if !matches!(self.types.lookup(params[1].1), TypeFull::Generic(_)) {
+                    panic!(
+                        "fn_trait callconv violated: must have an arguments tuple but got {:?}",
+                        self.types.lookup(params[1].1)
+                    );
+                }
+            }
+        }
+        Ok(callconv)
+    }
 }

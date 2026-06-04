@@ -8,6 +8,7 @@ use parser::ast::{
 
 use crate::{
     Compiler, Def, Type,
+    callconv::CallConv,
     compiler::{Dialects, Generics, Instance, Instances, ModuleSpan},
     hir::HIRBuilder,
     types::TypeFull,
@@ -268,11 +269,13 @@ pub fn value_expr(
         &[],
         ir::Refs::EMPTY,
         return_ty,
+        CallConv::Eye,
     );
     while let Some(f) = to_generate.pop() {
         let checked = compiler.get_hir(f.module, f.ast_function_id);
 
         if let crate::compiler::BodyOrTypes::Body(body) = &checked.body_or_types {
+            let callconv = compiler.get_signature(f.module, f.ast_function_id).callconv;
             let return_type = env[f.ir_id].return_type().unwrap();
             let (builder, params) = ir::builder::Builder::begin_function(&mut env, f.ir_id);
             let (body, types) = crate::irgen::lower_hir(
@@ -285,6 +288,7 @@ pub fn value_expr(
                 &f.generics,
                 params,
                 return_type,
+                callconv,
             );
             env[f.ir_id].attach_body(body);
             env[f.ir_id].overwrite_types(types);

@@ -646,6 +646,9 @@ impl<'a> Converter<'a> {
                 self.args(nodes, l, r, attribute.args);
             }
         }
+        if !attributes.is_empty() {
+            nodes.push(" ".into());
+        }
     }
 
     fn if_else(
@@ -852,6 +855,7 @@ impl<'a> Converter<'a> {
     fn function(&mut self, nodes: &mut Vec<Node>, id: parser::ast::FunctionId) {
         let function = &self.cst[id];
         let mut group = Vec::new();
+        self.attributes(&mut group, &function.attributes);
         self.tok(&mut group, function.t_fn);
         self.generics(&mut group, &function.generics);
         if let Some((l, r)) = function.t_parens {

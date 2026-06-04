@@ -1,3 +1,4 @@
+mod call;
 pub mod const_value;
 mod entry_point;
 mod intrinsics;
@@ -11,8 +12,11 @@ use std::num::NonZero;
 use ir::{BlockId, BlockTarget, Environment, Ref};
 use parser::ast::{self, ModuleId};
 
+use crate::callconv::CallConv;
 use crate::check::traits::{self, Candidates};
-use crate::compiler::{Dialects, FunctionToGenerate, Generics, Instance, Instances, builtins};
+use crate::compiler::{
+    Dialects, FunctionToGenerate, Generics, Instance, Instances, Signature, builtins,
+};
 use crate::hir::{CastType, LValue, LValueId, Node, Pattern, PatternId, Var};
 use crate::types::{BaseType, TypeFull};
 use crate::typing::{LocalTypeId, LocalTypeIds, OrdinalType};
@@ -24,10 +28,48 @@ use crate::{
 
 type Builder<'a> = ir::builder::Builder<&'a mut Environment>;
 
+/// Equivalent to std::iter::once(a).chain(b) but for ExactSizeIterator. Assumes that b.len() + 1
+/// does not overflow and will panic otherwise.
+struct ExactOnceChain<T, I: ExactSizeIterator<Item = T>> {
+    first: Option<T>,
+    chained: I,
+}
+impl<T, I: ExactSizeIterator<Item = T>> ExactOnceChain<T, I> {
+    pub fn new(first: T, chained: I) -> Self {
+        Self {
+            first: Some(first),
+            chained,
+        }
+    }
+}
+impl<T, I: ExactSizeIterator<Item = T>> Iterator for ExactOnceChain<T, I> {
+    type Item = T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(first) = self.first.take() {
+            return Some(first);
+        }
+        self.chained.next()
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let len = self.len();
+        (len, Some(len))
+    }
+}
+impl<T, I: ExactSizeIterator<Item = T>> ExactSizeIterator for ExactOnceChain<T, I> {
+    fn len(&self) -> usize {
+        (self.first.is_some() as usize)
+            .checked_add(self.chained.len())
+            .unwrap()
+    }
+}
+
 pub fn declare_function(
     compiler: &Compiler,
     ir: &ir::Environment,
     checked: &CheckedFunction,
+    signature: &Signature,
     module: ModuleId,
     generics: &[Type],
 ) -> ir::Function {
@@ -35,16 +77,36 @@ pub fn declare_function(
     let mut types = ir::Types::new();
     // TODO: figure out what to do when params/return_type are Invalid or never types. We can no
     // longer generate a valid signature
-    let params = types::get_multiple(
-        compiler,
-        ir,
-        &mut types,
-        checked[checked.params].iter().copied(),
-        Instance {
-            types: generics,
-            outer: None,
-        },
-    )
+    let params = match signature.callconv {
+        CallConv::Eye => types::get_multiple(
+            compiler,
+            ir,
+            &mut types,
+            signature.all_params().map(|(_name, ty)| ty),
+            Instance {
+                types: generics,
+                outer: None,
+            },
+        ),
+        CallConv::FnTrait => {
+            debug_assert_eq!(signature.params.len(), 2);
+            debug_assert_eq!(signature.named_params.len(), 0);
+            let args_ty = signature.params[1].1;
+            let TypeFull::Instance(BaseType::Tuple, args) = compiler.types.lookup(args_ty) else {
+                unreachable!()
+            };
+            types::get_multiple(
+                compiler,
+                ir,
+                &mut types,
+                ExactOnceChain::new(signature.params[0].1, args.iter().copied()),
+                Instance {
+                    types: generics,
+                    outer: None,
+                },
+            )
+        }
+    }
     .unwrap_or_else(|| types.add_multiple((0..checked.params.count).map(|_| ir::Type::UNIT)));
 
     let return_type = types::get(
@@ -66,10 +128,11 @@ pub fn declare_function(
 type Result<T> = std::result::Result<T, NoReturn>;
 struct NoReturn;
 
+#[macro_export]
 macro_rules! crash_point {
     ($ctx: expr) => {{
         tracing::warn!(target: "irgen", file = file!(), line = line!(), "Building crash point");
-        build_crash_point($ctx);
+        $crate::irgen::build_crash_point($ctx);
         return Err(NoReturn);
     }};
 }
@@ -84,6 +147,7 @@ pub fn lower_hir(
     generics: &[Type],
     params: ir::Refs,
     return_ty: ir::TypeId,
+    callconv: CallConv,
 ) -> (ir::FunctionIr, ir::Types) {
     let unit_ty = builder.types.add(ir::Type::UNIT);
     let ptr_ty = builder.types.add(ir::Primitive::Ptr);
@@ -144,13 +208,6 @@ pub fn lower_hir(
         Ok(vars) => vars,
         Err(NoReturn) => return builder.finish_body(),
     };
-    debug_assert_eq!(params.count(), hir.params.len() as _);
-    for (param, &var) in params.iter().zip(&hir.params) {
-        if matches!(hir.vars[var.idx()], Var::CapturesParam(_)) {
-            continue;
-        }
-        builder.append(dialects.mem.Store(vars[var.idx()].0, param));
-    }
     let mut ctx = Ctx {
         compiler,
         dialects,
@@ -165,6 +222,9 @@ pub fn lower_hir(
         ptr_ty,
         i1_ty,
     };
+    if call::assign_args_to_vars(&mut ctx, params, callconv).is_err() {
+        return ctx.builder.finish_body();
+    }
 
     let val = lower(&mut ctx, hir.root_id());
     if let Ok(val) = val {
@@ -226,8 +286,9 @@ impl Ctx<'_> {
         }
         Some(
             instances.get_or_create_function(module, id, generics, |generics| {
+                let signature = compiler.get_signature(module, id);
                 let checked = compiler.get_hir(module, id);
-                let func = declare_function(compiler, env, checked, module, generics);
+                let func = declare_function(compiler, env, checked, signature, module, generics);
                 let ir_id = env.add_function(dialects.main, func);
                 to_generate.push(FunctionToGenerate {
                     ir_id,
@@ -285,7 +346,27 @@ impl Ctx<'_> {
         self.get_type(self.hir[ty])
     }
 
-    fn get_multiple_types(&mut self, ids: LocalTypeIds) -> Result<ir::TypeIds> {
+    fn get_multiple_types(
+        &mut self,
+        types: impl ExactSizeIterator<Item = Type>,
+    ) -> Result<ir::TypeIds> {
+        types::get_multiple(
+            self.compiler,
+            self.builder.env,
+            &mut self.builder.types,
+            types,
+            Instance {
+                types: self.generics,
+                outer: None,
+            },
+        )
+        .ok_or_else(|| {
+            build_crash_point(self);
+            NoReturn
+        })
+    }
+
+    fn get_multiple_type_ids(&mut self, ids: LocalTypeIds) -> Result<ir::TypeIds> {
         types::get_multiple(
             self.compiler,
             self.builder.env,
@@ -407,7 +488,7 @@ fn lower_expr(ctx: &mut Ctx, node: NodeId) -> Result<ValueOrPlace> {
             if elems.count == 0 {
                 return Ok(ValueOrPlace::Value(Ref::UNIT));
             }
-            let elem_types = ctx.get_multiple_types(elem_types)?;
+            let elem_types = ctx.get_multiple_type_ids(elem_types)?;
             let tuple_ty = ctx.builder.types.add(ir::Type::Tuple(elem_types));
             let mut tuple_val = ctx.builder.append_undef(tuple_ty);
             for (elem, i) in elems.iter().zip(0..) {
@@ -426,7 +507,7 @@ fn lower_expr(ctx: &mut Ctx, node: NodeId) -> Result<ValueOrPlace> {
             debug_assert_eq!(elems.count, elem_types.count);
             let ty = ctx.get_hir_type(enum_ty)?;
             let enum_ty = ctx.builder.types.add(ty);
-            let elem_types = ctx.get_multiple_types(elem_types)?;
+            let elem_types = ctx.get_multiple_type_ids(elem_types)?;
             let elem_tuple = ctx.builder.types.add(ir::Type::Tuple(elem_types));
             let var = ctx.builder.append(mem.Decl(enum_ty, ctx.ptr_ty));
             for (elem, i) in elems.iter().zip(0..) {
@@ -649,7 +730,7 @@ fn lower_expr(ctx: &mut Ctx, node: NodeId) -> Result<ValueOrPlace> {
                     ValueOrPlace::Value(value)
                 }
                 ValueOrPlace::Place { ptr, value_ty: _ } => {
-                    let elem_types = ctx.get_multiple_types(elem_types)?;
+                    let elem_types = ctx.get_multiple_type_ids(elem_types)?;
                     let elem_tuple = ctx.builder.types.add(ir::Type::Tuple(elem_types));
                     let member_ptr = ctx
                         .builder
@@ -816,67 +897,7 @@ fn lower_expr(ctx: &mut Ctx, node: NodeId) -> Result<ValueOrPlace> {
             arg_types,
             return_ty,
             noreturn,
-        } => {
-            let return_ty = ctx.get_hir_type(return_ty)?;
-            let res = if let Node::FunctionItem {
-                function: (module, id),
-                generics: call_generics,
-                ty: _,
-            } = ctx.hir[function]
-            {
-                if (module, id) == builtins::get_intrinsic(ctx.compiler) {
-                    let arg_refs = args
-                        .iter()
-                        .skip(1)
-                        .map(|arg| lower(ctx, arg))
-                        .collect::<Result<Vec<_>>>()?;
-                    let Node::StringLiteral(intrinsic) = &ctx.hir[args.iter().next().unwrap()]
-                    else {
-                        panic!("expected string literal passed to intrinsic call");
-                    };
-                    return intrinsics::call_intrinsic(ctx, intrinsic, &arg_refs);
-                }
-                // PERF: make it possible to write refs directly into the ir to avoid collecting here
-                let arg_refs = args
-                    .iter()
-                    .map(|arg| lower(ctx, arg))
-                    .collect::<Result<Vec<_>>>()?;
-                let call_generics = call_generics
-                    .iter()
-                    .map(|generic| {
-                        ctx.compiler
-                            .types
-                            .instantiate(ctx.hir[generic], ctx.generics)
-                    })
-                    .collect();
-                let Some(func) = ctx.get_ir_id(module, id, call_generics) else {
-                    crash_point!(ctx)
-                };
-                let return_ty = ctx.builder.types.add(return_ty);
-                ctx.builder.append((func, arg_refs, return_ty))
-            } else {
-                debug_assert_eq!(args.count, arg_types.count);
-                let func = lower(ctx, function)?;
-                let call_ptr = ir::FunctionId {
-                    module: mem.id(),
-                    function: ir::dialect::Mem::CallPtr.id(),
-                };
-                // PERF: reuse allocation in the future?
-                let mut call_ptr_args = Vec::with_capacity(args.count as usize + 1);
-                call_ptr_args.push(func);
-                for arg in args.iter() {
-                    call_ptr_args.push(lower(ctx, arg)?);
-                }
-                let return_ty = ctx.builder.types.add(return_ty);
-                ctx.builder.append((call_ptr, call_ptr_args, return_ty))
-            };
-            if noreturn {
-                let ret = ctx.builder.append_undef(ctx.return_ty);
-                ctx.builder.append(cf.Ret(ret));
-                return Err(NoReturn);
-            }
-            res
-        }
+        } => return call::gen_call(ctx, function, args, arg_types, return_ty, noreturn),
         &Node::TraitCall {
             trait_id,
             trait_generics,
@@ -1075,7 +1096,7 @@ fn lower_lval(ctx: &mut Ctx, lval: LValueId) -> Result<Ref> {
             elem_types,
         } => {
             let ptr = lower_lval(ctx, tuple)?;
-            let types = ctx.get_multiple_types(elem_types)?;
+            let types = ctx.get_multiple_type_ids(elem_types)?;
             let ty = ctx.builder.types.add(ir::Type::Tuple(types));
             ctx.builder
                 .append(mem.MemberPtr(ptr, ty, index, ctx.ptr_ty))
@@ -1200,7 +1221,7 @@ fn lower_pattern(
             types,
             args,
         } => {
-            let ir_types = ctx.get_multiple_types(LocalTypeIds {
+            let ir_types = ctx.get_multiple_type_ids(LocalTypeIds {
                 idx: types,
                 count: args.count + 1,
             })?;

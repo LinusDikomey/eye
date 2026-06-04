@@ -450,7 +450,7 @@ pub enum TypeContent<T: TreeToken> {
 
 #[derive(Debug)]
 pub struct StructMember<T: TreeToken> {
-    pub attributes: Box<[Attribute<T>]>,
+    pub attributes: Attributes<T>,
     pub name: TSpan,
     pub ty: UnresolvedType,
 }
@@ -509,7 +509,7 @@ pub enum Definition<T: TreeToken = ()> {
 
 pub struct Item<T: TreeToken> {
     #[allow(unused)] // TODO: remove when using attributes
-    pub attributes: Box<[Attribute<T>]>,
+    pub attributes: Attributes<T>,
     pub value: ItemValue<T>,
 }
 
@@ -537,6 +537,8 @@ pub struct Attribute<T: TreeToken> {
     pub args: ExprIds,
     pub span: TSpan,
 }
+
+pub type Attributes<T> = Box<[Attribute<T>]>;
 
 #[derive(Debug)]
 pub struct EnumVariantDefinition<T: TreeToken> {
@@ -583,7 +585,7 @@ pub struct Impl<T: TreeToken = ()> {
 
 #[derive(Debug)]
 pub struct InherentImpl<T: TreeToken = ()> {
-    pub attributes: Box<[Attribute<T>]>,
+    pub attributes: Attributes<T>,
     pub t_impl: T,
     pub implemented_trait: IdentPath,
     pub base: BaseImpl<T>,
@@ -614,6 +616,7 @@ pub struct Global<T: TreeToken = ()> {
 
 #[derive(Debug)]
 pub struct Function<T: TreeToken = ()> {
+    pub attributes: Attributes<T>,
     pub t_fn: T,
     pub generics: Generics<T>,
     pub t_parens: T::Opt<(T, T)>,

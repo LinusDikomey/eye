@@ -26,6 +26,7 @@ use segment_list::SegmentList;
 
 use crate::{
     InvalidTypeError, ProjectId, Type,
+    callconv::CallConv,
     check::{
         self, Hooks, ProjectErrors,
         traits::{self, Candidates, SelectedInstance},
@@ -645,7 +646,7 @@ impl Compiler {
         let scope = function.scope;
         let generics = self.resolve_generics(&function.generics.types, module, scope, ast);
 
-        let params = function
+        let params: Box<[_]> = function
             .params
             .iter()
             .map(|(name_span, ty)| {
@@ -655,7 +656,7 @@ impl Compiler {
             })
             .collect();
 
-        let named_params = function
+        let named_params: Box<[_]> = function
             .named_params
             .iter()
             .map(|param| {
@@ -688,6 +689,9 @@ impl Compiler {
         } else {
             self.resolve_type(&function.return_type, module, scope)
         };
+        let callconv = self
+            .get_and_check_function_callconv(ast, function, &params, &named_params)
+            .expect("todo: handle invalid callconv");
         Signature {
             params,
             named_params,
@@ -695,6 +699,7 @@ impl Compiler {
             return_type,
             generics,
             span: function.signature_span,
+            callconv,
         }
     }
 
@@ -984,8 +989,9 @@ impl Compiler {
         }
         Some(
             instances.get_or_create_function(module, id, generics, |generics| {
+                let signature = self.get_signature(module, id);
                 let checked = self.get_hir(module, id);
-                let func = irgen::declare_function(self, ir, checked, module, generics);
+                let func = irgen::declare_function(self, ir, checked, signature, module, generics);
                 let ir_id = ir.add_function(dialects.main, func);
                 to_generate.push(FunctionToGenerate {
                     ir_id,
@@ -1022,6 +1028,7 @@ impl Compiler {
         );
 
         if let BodyOrTypes::Body(body) = &checked.body_or_types {
+            let callconv = self.get_signature(f.module, f.ast_function_id).callconv;
             let return_type = ir[f.ir_id].return_type().unwrap();
             let (builder, params) = ir::builder::Builder::begin_function(&mut *ir, f.ir_id);
             let (body, types) = irgen::lower_hir(
@@ -1034,6 +1041,7 @@ impl Compiler {
                 &f.generics,
                 params,
                 return_type,
+                callconv,
             );
             ir[f.ir_id].attach_body(body);
             ir[f.ir_id].overwrite_types(types);
@@ -1601,7 +1609,6 @@ pub struct ParsedModule {
 
 type NamedParams = Box<[(Box<str>, Type, Option<ConstValueId>)]>;
 
-#[derive(Debug)]
 pub struct Signature {
     pub params: Box<[(Box<str>, Type)]>,
     pub named_params: NamedParams,
@@ -1609,20 +1616,24 @@ pub struct Signature {
     pub return_type: Type,
     pub generics: Generics,
     pub span: TSpan,
+    pub callconv: CallConv,
 }
 impl Signature {
     pub fn total_arg_count(&self) -> usize {
         self.params.len() + self.named_params.len()
     }
 
-    pub fn all_params(&self) -> impl Iterator<Item = (&str, Type)> {
-        self.params
-            .iter()
-            .map(|(name, ty)| (&**name, *ty))
-            .chain(self.named_params.iter().map(|(name, ty, _)| (&**name, *ty)))
+    pub fn all_params(&self) -> impl ExactSizeIterator<Item = (&str, Type)> {
+        AllParamsIter {
+            params: &self.params,
+            named_params: &self.named_params,
+        }
     }
 
     pub fn fits_function_type(&self, return_and_params: &[Type]) -> Result<bool, InvalidTypeError> {
+        if self.callconv != CallConv::default() {
+            return Ok(false);
+        }
         if self.generics.count() != 0 {
             return Ok(false);
         }
@@ -1656,6 +1667,9 @@ impl Signature {
         base_generics_offset: u8,
         base_generics: &[Type],
     ) -> Result<Option<ImplIncompatibility>, InvalidTypeError> {
+        if self.callconv != base.callconv {
+            return Ok(Some(ImplIncompatibility::CallConv));
+        }
         if !self.generics.compatible_with(
             types,
             &base.generics,
@@ -1691,6 +1705,35 @@ impl Signature {
             return Ok(Some(ImplIncompatibility::ReturnType));
         }
         Ok(None)
+    }
+}
+
+struct AllParamsIter<'a> {
+    params: &'a [(Box<str>, Type)],
+    named_params: &'a [(Box<str>, Type, Option<ConstValueId>)],
+}
+impl<'a> Iterator for AllParamsIter<'a> {
+    type Item = (&'a str, Type);
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(((name, ty), params)) = self.params.split_first() {
+            self.params = params;
+            return Some((name, *ty));
+        }
+        if let Some(((name, ty, _), named_params)) = self.named_params.split_first() {
+            self.named_params = named_params;
+            return Some((name, *ty));
+        }
+        None
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let len = self.len();
+        (len, Some(len))
+    }
+}
+impl<'a> ExactSizeIterator for AllParamsIter<'a> {
+    fn len(&self) -> usize {
+        self.params.len() + self.named_params.len()
     }
 }
 
@@ -2036,7 +2079,6 @@ impl Index<LocalTypeIds> for CheckedFunction {
     }
 }
 
-#[derive(Debug)]
 pub struct CheckedTrait {
     pub name: Box<str>,
     pub generics: Generics,

@@ -3,9 +3,9 @@ use dmap::DHashMap;
 use std::collections::hash_map::Entry;
 
 use crate::ast::{
-    self, Attribute, Definition, EnumVariantDefinition, Expr, ExprIdPairs, ExprIds, Function,
-    GenericDef, Generics, Global, Impl, InherentImpl, Item, ItemValue, Method, StructMember,
-    TraitDefinition, TreeToken, UnOp, UnresolvedType,
+    self, Attribute, Attributes, Definition, EnumVariantDefinition, Expr, ExprIdPairs, ExprIds,
+    Function, GenericDef, Generics, Global, Impl, InherentImpl, Item, ItemValue, Method,
+    StructMember, TraitDefinition, TreeToken, UnOp, UnresolvedType,
 };
 
 use crate::unexpected;
@@ -444,13 +444,19 @@ impl<T: TreeToken> Parser<'_, T> {
 
     fn parse_function_def(
         &mut self,
+        attributes: Attributes<T>,
         fn_tok: Token,
         scope: ScopeId,
         associated_name: TSpan,
         inherited_generics: Vec<GenericDef<T>>,
     ) -> ParseResult<Function<T>> {
-        let mut func =
-            self.parse_function_header(fn_tok, scope, associated_name, inherited_generics)?;
+        let mut func = self.parse_function_header(
+            attributes,
+            fn_tok,
+            scope,
+            associated_name,
+            inherited_generics,
+        )?;
         self.parse_function_body(&mut func)?;
         Ok(func)
     }
@@ -482,9 +488,15 @@ impl<T: TreeToken> Parser<'_, T> {
             }
             let ident = p.toks.step_expect(TokenType::Ident)?;
             if let Some(colon_colon) = p.toks.step_if(TokenType::DoubleColon) {
+                let attributes = p.parse_attributes(scope)?;
                 let fn_tok = p.toks.step_expect(TokenType::Keyword(Keyword::Fn))?;
-                let method =
-                    p.parse_function_def(fn_tok, scope, ident.span(), generics.types.to_vec())?;
+                let method = p.parse_function_def(
+                    attributes,
+                    fn_tok,
+                    scope,
+                    ident.span(),
+                    generics.types.to_vec(),
+                )?;
                 let func_id = p.ast.function(method);
                 let name = ident.get_val(p.toks.src).to_owned();
                 let method = Method {
@@ -566,10 +578,15 @@ impl<T: TreeToken> Parser<'_, T> {
                 }
                 TokenType::DoubleColon => {
                     let t_colon_colon = t(p.toks.step_assert(TokenType::DoubleColon));
-
+                    let attributes = p.parse_attributes(scope)?;
                     let fn_tok = p.toks.step_expect(TokenType::Keyword(Keyword::Fn))?;
-                    let method =
-                        p.parse_function_def(fn_tok, scope, ident.span(), generics.types.to_vec())?;
+                    let method = p.parse_function_def(
+                        attributes,
+                        fn_tok,
+                        scope,
+                        ident.span(),
+                        generics.types.to_vec(),
+                    )?;
                     let func_id = p.ast.function(method);
                     let name = ident.get_val(p.toks.src).to_owned();
                     let method = Method {
@@ -615,6 +632,7 @@ impl<T: TreeToken> Parser<'_, T> {
     /// Will just return a function with the body always set to `None`
     fn parse_function_header(
         &mut self,
+        attributes: Attributes<T>,
         fn_tok: Token,
         scope: ScopeId,
         associated_name: TSpan,
@@ -690,6 +708,7 @@ impl<T: TreeToken> Parser<'_, T> {
         ));
 
         Ok(Function {
+            attributes,
             t_fn: t(fn_tok),
             generics,
             t_parens,
@@ -756,8 +775,10 @@ impl<T: TreeToken> Parser<'_, T> {
                 Ident => {
                     let name_span = tok.span();
                     let t_colon_colon = t(self.toks.step_expect(TokenType::DoubleColon)?);
+                    let attributes = self.parse_attributes(scope)?;
                     let fn_tok = self.toks.step_expect(TokenType::Keyword(Keyword::Fn))?;
                     let mut func = self.parse_function_header(
+                        attributes,
                         fn_tok,
                         scope,
                         name_span,
@@ -868,9 +889,11 @@ impl<T: TreeToken> Parser<'_, T> {
             let name = p.toks.step_expect(TokenType::Ident)?;
             let name_span = name.span();
             let t_colon_colon = t(p.toks.step_expect(TokenType::DoubleColon)?);
+            let attributes = p.parse_attributes(scope)?;
             let fn_tok = p.toks.step_expect(TokenType::Keyword(Keyword::Fn))?;
             // TODO: figure out inherited generics here
-            let func = p.parse_function_def(fn_tok, scope, name_span, impl_generics.to_vec())?;
+            let func =
+                p.parse_function_def(attributes, fn_tok, scope, name_span, impl_generics.to_vec())?;
             let func_id = p.ast.function(func);
             functions.push(Method {
                 name: name_span,
@@ -884,7 +907,7 @@ impl<T: TreeToken> Parser<'_, T> {
 
     fn parse_inherent_impl(
         &mut self,
-        attributes: Box<[Attribute<T>]>,
+        attributes: Attributes<T>,
         t_impl: Token,
         outer_scope: ScopeId,
         type_generics: &[GenericDef<T>],
@@ -979,10 +1002,22 @@ impl<T: TreeToken> Parser<'_, T> {
     }
 
     fn parse_factor(&mut self, include_as: bool, scope: ScopeId) -> ParseResult<Expr<T>> {
+        let attributes = self.parse_attributes(scope)?;
         let first = self.toks.step();
+        let attributes_span = if attributes.is_empty() {
+            TSpan::EMPTY
+        } else {
+            TSpan::new(
+                attributes.first().unwrap().span.start,
+                attributes.last().unwrap().span.end,
+            )
+        };
+        let mut has_unused_attributes = !attributes.is_empty();
         let expr = match first.ty {
             TokenType::Keyword(Keyword::Fn) => {
-                let func = self.parse_function_def(first, scope, TSpan::EMPTY, Vec::new())?;
+                let func =
+                    self.parse_function_def(attributes, first, scope, TSpan::EMPTY, Vec::new())?;
+                has_unused_attributes = false;
                 Expr::Function {
                     id: self.ast.function(func),
                 }
@@ -1303,6 +1338,12 @@ impl<T: TreeToken> Parser<'_, T> {
                 return Err(unexpected(first, ExpectedTokens::Expr));
             }
         };
+        if has_unused_attributes {
+            return Err(CompileError {
+                err: Error::UnusedAttributes,
+                span: attributes_span,
+            });
+        }
         self.parse_factor_postfix(expr, include_as, scope)
     }
 

@@ -5,6 +5,8 @@
     clippy::wrong_self_convention
 )]
 
+/// Calling convention declarations
+pub mod callconv;
 /// typechecking and emitting hir from the ast
 pub mod check;
 /// the query-based compiler able to answer and cache various requests

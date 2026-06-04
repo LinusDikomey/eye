@@ -80,6 +80,7 @@ pub enum Error {
         expected: ExpectedTokens,
         found: TokenType,
     },
+    UnusedAttributes,
     UnknownIdent(Box<str>),
     UnknownType,
     UnknownFunction,
@@ -192,6 +193,7 @@ pub enum Error {
     NameExpected,
     BreakOutsideLoop,
     ContinueOutsideLoop,
+    InvalidCallConv,
 }
 impl Error {
     pub fn conclusion(&self) -> &'static str {
@@ -202,6 +204,7 @@ impl Error {
             Error::UnexpectedCharacters => "unexpected characters",
             Error::UnexpectedToken { .. } => "token was not expected here",
             Error::UnknownIdent(_) => "identifier not found",
+            Error::UnusedAttributes => "unused attributes",
             Error::UnknownType => "type not found",
             Error::UnknownFunction => "function not found",
             Error::UnknownVariable => "variable not found",
@@ -310,6 +313,7 @@ impl Error {
             Error::CantInferFromBody { .. } => "type can't be inferred from function body",
             Error::BreakOutsideLoop => "break used outside a loop",
             Error::ContinueOutsideLoop => "continue used outside a loop",
+            Error::InvalidCallConv => "invalid calling convention",
         }
     }
     pub fn details(&self) -> Option<String> {
@@ -429,6 +433,7 @@ impl Error {
                 }
                 ImplIncompatibility::Arg(i) => cformat!("argument #r<{i}> has the wrong type"), // TODO: concrete type mismatch errors
                 ImplIncompatibility::ReturnType => "the return type is different".to_owned(),
+                ImplIncompatibility::CallConv => "the calling convention is different".to_owned(),
             },
             Error::UnsatisfiedTraitBound { trait_name, ty } => {
                 cformat!("the type #m<{ty}> doesn't satisfy the #m<{trait_name}> trait")
@@ -664,4 +669,5 @@ pub enum ImplIncompatibility {
     ArgCount { base: u32, impl_: u32 },
     Arg(u32),
     ReturnType,
+    CallConv,
 }
