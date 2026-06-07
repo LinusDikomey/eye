@@ -1818,6 +1818,14 @@ impl TypeInfo {
         matches!(self, Self::Known(Type::Invalid))
     }
 
+    pub fn is_unit(&self) -> bool {
+        match self {
+            Self::Instance(BaseType::Tuple, elems) if elems.is_empty() => true,
+            Self::Known(Type::Unit) => true,
+            _ => false,
+        }
+    }
+
     pub fn as_base<'c>(
         &self,
         compiler: &'c Compiler,

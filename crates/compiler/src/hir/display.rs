@@ -45,9 +45,9 @@ impl<'a> fmt::Display for HirDisplay<'a> {
             Node::Invalid => {
                 cwrite!(f, "(#b<invalid>)")?;
             }
-            Node::Block(ids) => {
+            Node::Block(statements) => {
                 cwriteln!(f, "(")?;
-                for id in ids.iter() {
+                for id in statements.iter() {
                     indent_n(f, indent_count + 1)?;
                     cwriteln!(f, "{}", display_indented(id))?;
                 }

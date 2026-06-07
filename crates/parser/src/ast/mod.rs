@@ -60,6 +60,10 @@ pub struct ExprIds {
 }
 impl ExprIds {
     pub const EMPTY: Self = Self { idx: 0, count: 0 };
+
+    pub fn is_empty(&self) -> bool {
+        self.count == 0
+    }
 }
 impl Iterator for ExprIds {
     type Item = ExprId;

@@ -595,6 +595,10 @@ pub enum Type {
 }
 impl Type {
     pub const UNIT: Self = Self::Tuple(TypeIds::EMPTY);
+
+    pub fn is_unit(&self) -> bool {
+        matches!(self, Self::Tuple(elems) if elems.is_empty())
+    }
 }
 impl<T> PartialEq<T> for Type
 where

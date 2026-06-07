@@ -146,7 +146,7 @@ pub fn lower_hir(
     to_generate: &mut Vec<FunctionToGenerate>,
     generics: &[Type],
     params: ir::Refs,
-    return_ty: ir::TypeId,
+    return_ty_ir: ir::TypeId,
     callconv: CallConv,
 ) -> (ir::FunctionIr, ir::Types) {
     let unit_ty = builder.types.add(ir::Type::UNIT);
@@ -174,7 +174,7 @@ pub fn lower_hir(
                     instances,
                     to_generate,
                     ptr_ty,
-                    return_ty,
+                    return_ty_ir,
                 );
                 return Err(NoReturn);
             };
@@ -218,7 +218,7 @@ pub fn lower_hir(
         builder,
         vars: &mut vars,
         control_flow_stack: Vec::new(),
-        return_ty,
+        return_ty: return_ty_ir,
         ptr_ty,
         i1_ty,
     };
@@ -227,7 +227,11 @@ pub fn lower_hir(
     }
 
     let val = lower(&mut ctx, hir.root_id());
-    if let Ok(val) = val {
+    let returns_value = !ctx.builder.types[return_ty_ir].is_unit();
+    if let Ok(mut val) = val {
+        if !returns_value {
+            val = Ref::UNIT;
+        }
         ctx.builder.append(ctx.dialects.cf.Ret(val));
     }
     ctx.builder.finish_body()
@@ -424,11 +428,12 @@ fn lower_expr(ctx: &mut Ctx, node: NodeId) -> Result<ValueOrPlace> {
     } = ctx.dialects;
     let value = match &ctx.hir[node] {
         Node::Invalid => crash_point!(ctx),
-        Node::Block(items) => {
-            for item in items.iter() {
-                lower(ctx, item)?;
+        Node::Block(statements) => {
+            let mut last = Ref::UNIT;
+            for item in statements.iter() {
+                last = lower(ctx, item)?;
             }
-            Ref::UNIT
+            last
         }
         Node::Unit => Ref::UNIT,
         &Node::IntLiteral { val, ty } => {
@@ -814,6 +819,8 @@ fn lower_expr(ctx: &mut Ctx, node: NodeId) -> Result<ValueOrPlace> {
                 ctx.builder.append(cf.Ret(undef));
                 return Err(NoReturn);
             }
+            let ty = ctx.get_hir_type(resulting_ty)?;
+            let returns_value = !ty.is_unit();
             for i in 0..branch_count {
                 let is_last = i + 1 == branch_count;
                 let pattern = PatternId(pattern_index + i);
@@ -831,8 +838,12 @@ fn lower_expr(ctx: &mut Ctx, node: NodeId) -> Result<ValueOrPlace> {
                 let val = lower(ctx, branch);
                 if let Ok(val) = val {
                     let after = *after_block.get_or_insert_with(|| ctx.builder.create_block());
-                    ctx.builder
-                        .append(cf.Goto(BlockTarget(after, Cow::Borrowed(&[val]))));
+                    let arg: Cow<[ir::Ref]> = if returns_value {
+                        Cow::Borrowed(&[val])
+                    } else {
+                        Cow::Borrowed(&[])
+                    };
+                    ctx.builder.append(cf.Goto(BlockTarget(after, arg)));
                 }
                 if let Some(next) = next_block {
                     ctx.builder.begin_block(next, []);
@@ -840,10 +851,14 @@ fn lower_expr(ctx: &mut Ctx, node: NodeId) -> Result<ValueOrPlace> {
                     // after could still be none if all branches are noreturn, we don't have to
                     // create an after block at all in this case
                     if let Some(after) = after_block {
-                        let ty = ctx.get_hir_type(resulting_ty)?;
                         let ty = ctx.builder.types.add(ty);
-                        let args = ctx.builder.begin_block(after, [ty]);
-                        result_value = Some(args.nth(0));
+                        result_value = Some(if returns_value {
+                            let args = ctx.builder.begin_block(after, [ty]);
+                            args.nth(0)
+                        } else {
+                            ctx.builder.begin_block(after, []);
+                            Ref::UNIT
+                        });
                     }
                 }
             }
@@ -1413,6 +1428,8 @@ fn lower_if_else_branches(
     let Dialects { cf, .. } = ctx.dialects;
     // after_block is a closure that creates the block lazily and returns it
     let else_is_trival = matches!(ctx.hir[else_], Node::Unit);
+    let ty = ctx.get_hir_type(resulting_ty)?;
+    let returns_value = !ty.is_unit();
     let mut after_block = {
         let mut after_block = else_is_trival.then_some(else_block);
         move |ctx: &mut Ctx| {
@@ -1427,8 +1444,8 @@ fn lower_if_else_branches(
         lower(ctx, value).ok().map(|val| {
             let block = ctx.builder.current_block().unwrap();
             let after_block = after_block(ctx);
-            ctx.builder
-                .append(cf.Goto(BlockTarget(after_block, Cow::Borrowed(&[val]))));
+            let arg: Cow<[Ref]> = Cow::Borrowed(if returns_value { &[val] } else { &[] });
+            ctx.builder.append(cf.Goto(BlockTarget(after_block, arg)));
             block
         })
     };
@@ -1443,9 +1460,13 @@ fn lower_if_else_branches(
         _ => {
             let after_block = after_block(ctx);
             let ty = ctx.get_hir_type(resulting_ty)?;
-            let types = ctx.builder.types.add_multiple([ty]);
-            let args = ctx.builder.begin_block(after_block, types.iter());
-            Ok(args.nth(0))
+            Ok(if returns_value {
+                let types = ctx.builder.types.add_multiple([ty]);
+                ctx.builder.begin_block(after_block, types.iter()).nth(0)
+            } else {
+                ctx.builder.begin_block(after_block, []);
+                Ref::UNIT
+            })
         }
     }
 }

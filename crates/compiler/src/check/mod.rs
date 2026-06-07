@@ -176,7 +176,11 @@ pub fn check<H: Hooks>(
         checked_closures: Vec::new(),
         hooks,
     };
-    let root = check_ctx.check(expr, &mut scope, expected, expected, &mut false);
+    let root = if check_ctx.hir.types[expected].is_unit() {
+        check_ctx.check_statement(expr, &mut scope, expected, &mut false)
+    } else {
+        check_ctx.check(expr, &mut scope, expected, expected, &mut false)
+    };
     check_ctx.hooks.on_exit_scope(&mut scope);
     check_ctx.finish(root, param_vars, name)
 }

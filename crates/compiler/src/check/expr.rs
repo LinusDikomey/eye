@@ -30,6 +30,29 @@ impl<'a, H: Hooks> Ctx<'a, H> {
         return_ty: LocalTypeId,
         noreturn: &mut bool,
     ) -> Node {
+        self.check_inner(expr, scope, expected, return_ty, noreturn, true)
+    }
+
+    pub fn check_statement(
+        &mut self,
+        expr: ExprId,
+        scope: &mut LocalScope,
+        return_ty: LocalTypeId,
+        noreturn: &mut bool,
+    ) -> Node {
+        let statement_ty = self.hir.types.add_unknown();
+        self.check_inner(expr, scope, statement_ty, return_ty, noreturn, false)
+    }
+
+    pub fn check_inner(
+        &mut self,
+        expr: ExprId,
+        scope: &mut LocalScope,
+        expected: LocalTypeId,
+        return_ty: LocalTypeId,
+        noreturn: &mut bool,
+        used: bool,
+    ) -> Node {
         self.hooks
             .on_check_expr(expr, &mut self.hir, scope, expected, return_ty, noreturn);
         let ast = self.ast;
@@ -52,8 +75,13 @@ impl<'a, H: Hooks> Ctx<'a, H> {
                 };
                 let mut item_nodes = self.hir.add_invalid_nodes(items.count);
                 for ((item, r), i) in items.into_iter().zip(item_nodes.iter()).zip(0..) {
-                    let statement_ty = self.hir.types.add_unknown();
-                    let node = self.check(item, &mut scope, statement_ty, return_ty, noreturn);
+                    let is_last = i as usize + 1 == items.len();
+                    let node = if is_last && used {
+                        // return last expr out of a block in expr position
+                        self.check(item, &mut scope, expected, return_ty, noreturn)
+                    } else {
+                        self.check_statement(item, &mut scope, return_ty, noreturn)
+                    };
                     self.hir.modify_node(r, node);
                     if *noreturn {
                         // just shorten the node list. We waste the remaining nodes but this is not the
@@ -66,7 +94,7 @@ impl<'a, H: Hooks> Ctx<'a, H> {
                         break;
                     }
                 }
-                if !*noreturn {
+                if !*noreturn && (!used || items.is_empty()) {
                     self.specify(expected, TypeInfo::UNIT, |ast| ast[expr].span(ast));
                 }
                 self.hooks.on_exit_scope(&mut scope);
@@ -495,7 +523,7 @@ impl<'a, H: Hooks> Ctx<'a, H> {
                 self.specify(expected, TypeInfo::UNIT, |ast| ast[expr].span(ast));
                 let bool_ty = self.hir.types.add(self.primitives().bool_info());
                 let cond = self.check(cond, scope, bool_ty, return_ty, noreturn);
-                let then = self.check(then, scope, expected, return_ty, &mut false);
+                let then = self.check_statement(then, scope, return_ty, &mut false);
                 Node::IfElse {
                     cond: self.hir.add(cond),
                     then: self.hir.add(then),
@@ -509,9 +537,18 @@ impl<'a, H: Hooks> Ctx<'a, H> {
                 let bool_ty = self.hir.types.add(self.primitives().bool_info());
                 let cond = self.check(cond, scope, bool_ty, return_ty, noreturn);
                 let mut then_noreturn = false;
-                let then = self.check(then, scope, expected, return_ty, &mut then_noreturn);
                 let mut else_noreturn = false;
-                let else_ = self.check(else_, scope, expected, return_ty, &mut else_noreturn);
+                let (then, else_) = if used {
+                    (
+                        self.check(then, scope, expected, return_ty, &mut then_noreturn),
+                        self.check(else_, scope, expected, return_ty, &mut else_noreturn),
+                    )
+                } else {
+                    (
+                        self.check_statement(then, scope, return_ty, &mut then_noreturn),
+                        self.check_statement(else_, scope, return_ty, &mut else_noreturn),
+                    )
+                };
                 if then_noreturn && else_noreturn {
                     *noreturn = true;
                 }
@@ -540,7 +577,11 @@ impl<'a, H: Hooks> Ctx<'a, H> {
                     // TODO: Error::ConditionIsAlwaysTrue
                     // maybe even defer this exhaustion to check for this warning in non-trivial case
                 }
-                let then = self.check(then, &mut body_scope, expected, return_ty, &mut false);
+                let then = if used {
+                    self.check(then, &mut body_scope, expected, return_ty, &mut false)
+                } else {
+                    self.check_statement(then, &mut body_scope, return_ty, &mut false)
+                };
                 Node::IfPatElse {
                     pat: self.hir.add_pattern(pat),
                     val: self.hir.add(value),
@@ -573,21 +614,30 @@ impl<'a, H: Hooks> Ctx<'a, H> {
                 let pat = self.hir.add_pattern(pat);
                 let val = self.hir.add(value);
                 let mut then_noreturn = false;
-                let then = self.check(
-                    then,
-                    &mut body_scope,
-                    expected,
-                    return_ty,
-                    &mut then_noreturn,
-                );
                 let mut else_noreturn = false;
-                let else_ = self.check(
-                    else_,
-                    &mut body_scope,
-                    expected,
-                    return_ty,
-                    &mut else_noreturn,
-                );
+                let (then, else_) = if used {
+                    (
+                        self.check(
+                            then,
+                            &mut body_scope,
+                            expected,
+                            return_ty,
+                            &mut then_noreturn,
+                        ),
+                        self.check(
+                            else_,
+                            &mut body_scope,
+                            expected,
+                            return_ty,
+                            &mut else_noreturn,
+                        ),
+                    )
+                } else {
+                    (
+                        self.check_statement(then, &mut body_scope, return_ty, &mut then_noreturn),
+                        self.check_statement(then, &mut body_scope, return_ty, &mut else_noreturn),
+                    )
+                };
                 if then_noreturn && else_noreturn {
                     *noreturn = true;
                 }
@@ -621,13 +671,22 @@ impl<'a, H: Hooks> Ctx<'a, H> {
                     self.hir
                         .modify_pattern(hir::PatternId(patterns.index + i), pat);
                     let mut branch_noreturn = false;
-                    let branch = self.check(
-                        branch,
-                        &mut branch_scope,
-                        expected,
-                        return_ty,
-                        &mut branch_noreturn,
-                    );
+                    let branch = if used {
+                        self.check(
+                            branch,
+                            &mut branch_scope,
+                            expected,
+                            return_ty,
+                            &mut branch_noreturn,
+                        )
+                    } else {
+                        self.check_statement(
+                            branch,
+                            &mut branch_scope,
+                            return_ty,
+                            &mut branch_noreturn,
+                        )
+                    };
                     if !branch_noreturn {
                         all_branches_noreturn = false;
                     }
