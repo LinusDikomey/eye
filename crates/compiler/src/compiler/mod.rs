@@ -1344,6 +1344,7 @@ impl<T> Resolvable<T> {
 id::id!(VarId);
 id::id!(CaptureId);
 
+#[derive(Debug)]
 pub enum LocalScopeParent<'a> {
     Some(&'a LocalScope<'a>),
     ClosedOver {
@@ -1355,6 +1356,7 @@ pub enum LocalScopeParent<'a> {
     None,
 }
 
+#[derive(Debug)]
 pub struct LocalScope<'p> {
     pub parent: LocalScopeParent<'p>,
     pub variables: DHashMap<Box<str>, VarId>,
@@ -1440,7 +1442,7 @@ impl<'p> LocalScope<'p> {
     pub fn get_innermost_static_scope(&self) -> ScopeId {
         let mut current_local = self;
         loop {
-            if let Some(static_scope) = self.static_scope {
+            if let Some(static_scope) = current_local.static_scope {
                 return static_scope;
             }
             // a local scope has to have a parent scope if it doesn't have a static scope
@@ -1451,6 +1453,19 @@ impl<'p> LocalScope<'p> {
                 LocalScopeParent::None => unreachable!(),
             };
         }
+    }
+
+    pub fn child(&self) -> LocalScope<'_> {
+        LocalScope {
+            parent: LocalScopeParent::Some(self),
+            variables: DHashMap::default(),
+            module: self.module,
+            static_scope: None,
+        }
+    }
+
+    pub fn exit<H: Hooks>(mut self, hooks: &mut H) {
+        hooks.on_exit_scope(&mut self);
     }
 }
 

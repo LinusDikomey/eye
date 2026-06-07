@@ -1,4 +1,3 @@
-use dmap::DHashMap;
 use error::{Error, span::TSpan};
 
 use crate::{
@@ -97,7 +96,7 @@ impl<'a, H: Hooks> Ctx<'a, H> {
                 if !*noreturn && (!used || items.is_empty()) {
                     self.specify(expected, TypeInfo::UNIT, |ast| ast[expr].span(ast));
                 }
-                self.hooks.on_exit_scope(&mut scope);
+                scope.exit(self.hooks);
                 Node::Block(item_nodes)
             }
             &Expr::Nested { inner, .. } => self.check(inner, scope, expected, return_ty, noreturn),
@@ -523,7 +522,9 @@ impl<'a, H: Hooks> Ctx<'a, H> {
                 self.specify(expected, TypeInfo::UNIT, |ast| ast[expr].span(ast));
                 let bool_ty = self.hir.types.add(self.primitives().bool_info());
                 let cond = self.check(cond, scope, bool_ty, return_ty, noreturn);
-                let then = self.check_statement(then, scope, return_ty, &mut false);
+                let mut then_scope = scope.child();
+                let then = self.check_statement(then, &mut then_scope, return_ty, &mut false);
+                then_scope.exit(self.hooks);
                 Node::IfElse {
                     cond: self.hir.add(cond),
                     then: self.hir.add(then),
@@ -538,17 +539,33 @@ impl<'a, H: Hooks> Ctx<'a, H> {
                 let cond = self.check(cond, scope, bool_ty, return_ty, noreturn);
                 let mut then_noreturn = false;
                 let mut else_noreturn = false;
-                let (then, else_) = if used {
-                    (
-                        self.check(then, scope, expected, return_ty, &mut then_noreturn),
-                        self.check(else_, scope, expected, return_ty, &mut else_noreturn),
+                let mut branch_scope = scope.child();
+                let then = if used {
+                    self.check(
+                        then,
+                        &mut branch_scope,
+                        expected,
+                        return_ty,
+                        &mut then_noreturn,
                     )
                 } else {
-                    (
-                        self.check_statement(then, scope, return_ty, &mut then_noreturn),
-                        self.check_statement(else_, scope, return_ty, &mut else_noreturn),
-                    )
+                    self.check_statement(then, &mut branch_scope, return_ty, &mut then_noreturn)
                 };
+                self.hooks.on_exit_scope(&mut branch_scope);
+                branch_scope.variables.clear();
+                let else_ = if used {
+                    self.check(
+                        else_,
+                        &mut branch_scope,
+                        expected,
+                        return_ty,
+                        &mut else_noreturn,
+                    )
+                } else {
+                    self.check_statement(else_, &mut branch_scope, return_ty, &mut else_noreturn)
+                };
+                branch_scope.exit(self.hooks);
+
                 if then_noreturn && else_noreturn {
                     *noreturn = true;
                 }
@@ -565,23 +582,21 @@ impl<'a, H: Hooks> Ctx<'a, H> {
                 self.specify(expected, TypeInfo::UNIT, |ast| ast[expr].span(ast));
                 let pattern_ty = self.hir.types.add_unknown();
                 let value = self.check(value, scope, pattern_ty, return_ty, noreturn);
-                let mut body_scope = LocalScope {
-                    module: scope.module,
-                    parent: LocalScopeParent::Some(&*scope),
-                    static_scope: None,
-                    variables: dmap::new(),
-                };
+                let mut cond_scope = scope.child();
                 let mut exhaustion = Exhaustion::None;
-                let pat = pattern::check(self, &mut body_scope, &mut exhaustion, pat, pattern_ty);
+                let pat = pattern::check(self, &mut cond_scope, &mut exhaustion, pat, pattern_ty);
                 if exhaustion.is_trivially_exhausted() {
                     // TODO: Error::ConditionIsAlwaysTrue
                     // maybe even defer this exhaustion to check for this warning in non-trivial case
                 }
+                let mut then_scope = cond_scope.child();
                 let then = if used {
-                    self.check(then, &mut body_scope, expected, return_ty, &mut false)
+                    self.check(then, &mut then_scope, expected, return_ty, &mut false)
                 } else {
-                    self.check_statement(then, &mut body_scope, return_ty, &mut false)
+                    self.check_statement(then, &mut then_scope, return_ty, &mut false)
                 };
+                then_scope.exit(self.hooks);
+                cond_scope.exit(self.hooks);
                 Node::IfPatElse {
                     pat: self.hir.add_pattern(pat),
                     val: self.hir.add(value),
@@ -599,45 +614,48 @@ impl<'a, H: Hooks> Ctx<'a, H> {
             } => {
                 let pattern_ty = self.hir.types.add_unknown();
                 let value = self.check(value, scope, pattern_ty, return_ty, noreturn);
-                let mut body_scope = LocalScope {
-                    module: scope.module,
-                    parent: LocalScopeParent::Some(&*scope),
-                    static_scope: None,
-                    variables: dmap::new(),
-                };
+                let mut cond_scope = scope.child();
                 let mut exhaustion = Exhaustion::None;
-                let pat = pattern::check(self, &mut body_scope, &mut exhaustion, pat, pattern_ty);
+                let pat = pattern::check(self, &mut cond_scope, &mut exhaustion, pat, pattern_ty);
                 if exhaustion.is_trivially_exhausted() {
                     // TODO: Error::ConditionIsAlwaysTrue
                     // maybe even defer this exhaustion to check for this warning in non-trivial case
                 }
                 let pat = self.hir.add_pattern(pat);
                 let val = self.hir.add(value);
+
+                // scope is reused for both branches
+                let mut branch_scope = cond_scope.child();
                 let mut then_noreturn = false;
-                let mut else_noreturn = false;
-                let (then, else_) = if used {
-                    (
-                        self.check(
-                            then,
-                            &mut body_scope,
-                            expected,
-                            return_ty,
-                            &mut then_noreturn,
-                        ),
-                        self.check(
-                            else_,
-                            &mut body_scope,
-                            expected,
-                            return_ty,
-                            &mut else_noreturn,
-                        ),
+                let then = if used {
+                    self.check(
+                        then,
+                        &mut branch_scope,
+                        expected,
+                        return_ty,
+                        &mut then_noreturn,
                     )
                 } else {
-                    (
-                        self.check_statement(then, &mut body_scope, return_ty, &mut then_noreturn),
-                        self.check_statement(then, &mut body_scope, return_ty, &mut else_noreturn),
-                    )
+                    self.check_statement(then, &mut branch_scope, return_ty, &mut then_noreturn)
                 };
+                self.hooks.on_exit_scope(&mut branch_scope);
+                branch_scope.variables.clear();
+
+                let mut else_noreturn = false;
+                let else_ = if used {
+                    self.check(
+                        else_,
+                        &mut branch_scope,
+                        expected,
+                        return_ty,
+                        &mut else_noreturn,
+                    )
+                } else {
+                    self.check_statement(else_, &mut branch_scope, return_ty, &mut else_noreturn)
+                };
+                branch_scope.exit(self.hooks);
+                cond_scope.exit(self.hooks);
+
                 if then_noreturn && else_noreturn {
                     *noreturn = true;
                 }
@@ -658,14 +676,9 @@ impl<'a, H: Hooks> Ctx<'a, H> {
                 let patterns = self.hir.add_invalid_patterns(branch_count);
                 let branch_nodes = self.hir.add_invalid_nodes(branch_count);
                 let mut all_branches_noreturn = true;
-                let mut branch_scope = LocalScope {
-                    module: scope.module,
-                    parent: LocalScopeParent::Some(&*scope),
-                    variables: DHashMap::default(),
-                    static_scope: None,
-                };
+                // scope is reused for all branches
+                let mut branch_scope = scope.child();
                 for ((pat, branch), i) in branches.into_iter().zip(0..) {
-                    branch_scope.variables.clear();
                     let pat =
                         pattern::check(self, &mut branch_scope, &mut exhaustion, pat, matched_ty);
                     self.hir
@@ -692,6 +705,8 @@ impl<'a, H: Hooks> Ctx<'a, H> {
                     }
                     self.hir
                         .modify_node(hir::NodeId(branch_nodes.index + i), branch);
+                    self.hooks.on_exit_scope(&mut branch_scope);
+                    branch_scope.variables.clear();
                 }
                 if all_branches_noreturn {
                     *noreturn = true;
@@ -720,12 +735,7 @@ impl<'a, H: Hooks> Ctx<'a, H> {
                 self.control_flow_stack.push(());
                 let value_ty = self.hir.types.add_unknown();
                 let val = self.check(val, scope, value_ty, return_ty, noreturn);
-                let mut body_scope = LocalScope {
-                    module: scope.module,
-                    parent: LocalScopeParent::Some(&*scope),
-                    variables: dmap::new(),
-                    static_scope: None,
-                };
+                let mut body_scope = scope.child();
                 let mut exhaustion = Exhaustion::None;
                 let pat = pattern::check(self, &mut body_scope, &mut exhaustion, pat, value_ty);
                 let pat = self.hir.add_pattern(pat);
@@ -763,12 +773,7 @@ impl<'a, H: Hooks> Ctx<'a, H> {
                     val: self.hir.add(iter),
                 };
 
-                let mut body_scope = LocalScope {
-                    module: scope.module,
-                    parent: LocalScopeParent::Some(&*scope),
-                    variables: dmap::new(),
-                    static_scope: None,
-                };
+                let mut body_scope = scope.child();
                 let option_item_ty = self
                     .hir
                     .types

@@ -345,7 +345,7 @@ pub enum Node {
     Continue(u32),
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum Var {
     Local(LocalTypeId),
     Capture {
