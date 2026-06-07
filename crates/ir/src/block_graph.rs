@@ -98,6 +98,10 @@ impl<B: Blocks> BlockGraph<B> {
         self.preds[block.idx()].iter().copied()
     }
 
+    pub fn has_any_preds(&self, block: B::Block) -> bool {
+        !self.preds[block.idx()].is_empty()
+    }
+
     pub fn dominators(&self, block: B::Block) -> impl Iterator<Item = B::Block> + use<'_, B> {
         self.dominators[block.idx()].iter().copied()
     }

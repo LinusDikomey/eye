@@ -214,10 +214,16 @@ unsafe fn build_func(
 
     let mut instructions = vec![ptr::null_mut(); ir.inst_count() as usize];
 
+    let block_graph = ir::BlockGraph::calculate(ir, env);
+
     // create an LLVM block for each block while also creating a Phi node for each incoming block arg.
     let blocks: Vec<_> = ir
         .block_ids()
         .map(|block| {
+            if block != BlockId::ENTRY && !block_graph.has_any_preds(block) {
+                // skip generation of unused blocks
+                return ptr::null_mut();
+            }
             let llvm_block = core::LLVMAppendBasicBlockInContext(ctx, llvm_func, NONE);
 
             let block_args = ir.get_block_args(block);
@@ -242,8 +248,6 @@ unsafe fn build_func(
             llvm_block
         })
         .collect();
-
-    let block_graph = ir::BlockGraph::calculate(ir, env);
 
     let i1 = LLVMInt1TypeInContext(ctx);
 
