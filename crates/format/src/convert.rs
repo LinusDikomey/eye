@@ -259,16 +259,28 @@ impl<'a> Converter<'a> {
                 group.push(Cond::Broken.then("\n"));
                 self.close_group(nodes, group, t_rbracket);
             }
-            &Expr::Tuple {
+            Expr::Tuple {
                 span,
                 t_lparen,
                 elements,
+                named_elements,
                 t_rparen,
             } => {
-                self.args_with_extra(nodes, t_lparen, t_rparen, elements, |s, nodes, _| {
-                    if elements.len() == 1 {
+                self.args_with_extra(nodes, *t_lparen, *t_rparen, *elements, |s, nodes, first| {
+                    if elements.len() == 1 && named_elements.is_empty() {
                         nodes.push(Node::Text(",".into()));
                         nodes.push(Cond::Broken.then("\n"));
+                    } else {
+                        for &(name, arg) in named_elements {
+                            if !*first {
+                                nodes.push(Cond::Flat.then(", "));
+                                nodes.push(Cond::Broken.then("\n"));
+                            }
+                            *first = false;
+                            s.tok_span(nodes, name);
+                            nodes.push(": ".into());
+                            s.expr(nodes, arg);
+                        }
                     }
                 });
             }
