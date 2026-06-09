@@ -216,6 +216,7 @@ pub fn match_instance(
         TypeFull::FunctionItem { .. } => {
             unreachable!("FunctionItems are un-nameable and shouldn't occur in impls")
         }
+        TypeFull::Tuple { .. } => todo!("match tuple impls"),
         TypeFull::Const(implemented_n) => {
             let TypeFull::Const(n) = types.lookup(ty) else {
                 return false;

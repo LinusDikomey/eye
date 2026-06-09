@@ -1,3 +1,4 @@
+use core::{convert::Into, iter::Iterator};
 use std::{
     cell::RefCell,
     fmt,
@@ -25,6 +26,7 @@ pub struct Types {
     instances: SegmentList<(u32, Box<[Type]>)>,
     bases: SegmentList<ResolvableTypeDef>,
     function_items: SegmentList<((ModuleId, FunctionId), Box<[Type]>)>,
+    tuples: SegmentList<(Box<[Type]>, Box<[(Box<str>, Type)]>)>,
     consts: SegmentList<u64>,
 }
 impl Types {
@@ -36,6 +38,7 @@ impl Types {
         let instances = SegmentList::new();
         let bases = SegmentList::new();
         let function_items = SegmentList::new();
+        let tuples = SegmentList::new();
         let consts = SegmentList::new();
 
         for (builtin, i) in BuiltinType::VARIANTS.into_iter().zip(0..) {
@@ -75,6 +78,7 @@ impl Types {
                         &indices,
                         &instances,
                         &function_items,
+                        &tuples,
                         &consts,
                         ty,
                     ))
@@ -90,6 +94,7 @@ impl Types {
             instances,
             bases,
             function_items,
+            tuples: SegmentList::new(),
             consts,
         }
     }
@@ -111,6 +116,13 @@ impl Types {
                     Tag::FunctionItem,
                     self.function_items.add((function, generics.into())),
                 ),
+                TypeFull::Tuple {
+                    members,
+                    named_members,
+                } => (
+                    Tag::Tuple,
+                    self.tuples.add((members.into(), named_members.into())),
+                ),
                 TypeFull::Generic(i) => (Tag::Generic, i as u32),
                 TypeFull::Const(value) => (Tag::Const, self.consts.add(value)),
             };
@@ -123,6 +135,7 @@ impl Types {
                     &self.indices,
                     &self.instances,
                     &self.function_items,
+                    &self.tuples,
                     &self.consts,
                     ty,
                 ))
@@ -137,6 +150,7 @@ impl Types {
             &self.indices,
             &self.instances,
             &self.function_items,
+            &self.tuples,
             &self.consts,
             ty,
         )
@@ -147,6 +161,7 @@ impl Types {
         indices: &'a SegmentList<u32>,
         instances: &'a SegmentList<(u32, Box<[Type]>)>,
         function_items: &'a SegmentList<((ModuleId, FunctionId), Box<[Type]>)>,
+        tuples: &'a SegmentList<(Box<[Type]>, Box<[(Box<str>, Type)]>)>,
         consts: &'a SegmentList<u64>,
         ty: Type,
     ) -> TypeFull<'a> {
@@ -159,6 +174,13 @@ impl Types {
             Tag::FunctionItem => {
                 let (function, ref generics) = *function_items.get(idx);
                 TypeFull::FunctionItem { function, generics }
+            }
+            Tag::Tuple => {
+                let (members, named_members) = tuples.get(idx);
+                TypeFull::Tuple {
+                    members,
+                    named_members,
+                }
             }
             Tag::Generic => TypeFull::Generic(idx as u8),
             Tag::Const => TypeFull::Const(*consts.get(idx)),
@@ -239,6 +261,19 @@ impl Types {
                     generics: &item_generics,
                 })
             }
+            TypeFull::Tuple {
+                members,
+                named_members,
+            } => self.intern(TypeFull::Tuple {
+                members: &members
+                    .iter()
+                    .map(|&ty| self.instantiate(ty, generics))
+                    .collect::<Box<[Type]>>(),
+                named_members: &named_members
+                    .iter()
+                    .map(|(name, ty)| (name.clone(), self.instantiate(*ty, generics)))
+                    .collect::<Box<[(Box<str>, Type)]>>(),
+            }),
             TypeFull::Generic(i) => generics[usize::from(i)],
             TypeFull::Const(_) => ty,
         }
@@ -313,6 +348,33 @@ impl<'a> fmt::Display for TypeDisplay<'a> {
                 )?;
                 self.write_generics(f, generics)
             }
+            TypeFull::Tuple {
+                members,
+                named_members,
+            } => {
+                cwrite!(f, "(")?;
+                let mut first = true;
+                for &member in members {
+                    if first {
+                        first = false;
+                    } else {
+                        cwrite!(f, ", ")?;
+                    }
+                    cwrite!(f, "{}", self.types.display(member, self.generics))?;
+                }
+                for (name, member) in named_members {
+                    if first {
+                        first = false;
+                    } else {
+                        cwrite!(f, ", ")?;
+                    }
+                    cwrite!(f, "{name}: {}", self.types.display(*member, self.generics))?;
+                }
+                if members.len() == 1 && named_members.is_empty() {
+                    cwrite!(f, ",")?;
+                }
+                cwrite!(f, ")")
+            }
             TypeFull::Generic(i) => write!(f, "{}", self.generics.get_name(i)),
             TypeFull::Const(n) => write!(f, "{n}"),
         }
@@ -349,6 +411,7 @@ pub enum Tag {
     #[default]
     Instance,
     FunctionItem,
+    Tuple,
     Generic,
     Const,
 }

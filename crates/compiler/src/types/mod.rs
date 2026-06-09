@@ -163,6 +163,10 @@ pub enum TypeFull<'a> {
         function: (ModuleId, FunctionId),
         generics: &'a [Type],
     },
+    Tuple {
+        members: &'a [Type],
+        named_members: &'a [(Box<str>, Type)],
+    },
     Generic(u8),
     Const(u64),
 }

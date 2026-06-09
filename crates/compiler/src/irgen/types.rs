@@ -118,6 +118,22 @@ pub fn get(
                 }
             }
         }
+        TypeFull::Tuple {
+            members,
+            named_members,
+        } => {
+            let refs = ir_types
+                .add_multiple((0..members.len() + named_members.len()).map(|_| ir::Type::UNIT));
+            for (r, member) in refs.iter().zip(
+                members
+                    .iter()
+                    .copied()
+                    .chain(named_members.iter().map(|(_, ty)| *ty)),
+            ) {
+                ir_types[r] = get(compiler, ir, ir_types, member, instance)?;
+            }
+            ir::Type::Tuple(refs)
+        }
         TypeFull::Generic(i) => get(compiler, ir, ir_types, instance[i], instance.outer())?,
         TypeFull::FunctionItem { .. } | TypeFull::Const(_) => ir::Type::UNIT,
     })

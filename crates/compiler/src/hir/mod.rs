@@ -280,7 +280,8 @@ pub enum Node {
     Element {
         tuple_value: NodeId,
         index: u32,
-        elem_types: LocalTypeIds,
+        // tuple-like type: either a tuple or struct
+        tuple_type: LocalTypeId,
     },
     ArrayIndex {
         array: NodeId,

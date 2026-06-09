@@ -1,6 +1,7 @@
 pub mod builtins;
 mod display;
 
+use core::iter::Iterator;
 use std::{
     cell::{OnceCell, RefCell},
     collections::VecDeque,
@@ -36,7 +37,9 @@ use crate::{
     hir::{Hir, Var},
     irgen,
     types::{BaseType, BuiltinType, TypeFull, Types},
-    typing::{Bound, LocalOrGlobalInstance, LocalTypeId, LocalTypeIds, TypeInfo, TypeTable},
+    typing::{
+        Bound, LocalOrGlobalInstance, LocalTypeId, LocalTypeIds, TypeInfo, TypeInfoOrIdx, TypeTable,
+    },
 };
 
 use builtins::Builtins;
@@ -855,6 +858,14 @@ impl Compiler {
                     }
                 }
             }
+            TypeFull::Tuple {
+                members,
+                named_members,
+            } => members
+                .iter()
+                .copied()
+                .chain(named_members.iter().map(|(_, ty)| *ty))
+                .try_any(|ty| self.is_uninhabited(ty, instance))?,
             // if no instance is provided, the type is not known to be uninhabited
             TypeFull::Generic(i) => {
                 if instance.is_empty() {
@@ -1956,24 +1967,14 @@ impl ResolvedStructDef {
         ctx: &mut crate::check::Ctx<H>,
         generics: LocalTypeIds,
         name: &str,
-    ) -> (Option<(u32, LocalTypeId)>, LocalTypeIds) {
-        // PERF: Every time we index a struct, all fields are mapped to TypeInfo's
-        // again. This could be improved by caching structs somehow ?? or by putting
-        // the fields along the TypeDef (easier but would make TypeDef very large,
-        // similar problem for enums and extra solution required).
-        let elem_types = ctx
-            .hir
-            .types
-            .add_multiple_unknown((self.fields.len() + self.named_fields.len()) as _);
-        let mut indexed_field = None;
-        for (((field_name, ty), index), r) in self.all_fields().zip(0..).zip(elem_types.iter()) {
+    ) -> Option<(u32, TypeInfoOrIdx)> {
+        for ((field_name, ty), index) in self.all_fields().zip(0..) {
             let ty = ctx.from_type_instance(ty, generics);
             if field_name == name {
-                indexed_field = Some((index, r));
+                return Some((index, ty));
             }
-            ctx.hir.types.replace(r, ty);
         }
-        (indexed_field, elem_types)
+        None
     }
 }
 

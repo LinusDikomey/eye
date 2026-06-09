@@ -1,3 +1,5 @@
+use std::iter;
+
 use error::{Error, span::TSpan};
 
 use crate::{
@@ -7,10 +9,11 @@ use crate::{
         Def, LocalItem, LocalScope, LocalScopeParent, ModuleSpan, ResolvedTypeContent, builtins,
     },
     eval::ConstValueId,
-    hir::{self, Comparison, LValue, Logic, Node, NodeIds, Pattern},
+    hir::{self, Comparison, LValue, Logic, Node, Pattern},
     types::{BaseType, TypeFull, Types},
     typing::{
-        Bound, Bounds, LocalTypeId, LocalTypeIds, OrdinalType, TypeInfo, TypeInfoOrIdx, TypeTable,
+        Bound, Bounds, LocalTypeId, LocalTypeIds, NamedMember, OrdinalType, TypeInfo,
+        TypeInfoOrIdx, TypeTable,
     },
 };
 use parser::ast::{
@@ -72,7 +75,7 @@ impl<'a, H: Hooks> Ctx<'a, H> {
                     module,
                     static_scope: Some(static_scope),
                 };
-                let mut item_nodes = self.hir.add_invalid_nodes(items.count);
+                let item_nodes = self.hir.add_invalid_nodes(items.count);
                 for ((item, r), i) in items.into_iter().zip(item_nodes.iter()).zip(0..) {
                     let is_last = i as usize + 1 == items.len();
                     let node = if is_last && used {
@@ -82,16 +85,6 @@ impl<'a, H: Hooks> Ctx<'a, H> {
                         self.check_statement(item, &mut scope, return_ty, noreturn)
                     };
                     self.hir.modify_node(r, node);
-                    if *noreturn {
-                        // just shorten the node list. We waste the remaining nodes but this is not the
-                        // common case. Usually, there is no unreachable code in blocks.
-                        // TODO: unreachable code warning for the rest of the lines
-                        item_nodes = NodeIds {
-                            index: item_nodes.index,
-                            count: i + 1,
-                        };
-                        break;
-                    }
                 }
                 if !*noreturn && (!used || items.is_empty()) {
                     self.specify(expected, TypeInfo::UNIT, |ast| ast[expr].span(ast));
@@ -156,7 +149,6 @@ impl<'a, H: Hooks> Ctx<'a, H> {
                 let nodes = self.hir.add_invalid_nodes(elements.count);
                 for (node, elem) in nodes.iter().zip(elements) {
                     let elem_node = self.check(elem, scope, elem_ty, return_ty, noreturn);
-                    // TODO: can we return early here in case of noreturn?
                     self.hir.modify_node(node, elem_node);
                 }
                 Node::ArrayLiteral {
@@ -164,20 +156,65 @@ impl<'a, H: Hooks> Ctx<'a, H> {
                     array_ty: expected,
                 }
             }
-            Expr::Tuple { span, elements, .. } => {
-                let elem_types =
-                    self.specify_base(expected, BaseType::Tuple, elements.count, |_| *span);
-                let elems = self.hir.add_invalid_nodes(elements.count);
+            Expr::Tuple {
+                span,
+                elements,
+                named_elements,
+                ..
+            } => {
+                // TODO: check for existing tuple/struct type to avoid creating additional types/members
+
+                // track a list of indices that the named elements are sorted by
+                // this needs 2 additional allocations but I don't have a better solution right now
+                let mut named_indices: Box<[u32]> = (0..named_elements.len() as u32).collect();
+                named_indices.sort_unstable_by_key(|&i| &self.ast[named_elements[i as usize].0]);
+                let mut named_permutation: Box<[u32]> =
+                    iter::repeat_n(0, named_elements.len()).collect();
+                for (&source, new_index) in named_indices.iter().zip(0..) {
+                    named_permutation[source as usize] = new_index;
+                }
+                let named_count = named_elements.len() as u32;
+                let total_count = elements.count + named_count;
+                let elem_types = self.hir.types.add_multiple_unknown(total_count);
+                let nodes = self.hir.add_invalid_nodes(total_count);
                 for ((value, ty), node_id) in elements
                     .into_iter()
                     .zip(elem_types.iter())
-                    .zip(elems.iter())
+                    .zip(nodes.iter())
                 {
                     let node = self.check(value, scope, ty, return_ty, noreturn);
-                    // TODO: can we return early here in case of noreturn?
                     self.hir.modify_node(node_id, node);
                 }
-                Node::TupleLiteral { elems, elem_types }
+                let named_nodes = nodes.skip(elements.count);
+                let named_types = elem_types.skip(elements.count);
+                let named_members = self.hir.types.add_missing_named_members(named_count);
+                for (i, &(name, value)) in named_elements.iter().enumerate() {
+                    let named_index = named_permutation[i];
+                    let ty = named_types.nth(named_index).unwrap();
+                    let node = self.check(value, scope, ty, return_ty, noreturn);
+                    self.hir
+                        .modify_node(named_nodes.nth(named_index).unwrap(), node);
+
+                    self.hir.types[named_members.nth(named_index).unwrap()] = NamedMember {
+                        name: self.ast[name].into(),
+                        ty,
+                    };
+                }
+                self.specify(
+                    expected,
+                    TypeInfo::Tuple {
+                        members: LocalTypeIds {
+                            idx: elem_types.count,
+                            count: elements.count,
+                        },
+                        named_members,
+                    },
+                    |_| *span,
+                );
+                Node::TupleLiteral {
+                    elems: nodes,
+                    elem_types,
+                }
             }
             &Expr::EnumLiteral {
                 span, ident, args, ..
@@ -454,16 +491,19 @@ impl<'a, H: Hooks> Ctx<'a, H> {
                 }
             }
             &Expr::TupleIdx { left, idx, .. } => {
-                let tuple_ty = self.hir.types.add_unknown(); // add Size::AtLeast tuple here maybe
-                let tuple_value = self.check(left, scope, tuple_ty, return_ty, noreturn);
-                match self.hir.types[tuple_ty] {
-                    TypeInfo::Instance(BaseType::Tuple, elem_types) => {
-                        return if let Some(elem_ty) = elem_types.nth(idx) {
-                            self.unify(expected, elem_ty, |ast| ast[expr].span(ast));
+                let tuple_type = self.hir.types.add_unknown(); // add Size::AtLeast tuple here maybe
+                let tuple_value = self.check(left, scope, tuple_type, return_ty, noreturn);
+                match self.hir.types[tuple_type] {
+                    TypeInfo::Tuple {
+                        members,
+                        named_members: _,
+                    } => {
+                        return if let Some(member) = members.nth(idx) {
+                            self.unify(expected, member, |ast| ast[expr].span(ast));
                             Node::Element {
                                 tuple_value: self.hir.add(tuple_value),
                                 index: idx,
-                                elem_types,
+                                tuple_type,
                             }
                         } else {
                             self.emit(Error::TupleIndexOutOfRange.at_span(self.span(expr)));
@@ -479,14 +519,10 @@ impl<'a, H: Hooks> Ctx<'a, H> {
                                 self.specify(expected, TypeInfo::Known(elem_ty), |ast| {
                                     ast[expr].span(ast)
                                 });
-                                let elem_types = self
-                                    .hir
-                                    .types
-                                    .add_multiple(elem_types.iter().copied().map(TypeInfo::Known));
                                 Node::Element {
                                     tuple_value: self.hir.add(tuple_value),
                                     index: idx,
-                                    elem_types,
+                                    tuple_type,
                                 }
                             } else {
                                 self.emit(Error::TupleIndexOutOfRange.at_span(self.span(expr)));
@@ -1125,8 +1161,10 @@ impl<'a, H: Hooks> Ctx<'a, H> {
                             left_ty,
                             base,
                             generics,
+                            current_ty.into(),
                         );
                     }
+                    TypeFull::Tuple { .. } => todo!("tuple member access"),
                     TypeFull::Generic(_) | TypeFull::FunctionItem { .. } | TypeFull::Const(_) => {
                         self.emit(Error::NonexistantMember(None).at_span(name_span));
                         self.invalidate(expected);
@@ -1143,8 +1181,10 @@ impl<'a, H: Hooks> Ctx<'a, H> {
                         left_ty,
                         base,
                         generics,
+                        current_ty.into(),
                     );
                 }
+                TypeInfo::Tuple { .. } => todo!("tuple member access"),
                 TypeInfo::Unknown(bounds) => {
                     self.emit_unknown(bounds, self.span(left));
                     self.invalidate(expected);
@@ -1171,6 +1211,7 @@ impl<'a, H: Hooks> Ctx<'a, H> {
         left_ty: LocalTypeId,
         base: BaseType,
         generics: LocalTypeIds,
+        dereffed_ty: TypeInfoOrIdx,
     ) -> Node {
         let name = &self.ast[name_span];
         let resolved = self.compiler.get_base_type_def(base);
@@ -1198,48 +1239,53 @@ impl<'a, H: Hooks> Ctx<'a, H> {
             return self_value;
         }
         if let ResolvedTypeContent::Struct(def) = &resolved.def {
-            let (indexed_field, elem_types) = def.get_indexed_field(self, generics, name);
+            let indexed_field = def.get_indexed_field(self, generics, name);
             if let Some((index, field_ty)) = indexed_field {
-                // perform auto deref first
-                let mut dereffed_node = left_node;
-                let mut current_ty = self.hir.types[left_ty];
-                for _ in 0..pointer_count {
-                    // the deref was already checked so we know the type is wrapped in
-                    // `pointer_count` pointers
-                    let pointee = match current_ty {
-                        TypeInfo::Instance(BaseType::Pointer, pointee) => {
-                            let pointee = pointee.nth(0).unwrap();
-                            current_ty = self.hir.types[pointee];
-                            pointee
-                        }
-                        TypeInfo::Known(ty) => {
-                            let TypeFull::Instance(BaseType::Pointer, &[pointee]) =
-                                self.compiler.types.lookup(ty)
-                            else {
-                                unreachable!()
-                            };
-                            current_ty = TypeInfo::Known(pointee);
-                            self.hir.types.add(TypeInfo::Known(pointee))
-                        }
-                        _ => unreachable!(),
-                    };
-                    let value = self.hir.add(dereffed_node);
-                    dereffed_node = Node::Deref {
-                        value,
-                        deref_ty: pointee,
-                    };
-                }
-                self.unify(expected, field_ty, |ast| ast[expr].span(ast));
+                let dereffed_node = self.deref_n(left_node, left_ty, pointer_count);
+                self.specify_or_unify(expected.into(), field_ty, |ast| ast[expr].span(ast));
                 return Node::Element {
                     tuple_value: self.hir.add(dereffed_node),
                     index,
-                    elem_types,
+                    tuple_type: left_ty,
                 };
             }
         }
         self.emit(Error::NonexistantMember(None).at_span(name_span));
         self.invalidate(expected);
         Node::Invalid
+    }
+
+    /// deref `pointer_count` times (this should only be called after checking that the value is
+    /// guaranteed to be behind n pointers)
+    fn deref_n(&mut self, mut node: Node, ty: LocalTypeId, pointer_count: u32) -> Node {
+        let mut current_ty = self.hir.types[ty];
+        for _ in 0..pointer_count {
+            // the deref was already checked so we know the type is wrapped in
+            // `pointer_count` pointers
+            let pointee = match current_ty {
+                TypeInfo::Instance(BaseType::Pointer, pointee) => {
+                    let pointee = pointee.nth(0).unwrap();
+                    current_ty = self.hir.types[pointee];
+                    pointee
+                }
+                TypeInfo::Known(ty) => {
+                    let TypeFull::Instance(BaseType::Pointer, &[pointee]) =
+                        self.compiler.types.lookup(ty)
+                    else {
+                        unreachable!()
+                    };
+                    current_ty = TypeInfo::Known(pointee);
+                    self.hir.types.add(TypeInfo::Known(pointee))
+                }
+                _ => unreachable!(),
+            };
+            let value = self.hir.add(node);
+            node = Node::Deref {
+                value,
+                deref_ty: pointee,
+            };
+        }
+        node
     }
 
     /// checks if the provided method signature is valid as an instance method of the provided type.
