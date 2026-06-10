@@ -141,7 +141,9 @@ pub enum Error {
     ArraySizeCantBeInferredHere,
     InvalidArgumentCountForArrayIndex,
     TupleIndexingOnNonValue,
-    TupleIndexOutOfRange,
+    TupleIndexOutOfRange {
+        member_count: u32,
+    },
     NotAnInstanceMethod,
     InvalidGenericCount {
         expected: u8,
@@ -261,7 +263,7 @@ impl Error {
             Error::ArraySizeCantBeInferredHere => "can't infer array size here",
             Error::InvalidArgumentCountForArrayIndex => "single argument for array index expected",
             Error::TupleIndexingOnNonValue => "indexing a non-tuple",
-            Error::TupleIndexOutOfRange => "tuple doesn't have this many items",
+            Error::TupleIndexOutOfRange { .. } => "tuple doesn't have this many items",
             Error::NotAnInstanceMethod => "not an instance method",
             Error::InvalidGenericCount { .. } => "invalid generic count",
             Error::UnexpectedGenerics => "no generics expected",
@@ -334,6 +336,12 @@ impl Error {
                 "the main function should return either an integer or the unit type #m<()> but returns {}",
                 ty
             ),
+            &Error::TupleIndexOutOfRange { member_count } => {
+                cformat!(
+                    "Tuple only has #c<{member_count}> positional member{}",
+                    if member_count == 1 { "" } else { "s" }
+                )
+            }
             Error::MismatchedType { expected, found } => {
                 cformat!(
                     "expected value of type #m<{}> but found #m<{}>",

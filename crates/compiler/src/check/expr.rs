@@ -502,7 +502,13 @@ impl<'a, H: Hooks> Ctx<'a, H> {
                             tuple_ty: tuple_type,
                         }
                     } else {
-                        self.emit(Error::TupleIndexOutOfRange.at_span(self.span(expr)));
+                        self.emit(
+                            Error::TupleIndexOutOfRange {
+                                member_count: tuple.members().len() as u32,
+                            }
+                            .at_span(self.span(expr)),
+                        );
+                        self.invalidate(expected);
                         Node::Invalid
                     };
                 }
