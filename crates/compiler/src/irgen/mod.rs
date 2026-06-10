@@ -15,7 +15,8 @@ use parser::ast::{self, ModuleId};
 use crate::callconv::CallConv;
 use crate::check::traits::{self, Candidates};
 use crate::compiler::{
-    Dialects, FunctionToGenerate, Generics, Instance, Instances, Signature, builtins,
+    Dialects, FunctionToGenerate, Generics, Instance, Instances, ResolvedTypeContent, Signature,
+    builtins,
 };
 use crate::hir::{CastType, LValue, LValueId, Node, Pattern, PatternId, Var};
 use crate::types::{BaseType, TypeFull};
@@ -92,14 +93,18 @@ pub fn declare_function(
             debug_assert_eq!(signature.params.len(), 2);
             debug_assert_eq!(signature.named_params.len(), 0);
             let args_ty = signature.params[1].1;
-            let TypeFull::Instance(BaseType::Tuple, args) = compiler.types.lookup(args_ty) else {
+            let TypeFull::Tuple {
+                members,
+                named_members: &[],
+            } = compiler.types.lookup(args_ty)
+            else {
                 unreachable!()
             };
             types::get_multiple(
                 compiler,
                 ir,
                 &mut types,
-                ExactOnceChain::new(signature.params[0].1, args.iter().copied()),
+                ExactOnceChain::new(signature.params[0].1, members.iter().copied()),
                 Instance {
                     types: generics,
                     outer: None,
@@ -721,21 +726,22 @@ fn lower_expr(ctx: &mut Ctx, node: NodeId) -> Result<ValueOrPlace> {
             build_arithmetic(ctx, l, r, op, ty)
         }
 
-        &Node::Element {
+        &Node::Member {
             tuple_value,
             index,
-            elem_types,
+            tuple_ty,
         } => {
             let value = lower_expr(ctx, tuple_value)?;
+            let elem_types = get_elem_types(ctx.compiler, ctx.hir[tuple_ty]);
             let value = match value {
                 ValueOrPlace::Value(val) => {
-                    let elem_ty = ctx.get_hir_type(elem_types.nth(index).unwrap())?;
+                    let elem_ty = ctx.get_type(elem_types[index as usize])?;
                     let elem_ty = ctx.builder.types.add(elem_ty);
                     let value = ctx.builder.append(tuple.MemberValue(val, index, elem_ty));
                     ValueOrPlace::Value(value)
                 }
                 ValueOrPlace::Place { ptr, value_ty: _ } => {
-                    let elem_types = ctx.get_multiple_type_ids(elem_types)?;
+                    let elem_types = ctx.get_multiple_types(elem_types.into_iter())?;
                     let elem_tuple = ctx.builder.types.add(ir::Type::Tuple(elem_types));
                     let member_ptr = ctx
                         .builder
@@ -936,8 +942,10 @@ fn lower_expr(ctx: &mut Ctx, node: NodeId) -> Result<ValueOrPlace> {
                     "Fn trait should have 2 generic parameters"
                 );
                 let args_ty = trait_instance[0];
-                let TypeFull::Instance(BaseType::Tuple, arg_types) =
-                    ctx.compiler.types.lookup(args_ty)
+                let TypeFull::Tuple {
+                    members: arg_types,
+                    named_members: &[],
+                } = ctx.compiler.types.lookup(args_ty)
                 else {
                     panic!(
                         "Fn trait should be called with tuples. TODO: manual impls can't \
@@ -976,13 +984,14 @@ fn lower_expr(ctx: &mut Ctx, node: NodeId) -> Result<ValueOrPlace> {
                 return fn_trait_call(true, ctx, func);
             }
 
-            let TypeFull::Instance(self_base, _) = ctx.compiler.types.lookup(self_ty) else {
-                unreachable!("instantiated TraitCall self type should be an instance")
+            let self_base = match ctx.compiler.types.lookup(self_ty) {
+                TypeFull::Instance(self_base, _) => Some(self_base),
+                _ => None,
             };
             match ctx.compiler.get_impl_candidates(
                 trait_id,
                 self_ty,
-                Some(self_base),
+                self_base,
                 trait_instance.iter().copied(),
                 traits::match_instance,
             ) {
@@ -1106,12 +1115,13 @@ fn lower_lval(ctx: &mut Ctx, lval: LValueId) -> Result<Ref> {
         }
         LValue::Deref(pointer) => lower(ctx, pointer)?,
         LValue::Member {
-            tuple,
+            tuple_value: tuple,
             index,
-            elem_types,
+            tuple_ty,
         } => {
+            let elem_types = get_elem_types(ctx.compiler, ctx.hir[tuple_ty]);
             let ptr = lower_lval(ctx, tuple)?;
-            let types = ctx.get_multiple_type_ids(elem_types)?;
+            let types = ctx.get_multiple_types(elem_types.into_iter())?;
             let ty = ctx.builder.types.add(ir::Type::Tuple(types));
             ctx.builder
                 .append(mem.MemberPtr(ptr, ty, index, ctx.ptr_ty))
@@ -1468,5 +1478,27 @@ fn lower_if_else_branches(
                 Ref::UNIT
             })
         }
+    }
+}
+
+// PERF: this definitely shouldn't allocate a boxed slice and instead return an iterator/handle values immediately
+fn get_elem_types(compiler: &Compiler, tuple_like: Type) -> Box<[Type]> {
+    match compiler.types.lookup(tuple_like) {
+        TypeFull::Instance(base, generics) => match &compiler.get_base_type_def(base).def {
+            ResolvedTypeContent::Struct(def) => def
+                .all_fields()
+                .map(|(_, ty)| compiler.types.instantiate(ty, generics))
+                .collect(),
+            _ => unreachable!(),
+        },
+        TypeFull::Tuple {
+            members,
+            named_members,
+        } => members
+            .iter()
+            .copied()
+            .chain(named_members.iter().map(|&(_, ty)| ty))
+            .collect(),
+        _ => unreachable!(),
     }
 }

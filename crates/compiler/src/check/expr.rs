@@ -12,8 +12,8 @@ use crate::{
     hir::{self, Comparison, LValue, Logic, Node, Pattern},
     types::{BaseType, TypeFull, Types},
     typing::{
-        Bound, Bounds, LocalTypeId, LocalTypeIds, NamedMember, OrdinalType, TypeInfo,
-        TypeInfoOrIdx, TypeTable,
+        Bound, Bounds, LocalOrGlobalInstance, LocalTypeId, LocalTypeIds, NamedMember, OrdinalType,
+        TypeInfo, TypeInfoOrIdx, TypeTable,
     },
 };
 use parser::ast::{
@@ -204,7 +204,7 @@ impl<'a, H: Hooks> Ctx<'a, H> {
                     expected,
                     TypeInfo::Tuple {
                         members: LocalTypeIds {
-                            idx: elem_types.count,
+                            idx: elem_types.idx,
                             count: elements.count,
                         },
                         named_members,
@@ -493,45 +493,19 @@ impl<'a, H: Hooks> Ctx<'a, H> {
             &Expr::TupleIdx { left, idx, .. } => {
                 let tuple_type = self.hir.types.add_unknown(); // add Size::AtLeast tuple here maybe
                 let tuple_value = self.check(left, scope, tuple_type, return_ty, noreturn);
-                match self.hir.types[tuple_type] {
-                    TypeInfo::Tuple {
-                        members,
-                        named_members: _,
-                    } => {
-                        return if let Some(member) = members.nth(idx) {
-                            self.unify(expected, member, |ast| ast[expr].span(ast));
-                            Node::Element {
-                                tuple_value: self.hir.add(tuple_value),
-                                index: idx,
-                                tuple_type,
-                            }
-                        } else {
-                            self.emit(Error::TupleIndexOutOfRange.at_span(self.span(expr)));
-                            Node::Invalid
-                        };
-                    }
-                    TypeInfo::Instance(BaseType::Invalid, _) => return Node::Invalid,
-                    TypeInfo::Known(ty) => {
-                        if let TypeFull::Instance(BaseType::Tuple, elem_types) =
-                            self.compiler.types.lookup(ty)
-                        {
-                            return if let Some(&elem_ty) = elem_types.get(idx as usize) {
-                                self.specify(expected, TypeInfo::Known(elem_ty), |ast| {
-                                    ast[expr].span(ast)
-                                });
-                                Node::Element {
-                                    tuple_value: self.hir.add(tuple_value),
-                                    index: idx,
-                                    tuple_type,
-                                }
-                            } else {
-                                self.emit(Error::TupleIndexOutOfRange.at_span(self.span(expr)));
-                                Node::Invalid
-                            };
-                        };
-                    }
-                    _ => {}
-                };
+                if let Some(tuple) = self.hir.types[tuple_type].into_tuple(self.compiler) {
+                    return if let Some(member) = tuple.members().nth(idx) {
+                        self.specify_or_unify(expected.into(), member, |ast| ast[expr].span(ast));
+                        Node::Member {
+                            tuple_value: self.hir.add(tuple_value),
+                            index: idx,
+                            tuple_ty: tuple_type,
+                        }
+                    } else {
+                        self.emit(Error::TupleIndexOutOfRange.at_span(self.span(expr)));
+                        Node::Invalid
+                    };
+                }
 
                 // FIXME: emit invalid type error on a known but wrong type
                 // TODO: could add TupleCountMode and stuff again to unify with tuple with
@@ -1026,7 +1000,7 @@ impl<'a, H: Hooks> Ctx<'a, H> {
         // already from the type, meaning passing to functions or assigning to an annotated variable
         // work without requiring subtyping.
         if let Some(mut args_and_return) =
-            self.hir.types[expected].as_base(self.compiler, BaseType::Function)
+            self.hir.types[expected].into_specific_base(self.compiler, BaseType::Function)
             // TODO: emit more specific error when one of the following conditions fail
             && signature.named_params.is_empty()
             && !signature.varargs
@@ -1129,74 +1103,57 @@ impl<'a, H: Hooks> Ctx<'a, H> {
             }
             _ => {}
         }
-        // now check the type while allowing auto deref for field access, methods
-        let mut current_ty = self.hir.types[left_ty];
+        // now check the type while allowing auto deref for field access and methods
+        let mut current_ty = TypeInfoOrIdx::Idx(left_ty);
         let mut pointer_count = 0;
         loop {
-            match current_ty {
-                TypeInfo::Instance(BaseType::Pointer, pointee) => {
-                    pointer_count += 1;
-                    current_ty = self.hir.types[pointee.nth(0).unwrap()];
-                }
-                TypeInfo::Instance(BaseType::Invalid, _) => {
+            let current_info = self.hir.types.get_info_or_idx(current_ty);
+            if current_info.is_invalid() {
+                self.invalidate(expected);
+                return Node::Invalid;
+            } else if let Some(pointee) =
+                current_info.into_specific_base(self.compiler, BaseType::Pointer)
+            {
+                pointer_count += 1;
+                current_ty = pointee.nth(0).unwrap()
+            } else if let Some((base, generics)) = current_info.into_base(self.compiler) {
+                return self.instance_member(
+                    name_span,
+                    expr,
+                    expected,
+                    pointer_count,
+                    left_node,
+                    left_ty,
+                    base,
+                    generics,
+                    current_ty,
+                );
+            } else if let Some(tuple) = current_info.into_tuple(self.compiler) {
+                let Some(((_, member_ty), index)) = tuple
+                    .named_members(&self.hir.types)
+                    .zip(tuple.positional_count()..)
+                    .find(|((member_name, _), _)| *member_name == name)
+                else {
+                    self.emit(Error::NonexistantMember(None).at_span(name_span));
                     self.invalidate(expected);
                     return Node::Invalid;
-                }
-                TypeInfo::Known(ty) => match self.compiler.types.lookup(ty) {
-                    TypeFull::Instance(BaseType::Pointer, &[pointee]) => {
-                        pointer_count += 1;
-                        current_ty = TypeInfo::Known(pointee);
-                    }
-                    TypeFull::Instance(base, generics) => {
-                        let generics = self
-                            .hir
-                            .types
-                            .add_multiple(generics.iter().map(|&ty| TypeInfo::Known(ty)));
-                        return self.instance_member(
-                            name_span,
-                            expr,
-                            expected,
-                            pointer_count,
-                            left_node,
-                            left_ty,
-                            base,
-                            generics,
-                            current_ty.into(),
-                        );
-                    }
-                    TypeFull::Tuple { .. } => todo!("tuple member access"),
-                    TypeFull::Generic(_) | TypeFull::FunctionItem { .. } | TypeFull::Const(_) => {
-                        self.emit(Error::NonexistantMember(None).at_span(name_span));
-                        self.invalidate(expected);
-                        return Node::Invalid;
-                    }
-                },
-                TypeInfo::Instance(base, generics) => {
-                    return self.instance_member(
-                        name_span,
-                        expr,
-                        expected,
-                        pointer_count,
-                        left_node,
-                        left_ty,
-                        base,
-                        generics,
-                        current_ty.into(),
-                    );
-                }
-                TypeInfo::Tuple { .. } => todo!("tuple member access"),
-                TypeInfo::Unknown(bounds) => {
+                };
+                self.specify_or_unify(expected.into(), member_ty, |ast| ast[expr].span(ast));
+                return Node::Member {
+                    tuple_value: self.hir.add(left_node),
+                    index,
+                    tuple_ty: self.hir.types.add_info_or_idx(current_ty),
+                };
+            } else {
+                if let TypeInfo::Unknown(bounds) = current_info {
                     self.emit_unknown(bounds, self.span(left));
-                    self.invalidate(expected);
-                    return Node::Invalid;
-                }
-                other => {
-                    let hint = matches!(other, TypeInfo::Enum(_))
+                } else {
+                    let hint = matches!(current_info, TypeInfo::Enum(_))
                         .then_some(error::MemberHint::InferredEnum);
                     self.emit(Error::NonexistantMember(hint).at_span(name_span));
-                    self.invalidate(expected);
-                    return Node::Invalid;
                 }
+                self.invalidate(expected);
+                return Node::Invalid;
             }
         }
     }
@@ -1210,7 +1167,7 @@ impl<'a, H: Hooks> Ctx<'a, H> {
         left_node: Node,
         left_ty: LocalTypeId,
         base: BaseType,
-        generics: LocalTypeIds,
+        generics: LocalOrGlobalInstance,
         dereffed_ty: TypeInfoOrIdx,
     ) -> Node {
         let name = &self.ast[name_span];
@@ -1243,10 +1200,10 @@ impl<'a, H: Hooks> Ctx<'a, H> {
             if let Some((index, field_ty)) = indexed_field {
                 let dereffed_node = self.deref_n(left_node, left_ty, pointer_count);
                 self.specify_or_unify(expected.into(), field_ty, |ast| ast[expr].span(ast));
-                return Node::Element {
+                return Node::Member {
                     tuple_value: self.hir.add(dereffed_node),
                     index,
-                    tuple_type: left_ty,
+                    tuple_ty: self.hir.types.add_info_or_idx(dereffed_ty),
                 };
             }
         }
@@ -1295,7 +1252,7 @@ impl<'a, H: Hooks> Ctx<'a, H> {
         &mut self,
         signature: &crate::compiler::Signature,
         id: BaseType,
-        generics: LocalTypeIds,
+        generics: LocalOrGlobalInstance,
         span: impl Copy + FnOnce(&Ast) -> TSpan,
     ) -> Option<(u32, LocalTypeIds)> {
         let (_, self_param_ty) = signature.all_params().next()?;
@@ -1317,8 +1274,9 @@ impl<'a, H: Hooks> Ctx<'a, H> {
                 TypeFull::Instance(base, signature_generics) if id == base => {
                     // generics count should always matched because the type is already checked and
                     // resolved
-                    debug_assert_eq!(generics.count as usize, signature_generics.len());
-                    for (ty, &signature_ty) in generics.iter().zip(signature_generics) {
+                    debug_assert_eq!(generics.len(), signature_generics.len());
+                    for (ty, &signature_ty) in generics.zip(signature_generics) {
+                        let ty = self.hir.types.add_info_or_idx(ty);
                         self.hir.types.specify_type_instance(
                             ty,
                             signature_ty,
@@ -1344,19 +1302,19 @@ impl<'a, H: Hooks> Ctx<'a, H> {
         table: &mut TypeTable,
         types: &Types,
         signature: &crate::compiler::Signature,
-        type_generics: LocalTypeIds,
+        type_generics: LocalOrGlobalInstance,
         span: TSpan,
     ) -> LocalTypeIds {
-        if signature.generics.count() as u32 != type_generics.count {
-            debug_assert!(signature.generics.count() as u32 > type_generics.count);
+        if signature.generics.count() as u32 != type_generics.len() as u32 {
+            debug_assert!(signature.generics.count() as u32 > type_generics.len() as u32);
             // perf: instantiates the outer type's generics again unnecessarily
             let call_generics = signature.generics.instantiate(table, types, span);
-            for (r, generic) in call_generics.iter().zip(type_generics.iter()) {
+            for (r, generic) in call_generics.iter().zip(type_generics) {
                 table.replace(r, generic);
             }
             call_generics
         } else {
-            type_generics
+            type_generics.make_local(table)
         }
     }
 
@@ -1426,7 +1384,7 @@ impl<'a, H: Hooks> Ctx<'a, H> {
                 &mut self.hir.types,
                 &self.compiler.types,
                 signature,
-                generics,
+                LocalOrGlobalInstance::Local(generics),
                 span(self.ast),
             );
             self.specify(

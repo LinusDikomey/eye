@@ -253,19 +253,17 @@ impl<'a> fmt::Display for HirDisplay<'a> {
                     display_ty(hir[ty]),
                 )?;
             }
-            &Node::Element {
+            &Node::Member {
                 tuple_value,
                 index,
-                elem_types,
+                tuple_ty: tuple_type,
             } => {
-                cwrite!(f, "(#b<element> #y<{index}> {}: (", display(tuple_value),)?;
-                for (i, elem) in elem_types.iter().enumerate() {
-                    if i != 0 {
-                        cwrite!(f, ", ")?;
-                    }
-                    cwrite!(f, "{}", display_ty(hir[elem]))?;
-                }
-                cwrite!(f, "))")?;
+                cwrite!(
+                    f,
+                    "(#b<element> #y<{index}> {}: {})",
+                    display(tuple_value),
+                    display_ty(hir[tuple_type])
+                )?;
             }
             &Node::ArrayIndex {
                 array,
@@ -555,19 +553,16 @@ impl<'a> fmt::Display for LValueDisplay<'a> {
                 cwrite!(f, "(deref {})", display(val))
             }
             LValue::Member {
-                tuple,
+                tuple_value: tuple,
                 index,
-                elem_types,
-            } => {
-                cwrite!(f, "(#b<member> #y<{index}> {}: (", display_lvalue(tuple))?;
-                for (i, elem) in elem_types.iter().enumerate() {
-                    if i != 0 {
-                        cwrite!(f, ", ")?;
-                    }
-                    cwrite!(f, "{}", display_ty(hir[elem]))?;
-                }
-                cwrite!(f, "))")
-            }
+                tuple_ty,
+            } => cwrite!(
+                f,
+                "(#b<member> #y<{index}> {}: {})",
+                display_lvalue(tuple),
+                display_ty(hir[tuple_ty]),
+            ),
+
             LValue::ArrayIndex {
                 array,
                 index,

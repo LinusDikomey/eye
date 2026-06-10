@@ -742,10 +742,7 @@ impl<'a> Converter<'a> {
         let mut state = State::WS;
         let mut comment_start = 0;
         let mut newline_count = 0;
-        loop {
-            let Some((pos, c)) = chars.next() else {
-                break;
-            };
+        while let Some((pos, c)) = chars.next() {
             match c {
                 '#' if chars.next_if(|(_, c)| *c == '-').is_some() => match &mut state {
                     State::WS => {

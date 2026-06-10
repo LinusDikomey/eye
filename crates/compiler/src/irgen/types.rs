@@ -20,7 +20,7 @@ pub fn get(
             match &resolved.def {
                 ResolvedTypeContent::Builtin(builtin) => match builtin {
                     BuiltinType::Invalid => return None,
-                    BuiltinType::Unit => ir::Type::UNIT,
+                    BuiltinType::Unit => unreachable!(),
                     BuiltinType::I8 => ir::Type::Primitive(ir::Primitive::I8.into()),
                     BuiltinType::U8 => ir::Type::Primitive(ir::Primitive::U8.into()),
                     BuiltinType::I16 => ir::Type::Primitive(ir::Primitive::I16.into()),
@@ -34,17 +34,6 @@ pub fn get(
                     BuiltinType::F32 => ir::Type::Primitive(ir::Primitive::F32.into()),
                     BuiltinType::F64 => ir::Type::Primitive(ir::Primitive::F64.into()),
                     BuiltinType::Type => ir::Type::Primitive(ir::Primitive::U64.into()), // TODO: convert Type Type
-                    BuiltinType::Tuple => {
-                        let members: &[Type] = &type_generics;
-                        let refs = get_multiple(
-                            compiler,
-                            ir,
-                            ir_types,
-                            members.iter().copied(),
-                            instance,
-                        )?;
-                        Some(ir::Type::Tuple(refs))
-                    }?,
                     BuiltinType::Pointer | BuiltinType::Function => {
                         ir::Type::Primitive(ir::Primitive::Ptr.into())
                     }
@@ -118,6 +107,10 @@ pub fn get(
                 }
             }
         }
+        TypeFull::Tuple {
+            members,
+            named_members,
+        } if members.is_empty() && named_members.is_empty() => ir::Type::UNIT,
         TypeFull::Tuple {
             members,
             named_members,

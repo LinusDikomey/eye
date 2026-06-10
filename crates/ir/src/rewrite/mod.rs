@@ -139,11 +139,8 @@ pub fn rewrite_in_place<Ctx: RewriteCtx, R: Visitor<Ctx, Output = Rewrite>>(
         ctx.begin_block(env, ir, block);
         for idx in strategy.iterate_block(ir, block) {
             let r = Ref(idx);
-            loop {
-                let Ok(&inst) = ir.try_get_inst(r) else {
-                    // instruction was deleted, skip it
-                    break;
-                };
+            // skip deleted instructions
+            while let Ok(&inst) = ir.try_get_inst(r) {
                 // let mut inst = inst;
                 // crate::update_inst_refs(
                 //     &mut inst,

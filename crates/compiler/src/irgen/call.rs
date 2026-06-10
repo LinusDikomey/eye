@@ -6,7 +6,7 @@ use crate::{
     crash_point,
     hir::{Node, NodeId, NodeIds, Var},
     irgen::{self, Ctx, NoReturn, Result, ValueOrPlace, lower},
-    types::{BaseType, TypeFull},
+    types::TypeFull,
     typing::{LocalTypeId, LocalTypeIds},
 };
 
@@ -102,7 +102,10 @@ pub fn gen_args(
             if first != Ref::UNIT {
                 ir_args.push(first);
             }
-            let TypeFull::Instance(BaseType::Tuple, args_tuple_types) = ctx
+            let TypeFull::Tuple {
+                members: args_tuple_types,
+                named_members: &[],
+            } = ctx
                 .compiler
                 .types
                 .lookup(ctx.hir[arg_types.nth(1).unwrap()])
@@ -140,8 +143,10 @@ pub fn assign_args_to_vars(ctx: &mut Ctx, params: Refs, callconv: CallConv) -> R
             ctx.builder
                 .append(ctx.dialects.mem.Store(ctx.vars[0].0, params.nth(0)));
             let args_tuple_ty = ctx.hir[ctx.hir.vars[ctx.hir.params[1].idx()].ty()];
-            let TypeFull::Instance(BaseType::Tuple, members) =
-                ctx.compiler.types.lookup(args_tuple_ty)
+            let TypeFull::Tuple {
+                members,
+                named_members: &[],
+            } = ctx.compiler.types.lookup(args_tuple_ty)
             else {
                 unreachable!()
             };

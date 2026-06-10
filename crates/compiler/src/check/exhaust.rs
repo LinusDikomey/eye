@@ -1,10 +1,7 @@
 use dmap::DHashMap;
 
 use crate::{
-    Compiler, InvalidTypeError, Type,
-    compiler::Instance,
-    helpers::IteratorExt,
-    types::{BaseType, TypeFull},
+    Compiler, InvalidTypeError, Type, compiler::Instance, helpers::IteratorExt, types::TypeFull,
 };
 
 #[derive(Clone, Copy)]
@@ -114,11 +111,17 @@ impl Exhaustion {
             &Exhaustion::Bool { true_, false_ } => true_ && false_,
             Exhaustion::Tuple(members) => {
                 let member_types = match types.lookup(ty) {
-                    TypeFull::Instance(BaseType::Tuple, member_types) => {
-                        if member_types.len() != members.len() {
+                    TypeFull::Tuple {
+                        members: member_types,
+                        named_members: named_member_types,
+                    } => {
+                        if member_types.len() + named_member_types.len() != members.len() {
                             return Err(InvalidTypeError);
                         };
-                        member_types.iter()
+                        member_types
+                            .iter()
+                            .copied()
+                            .chain(named_member_types.iter().map(|&(_, ty)| ty))
                     }
                     _ => return Err(InvalidTypeError),
                 };
@@ -126,7 +129,7 @@ impl Exhaustion {
                 members
                     .iter()
                     .zip(member_types)
-                    .try_all(|(member, &ty)| member.is_exhausted(ty, compiler))?
+                    .try_all(|(member, ty)| member.is_exhausted(ty, compiler))?
             }
             Exhaustion::Invalid => return Err(InvalidTypeError),
         })

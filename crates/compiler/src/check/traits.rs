@@ -216,7 +216,37 @@ pub fn match_instance(
         TypeFull::FunctionItem { .. } => {
             unreachable!("FunctionItems are un-nameable and shouldn't occur in impls")
         }
-        TypeFull::Tuple { .. } => todo!("match tuple impls"),
+        TypeFull::Tuple {
+            members: impl_members,
+            named_members: impl_named_members,
+        } => match types.lookup(ty) {
+            TypeFull::Instance(BaseType::Invalid, _) => true,
+            TypeFull::Tuple {
+                members,
+                named_members,
+            } => {
+                if members.len() != impl_members.len()
+                    || named_members.len() != impl_named_members.len()
+                {
+                    return false;
+                }
+                for (&member, &impl_member) in members
+                    .iter()
+                    .chain(named_members.iter().map(|(_, ty)| ty))
+                    .zip(
+                        impl_members
+                            .iter()
+                            .chain(impl_named_members.iter().map(|(_, ty)| ty)),
+                    )
+                {
+                    if !match_instance(impl_member, member, types, instance) {
+                        return false;
+                    }
+                }
+                true
+            }
+            _ => false,
+        },
         TypeFull::Const(implemented_n) => {
             let TypeFull::Const(n) = types.lookup(ty) else {
                 return false;

@@ -4,8 +4,7 @@ use crate::{
     check::Hooks,
     compiler::{Generics, LocalScope, LocalScopeParent, VarId},
     hir::{HIRBuilder, Node},
-    types::BaseType,
-    typing::{LocalTypeId, LocalTypeIds, TypeInfo, TypeInfoOrIdx},
+    typing::{LocalTypeId, LocalTypeIds, NamedMembers, TypeInfo, TypeInfoOrIdx},
 };
 use indexmap::IndexMap;
 
@@ -139,7 +138,10 @@ impl<'a, H: Hooks> Ctx<'a, H> {
         }
         self.hir.types.replace(
             captures_ty,
-            TypeInfo::Instance(BaseType::Tuple, capture_types),
+            TypeInfo::Tuple {
+                members: capture_types,
+                named_members: NamedMembers::EMPTY,
+            },
         );
 
         let params = std::iter::once(("".into(), captures_param))
@@ -171,10 +173,10 @@ impl<'a, H: Hooks> Ctx<'a, H> {
                 )
             }));
         tracing::debug!(target: "closure", "Creating closure {:?} : {id:?}", self.module);
-        let params_tuple = self
-            .hir
-            .types
-            .add(TypeInfo::Instance(BaseType::Tuple, param_types.skip(1)));
+        let params_tuple = self.hir.types.add(TypeInfo::Tuple {
+            members: param_types.skip(1),
+            named_members: NamedMembers::EMPTY,
+        });
         (
             Node::TupleLiteral {
                 elems: capture_nodes,

@@ -38,7 +38,7 @@ impl Types {
         let instances = SegmentList::new();
         let bases = SegmentList::new();
         let function_items = SegmentList::new();
-        let tuples = SegmentList::new();
+        let tuples: SegmentList<(Box<[_]>, Box<[_]>)> = SegmentList::new();
         let consts = SegmentList::new();
 
         for (builtin, i) in BuiltinType::VARIANTS.into_iter().zip(0..) {
@@ -58,19 +58,25 @@ impl Types {
                 }),
             });
             if generics.count() == 0 {
-                let j = tags.add(Tag::Instance);
-                indices.add(i);
-                debug_assert_eq!(
-                    i, j,
-                    "Types without generics must come first in BuiltinType macro"
-                );
-                let base = if builtin == BuiltinType::Unit {
-                    BaseType::Tuple
+                let value = if builtin == BuiltinType::Unit {
+                    let tuple = tuples.add((Box::new([]), Box::new([])));
+                    let j = tags.add(Tag::Tuple);
+                    let k = indices.add(tuple);
+                    debug_assert_eq!(i, j);
+                    debug_assert_eq!(j, k);
+                    TypeFull::Tuple {
+                        members: &[],
+                        named_members: &[],
+                    }
                 } else {
-                    BaseType(i)
+                    let instance = instances.add((i, Box::new([]) as _));
+                    let j = tags.add(Tag::Instance);
+                    let k = indices.add(instance);
+                    debug_assert_eq!(i, j);
+                    debug_assert_eq!(j, k);
+                    let base = BaseType(i);
+                    TypeFull::Instance(base, &[])
                 };
-                instances.add((base.0, Box::new([]) as _));
-                let value = TypeFull::Instance(base, &[]);
                 let hash = hash_full(&value);
                 map.insert_unique(hash, Type(i), |&ty| {
                     hash_full(&Self::lookup_type(
@@ -94,7 +100,7 @@ impl Types {
             instances,
             bases,
             function_items,
-            tuples: SegmentList::new(),
+            tuples,
             consts,
         }
     }
@@ -298,18 +304,6 @@ impl<'a> fmt::Display for TypeDisplay<'a> {
         match self.types.lookup(self.ty) {
             TypeFull::Instance(base, generics) => match base {
                 BaseType::Invalid => write!(f, "<invalid>"),
-                BaseType::Tuple => {
-                    write!(f, "(")?;
-                    let mut first = true;
-                    for &item in generics {
-                        if !first {
-                            write!(f, ", ")?;
-                        }
-                        first = false;
-                        write!(f, "{}", self.types.display(item, self.generics))?;
-                    }
-                    write!(f, ")")
-                }
                 BaseType::Array => write!(
                     f,
                     "[{}; {}]",

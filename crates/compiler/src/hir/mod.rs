@@ -277,11 +277,11 @@ pub enum Node {
     },
     Arithmetic(NodeId, NodeId, Arithmetic, LocalTypeId),
 
-    Element {
+    Member {
         tuple_value: NodeId,
         index: u32,
         // tuple-like type: either a tuple or struct
-        tuple_type: LocalTypeId,
+        tuple_ty: LocalTypeId,
     },
     ArrayIndex {
         array: NodeId,
@@ -372,9 +372,9 @@ pub enum LValue {
     Global(ModuleId, GlobalId),
     Deref(NodeId),
     Member {
-        tuple: LValueId,
+        tuple_value: LValueId,
         index: u32,
-        elem_types: LocalTypeIds,
+        tuple_ty: LocalTypeId,
     },
     ArrayIndex {
         array: LValueId,
@@ -389,16 +389,16 @@ impl LValue {
             Node::Variable(id) => Self::Variable(id),
             Node::Global(module, id, _) => Self::Global(module, id),
             Node::Deref { value, deref_ty: _ } => Self::Deref(value),
-            Node::Element {
+            Node::Member {
                 tuple_value,
                 index,
-                elem_types,
+                tuple_ty: tuple_type,
             } => {
                 let tuple = Self::try_from_node(&hir[tuple_value].clone(), hir)?;
                 Self::Member {
-                    tuple: hir.add_lvalue(tuple),
+                    tuple_value: hir.add_lvalue(tuple),
                     index,
-                    elem_types,
+                    tuple_ty: tuple_type,
                 }
             }
             Node::ArrayIndex {
