@@ -171,6 +171,7 @@ macro_rules! visitor {
             ) -> ::core::option::Option<$output> {
                 let $dialects = &*self;
                 $(
+                    #[allow(unused)]
                     use $module_path as $module;
                     #[allow(unused)]
                     let $module = self.$module;

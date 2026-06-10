@@ -25,7 +25,7 @@ test :: fn(num i32) -> str {
     # some unreachable code
     x := 3
     y := 4
-    if x < y { ret "" }
+    if x < y { ret "" } else { ret "foo" }
 }
 
 while_loop :: fn -> i32 {

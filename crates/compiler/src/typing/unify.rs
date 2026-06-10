@@ -144,6 +144,32 @@ impl TypeTable {
                 }
                 TypeInfo::Enum(a)
             }
+            (
+                Tuple {
+                    members: a_members,
+                    named_members: a_named,
+                },
+                Tuple {
+                    members: b_members,
+                    named_members: b_named,
+                },
+            ) if a_members.count == b_members.count && a_named.count == b_named.count => {
+                return (a_members
+                    .iter()
+                    .zip(b_members.iter())
+                    .all(|(a, b)| self.try_unify(a, b, function_generics, compiler))
+                    && a_named.iter().zip(b_named.iter()).all(|(a, b)| {
+                        a == b
+                            || (self[a].name == self[b].name
+                                && self.try_unify(
+                                    self[a].ty,
+                                    self[b].ty,
+                                    function_generics,
+                                    compiler,
+                                ))
+                    }))
+                .then_some(a.into());
+            }
             (BaseTypeItem(a_ty), BaseTypeItem(b_ty)) if a_ty == b_ty => a,
             (TypeItem(a_ty), TypeItem(b_ty)) => {
                 if !self.try_unify(a_ty, b_ty, function_generics, compiler) {

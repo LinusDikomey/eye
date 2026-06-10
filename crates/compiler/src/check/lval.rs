@@ -85,64 +85,51 @@ pub fn check_inner<H: Hooks>(
             else {
                 return (LValue::Invalid, ctx.hir.types.add(TypeInfo::INVALID));
             };
+            if let Some((base, generics)) = dereffed_left_ty.into_base(ctx.compiler) {
+                let ty = ctx.compiler.get_base_type_def(base);
+                // TODO differentiate between nonexistant member and 'can't assign to
+                // member' in the case of methods, enum variants etc.
+                if let ResolvedTypeContent::Struct(struct_) = &ty.def {
+                    let indexed_field = struct_.get_indexed_field(ctx, generics, name);
+                    let Some((index, field_ty)) = indexed_field else {
+                        ctx.emit(Error::NonexistantMember(None).at_span(name_span));
+                        return (LValue::Invalid, ctx.hir.types.add(TypeInfo::INVALID));
+                    };
 
-            match dereffed_left_ty {
-                TypeInfo::Instance(id, generics) => {
-                    let ty = ctx.compiler.get_base_type_def(id);
-                    // TODO differentiate between nonexistant member and 'can't assign to
-                    // member' in the case of methods, enum variants etc.
-                    if let ResolvedTypeContent::Struct(struct_) = &ty.def {
-                        let (indexed_field, elem_types) =
-                            struct_.get_indexed_field(ctx, generics, name);
-                        let Some((index, field_ty)) = indexed_field else {
-                            ctx.emit(Error::NonexistantMember(None).at_span(name_span));
-                            return (LValue::Invalid, ctx.hir.types.add(TypeInfo::INVALID));
-                        };
-
-                        let left_lval =
-                            dereffed_to_lvalue(ctx, left_val, left_ty, pointer_count, |ast| {
-                                ast[left].span(ast)
-                            });
-                        return (
-                            LValue::Member {
-                                tuple: ctx.hir.add_lvalue(left_lval),
-                                index,
-                                elem_types,
-                            },
-                            field_ty,
-                        );
-                    }
+                    let left_lval =
+                        dereffed_to_lvalue(ctx, left_val, left_ty, pointer_count, |ast| {
+                            ast[left].span(ast)
+                        });
+                    return (
+                        LValue::Member {
+                            tuple_value: ctx.hir.add_lvalue(left_lval),
+                            index,
+                            // TODO: is it safe to add a new type var here?
+                            tuple_ty: ctx.hir.types.add(dereffed_left_ty),
+                        },
+                        ctx.hir.types.add_info_or_idx(field_ty),
+                    );
                 }
-                TypeInfo::Known(ty) => {
-                    if let TypeFull::Instance(base, generics) = ctx.compiler.types.lookup(ty) {
-                        let def = ctx.compiler.get_base_type_def(base);
-                        if let ResolvedTypeContent::Struct(def) = &def.def {
-                            let generics = ctx
-                                .hir
-                                .types
-                                .add_multiple(generics.iter().map(|&ty| TypeInfo::Known(ty)));
-                            let (indexed_field, elem_types) =
-                                def.get_indexed_field(ctx, generics, name);
-                            let Some((index, field_ty)) = indexed_field else {
-                                ctx.emit(Error::NonexistantMember(None).at_span(name_span));
-                                return (LValue::Invalid, ctx.hir.types.add(TypeInfo::INVALID));
-                            };
-                            let left_lval =
-                                dereffed_to_lvalue(ctx, left_val, left_ty, pointer_count, |ast| {
-                                    ast[left].span(ast)
-                                });
-                            return (
-                                LValue::Member {
-                                    tuple: ctx.hir.add_lvalue(left_lval),
-                                    index,
-                                    elem_types,
-                                },
-                                field_ty,
-                            );
-                        }
-                    }
-                }
-                _ => {}
+            } else if let Some(tuple) = dereffed_left_ty.into_tuple(ctx.compiler) {
+                let Some(((_, member_ty), index)) = tuple
+                    .named_members(&ctx.hir.types)
+                    .zip(tuple.positional_count()..)
+                    .find(|((member_name, _), _)| *member_name == name)
+                else {
+                    ctx.emit(Error::NonexistantMember(None).at_span(name_span));
+                    return (LValue::Invalid, ctx.hir.types.add(TypeInfo::INVALID));
+                };
+                let left_lval = dereffed_to_lvalue(ctx, left_val, left_ty, pointer_count, |ast| {
+                    ast[left].span(ast)
+                });
+                return (
+                    LValue::Member {
+                        tuple_value: ctx.hir.add_lvalue(left_lval),
+                        index,
+                        tuple_ty: ctx.hir.types.add(dereffed_left_ty),
+                    },
+                    ctx.hir.types.add_info_or_idx(member_ty),
+                );
             }
             // TODO(error): better error why the type doesn't have named members
             ctx.emit(Error::NonexistantMember(None).at_span(name_span));
@@ -156,30 +143,27 @@ pub fn check_inner<H: Hooks>(
             else {
                 return (LValue::Invalid, ctx.hir.types.add(TypeInfo::INVALID));
             };
-            match dereffed_ty {
-                TypeInfo::Instance(BaseType::Tuple, elem_types) => {
-                    let Some(elem_ty) = elem_types.nth(idx) else {
-                        ctx.emit(Error::NonexistantMember(None).at_span(ctx.span(expr)));
-                        return (LValue::Invalid, ctx.hir.types.add(TypeInfo::INVALID));
-                    };
-                    let lval = dereffed_to_lvalue(ctx, left_val, left_ty, pointer_count, |ast| {
-                        ast[left].span(ast)
-                    });
-                    (
-                        LValue::Member {
-                            tuple: ctx.hir.add_lvalue(lval),
-                            index: idx,
-                            elem_types,
-                        },
-                        elem_ty,
-                    )
-                }
-                _ => {
-                    // TODO(error): use span of the idx, not of the whole expr
-                    // TODO(error): better error why the type doesn't have tuple members
+            if let Some(tuple) = dereffed_ty.into_tuple(ctx.compiler) {
+                let Some(elem_ty) = tuple.members().nth(idx) else {
                     ctx.emit(Error::NonexistantMember(None).at_span(ctx.span(expr)));
-                    (LValue::Invalid, ctx.hir.types.add(TypeInfo::INVALID))
-                }
+                    return (LValue::Invalid, ctx.hir.types.add(TypeInfo::INVALID));
+                };
+                let lval = dereffed_to_lvalue(ctx, left_val, left_ty, pointer_count, |ast| {
+                    ast[left].span(ast)
+                });
+                (
+                    LValue::Member {
+                        tuple_value: ctx.hir.add_lvalue(lval),
+                        index: idx,
+                        tuple_ty: ctx.hir.types.add(dereffed_ty),
+                    },
+                    ctx.hir.types.add_info_or_idx(elem_ty),
+                )
+            } else {
+                // TODO(error): use span of the idx, not of the whole expr
+                // TODO(error): better error why the type doesn't have tuple members
+                ctx.emit(Error::NonexistantMember(None).at_span(ctx.span(expr)));
+                (LValue::Invalid, ctx.hir.types.add(TypeInfo::INVALID))
             }
         }
         Expr::Index { expr, idx, .. } => {

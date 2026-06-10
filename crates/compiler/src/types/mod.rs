@@ -127,7 +127,7 @@ macro_rules! builtin_types {
 }
 
 builtin_types! {
-    17
+    16
 
     I8 = 1 "i8"
     U8 = 1 "u8"
@@ -144,7 +144,6 @@ builtin_types! {
     Type = 0 "type"
 
     @generic:
-    Tuple = vec![("elems".into(), vec![])],
     Array = vec![
         ("element".into(), vec![]),
         ("count".into(), vec![]), // TODO: specify type of generic parameters
@@ -162,6 +161,10 @@ pub enum TypeFull<'a> {
     FunctionItem {
         function: (ModuleId, FunctionId),
         generics: &'a [Type],
+    },
+    Tuple {
+        members: &'a [Type],
+        named_members: &'a [(Box<str>, Type)],
     },
     Generic(u8),
     Const(u64),

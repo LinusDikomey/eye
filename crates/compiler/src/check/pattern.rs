@@ -4,8 +4,7 @@ use crate::{
     check::{Hooks, exhaust},
     compiler::{LocalScope, builtins},
     hir::Pattern,
-    types::BaseType,
-    typing::{LocalTypeId, TypeInfo},
+    typing::{LocalTypeId, NamedMembers, TypeInfo},
 };
 
 use parser::ast::{Expr, ExprId, IntLiteral, Operator, Primitive, UnOp};
@@ -179,13 +178,24 @@ pub fn check<H: Hooks>(
                 }
             }
         }
-        &Expr::Tuple { span, elements, .. } => {
+        Expr::Tuple {
+            span,
+            elements,
+            named_elements,
+            ..
+        } => {
+            if !named_elements.is_empty() {
+                todo!("named tuple patterns");
+            }
             let member_types = ctx.hir.types.add_multiple_unknown(elements.count);
             // PERF: could add .specify_tuple to avoid adding more types than necessary
             ctx.specify(
                 expected,
-                TypeInfo::Instance(BaseType::Tuple, member_types),
-                |_| span,
+                TypeInfo::Tuple {
+                    members: member_types,
+                    named_members: NamedMembers::EMPTY,
+                },
+                |_| *span,
             );
             let do_exhaust_checks = match exhaustion {
                 Exhaustion::Full | Exhaustion::Invalid => false,

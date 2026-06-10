@@ -91,10 +91,7 @@ fn parse_args<'s>(
 ) -> (Vec<Argument<'static>>, TypeId) {
     let mut args = Vec::new();
     let mut ty = unit;
-    loop {
-        let Some(tok) = tokens.next() else {
-            break;
-        };
+    while let Some(tok) = tokens.next() {
         let arg = match tok {
             Token::IntLit(int) => Argument::Int(int),
             Token::Reg(r) => Argument::Ref(

@@ -3,8 +3,8 @@ use dmap::DHashMap;
 use std::collections::hash_map::Entry;
 
 use crate::ast::{
-    self, Attribute, Attributes, Definition, EnumVariantDefinition, Expr, ExprIdPairs, ExprIds,
-    Function, GenericDef, Generics, Global, Impl, InherentImpl, Item, ItemValue, Method,
+    self, Attribute, Attributes, Definition, EnumVariantDefinition, Expr, ExprId, ExprIdPairs,
+    ExprIds, Function, GenericDef, Generics, Global, Impl, InherentImpl, Item, ItemValue, Method,
     StructMember, TraitDefinition, TreeToken, UnOp, UnresolvedType,
 };
 
@@ -64,22 +64,42 @@ impl<T: TreeToken> Parser<'_, T> {
         open: Token,
         delim: TokenType,
         close: TokenType,
-        mut item: F,
+        item: F,
     ) -> ParseResult<Token>
     where
         F: FnMut(&mut Parser<T>) -> Result<Delimit, CompileError>,
     {
+        self.parse_delimited_inner(open, delim, close, item)
+            .map(|(closing, _trailing)| closing)
+    }
+
+    /// Similar to parse_delimited but also returns the trailing delimiter if present
+    fn parse_delimited_inner<F>(
+        &mut self,
+        open: Token,
+        delim: TokenType,
+        close: TokenType,
+        mut item: F,
+    ) -> ParseResult<(Token, Option<Token>)>
+    where
+        F: FnMut(&mut Parser<T>) -> Result<Delimit, CompileError>,
+    {
+        let mut trailing_delim = None;
         let expected = || ExpectedTokens::AnyOf(Box::new([delim, close]));
         loop {
             if let Some(end_tok) = self.toks.step_if(close) {
-                return Ok(end_tok);
+                return Ok((end_tok, trailing_delim));
             } else if let Some(eof) = self.toks.step_if(TokenType::Eof) {
                 return Err(unexpected(eof, expected()));
             }
+            trailing_delim = None;
             match item(self) {
                 Ok(Delimit::Yes) => match self.toks.step() {
-                    tok if tok.ty == delim => continue,
-                    tok if tok.ty == close => return Ok(tok),
+                    tok if tok.ty == delim => {
+                        trailing_delim = Some(tok);
+                        continue;
+                    }
+                    tok if tok.ty == close => return Ok((tok, trailing_delim)),
                     tok => {
                         return Err(unexpected(
                             tok,
@@ -87,12 +107,11 @@ impl<T: TreeToken> Parser<'_, T> {
                         ));
                     }
                 },
-                Ok(Delimit::No) => {}
-                Ok(Delimit::Optional) => {
-                    self.toks.step_if(delim);
-                }
+                Ok(Delimit::No) => trailing_delim = None,
+                Ok(Delimit::Optional) => trailing_delim = self.toks.step_if(delim),
                 Ok(Delimit::OptionalIfNewLine) => {
-                    if self.toks.step_if(delim).is_none() {
+                    trailing_delim = self.toks.step_if(delim);
+                    if trailing_delim.is_none() {
                         let after = self.toks.peek();
                         if after.ty != TokenType::Eof && !after.new_line && after.ty != close {
                             self.recover_in_delimited(open, close);
@@ -1056,38 +1075,26 @@ impl<T: TreeToken> Parser<'_, T> {
                 }
             }
             TokenType::LParen => {
-                if let Some(rparen) = self.toks.step_if(TokenType::RParen) {
-                    Expr::Tuple {
+                let (elements, named_elements, rparen, has_trailing_comma) =
+                    self.parse_tuple(first, scope)?;
+                if let Some(inner) = elements.into_single()
+                    && named_elements.is_empty()
+                    && !has_trailing_comma
+                {
+                    // this is just a grouping expression, not a tuple
+                    Expr::Nested {
                         span: TSpan::new(first.start, rparen.end),
                         t_lparen: t(first),
-                        elements: ExprIds::EMPTY,
+                        inner,
                         t_rparen: t(rparen),
                     }
                 } else {
-                    let expr = self.parse_expr(scope)?;
-                    step_or_unexpected! { self, tok,
-                        RParen => Expr::Nested {
-                            span: TSpan::new(first.start, tok.end),
-                            t_lparen: t(first),
-                            inner: self.ast.expr(expr),
-                            t_rparen: t(tok),
-                        },
-                        Comma => {
-                            // tuple
-                            let mut elems = vec![expr];
-                            let rparen = self.parse_delimited(first, TokenType::Comma, TokenType::RParen, |p| {
-                                p.parse_expr(scope).map(|elem| {
-                                    elems.push(elem);
-                                    Delimit::OptionalIfNewLine
-                                })
-                            })?;
-                            Expr::Tuple {
-                                span: TSpan::new(first.start, rparen.end),
-                                t_lparen: t(first),
-                                elements: self.ast.exprs(elems),
-                                t_rparen: t(rparen),
-                            }
-                        }
+                    Expr::Tuple {
+                        span: TSpan::new(first.start, rparen.end),
+                        t_lparen: t(first),
+                        elements,
+                        named_elements,
+                        t_rparen: t(rparen),
                     }
                 }
             }
@@ -1360,30 +1367,9 @@ impl<T: TreeToken> Parser<'_, T> {
                     let lparen = self.toks.step_assert(TokenType::LParen);
 
                     // function call
-                    let mut args = Vec::new();
-                    let mut named_args = Vec::new();
-                    let rparen =
-                        self.parse_delimited(lparen, TokenType::Comma, TokenType::RParen, |p| {
-                            let expr = p.parse_expr(scope)?;
-                            if p.toks.step_if(TokenType::Colon).is_some() {
-                                let value = p.parse_expr(scope)?;
-                                let Expr::Ident {
-                                    span: name_span, ..
-                                } = expr
-                                else {
-                                    p.toks.errors.emit_err(
-                                        Error::NameExpected.at_span(expr.span_builder(p.ast)),
-                                    );
-                                    return Ok(Delimit::OptionalIfNewLine);
-                                };
-                                named_args.push((name_span, p.ast.expr(value)));
-                            } else {
-                                args.push(expr);
-                            }
-                            Ok(Delimit::OptionalIfNewLine)
-                        })?;
                     let called_expr = self.ast.expr(expr);
-                    let args = self.ast.exprs(args);
+
+                    let (args, named_args, rparen, _) = self.parse_tuple(lparen, scope)?;
                     let call = self.ast.call(ast::Call {
                         called_expr,
                         t_lparen: t(lparen),
@@ -1456,6 +1442,43 @@ impl<T: TreeToken> Parser<'_, T> {
                 _ => break Ok(expr),
             };
         }
+    }
+
+    /// parse a tuple and return (elements, named_elements, rparen, has_trailing_comma)
+    fn parse_tuple(
+        &mut self,
+        lparen: Token,
+        scope: ScopeId,
+    ) -> ParseResult<(ExprIds, Box<[(TSpan, ExprId)]>, Token, bool)> {
+        let mut elems = Vec::new();
+        let mut named_elems = Vec::new();
+        let (rparen, trailing_comma) =
+            self.parse_delimited_inner(lparen, TokenType::Comma, TokenType::RParen, |p| {
+                let expr = p.parse_expr(scope)?;
+                if p.toks.step_if(TokenType::Colon).is_some() {
+                    let value = p.parse_expr(scope)?;
+                    let Expr::Ident {
+                        span: name_span, ..
+                    } = expr
+                    else {
+                        p.toks
+                            .errors
+                            .emit_err(Error::NameExpected.at_span(expr.span_builder(p.ast)));
+                        return Ok(Delimit::OptionalIfNewLine);
+                    };
+                    named_elems.push((name_span, p.ast.expr(value)));
+                } else {
+                    elems.push(expr);
+                }
+                Ok(Delimit::OptionalIfNewLine)
+            })?;
+        let args = self.ast.exprs(elems);
+        Ok((
+            args,
+            named_elems.into_boxed_slice(),
+            rparen,
+            trailing_comma.is_some(),
+        ))
     }
 
     fn parse_bin_op_rhs(

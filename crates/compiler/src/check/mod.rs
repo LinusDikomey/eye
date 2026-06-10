@@ -27,7 +27,9 @@ use crate::{
     eval::ConstValueId,
     hir::{CastId, HIRBuilder, Hir, LValue, Node},
     types::{BaseType, TypeFull},
-    typing::{Bound, LocalTypeId, LocalTypeIds, TypeInfo, TypeInfoOrIdx, TypeTable},
+    typing::{
+        Bound, LocalOrGlobalInstance, LocalTypeId, LocalTypeIds, TypeInfo, TypeInfoOrIdx, TypeTable,
+    },
 };
 
 use self::exhaust::Exhaustion;
@@ -300,7 +302,11 @@ impl<H: Hooks> Ctx<'_, H> {
         self.hir.types.invalidate(ty);
     }
 
-    pub fn from_type_instance(&mut self, ty: Type, generics: LocalTypeIds) -> TypeInfoOrIdx {
+    pub fn from_type_instance<'a>(
+        &mut self,
+        ty: Type,
+        generics: impl Into<LocalOrGlobalInstance<'a>>,
+    ) -> TypeInfoOrIdx {
         self.hir
             .types
             .from_type_instance(&self.compiler.types, ty, generics)
@@ -545,7 +551,10 @@ pub fn verify_main_signature(
     }
     match compiler.types.lookup(signature.return_type) {
         TypeFull::Instance(BaseType::Invalid, _) => Err(None),
-        TypeFull::Instance(BaseType::Tuple, []) => Ok(()),
+        TypeFull::Tuple {
+            members: &[],
+            named_members: &[],
+        } => Ok(()),
         TypeFull::Instance(b, _) if b.is_int() => Ok(()),
         _ => Err(Some(
             Error::InvalidMainReturnType(
@@ -636,10 +645,7 @@ impl Compiler {
                     params.len() + named_params.len()
                 );
             }
-            if !matches!(
-                self.types.lookup(params[1].1),
-                TypeFull::Instance(BaseType::Tuple, _)
-            ) {
+            if !matches!(self.types.lookup(params[1].1), TypeFull::Tuple { .. }) {
                 // TODO: this exception will not be allowed in the future without a T: Trait bound
                 if !matches!(self.types.lookup(params[1].1), TypeFull::Generic(_)) {
                     panic!(

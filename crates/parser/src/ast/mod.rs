@@ -64,6 +64,10 @@ impl ExprIds {
     pub fn is_empty(&self) -> bool {
         self.count == 0
     }
+
+    pub fn into_single(self) -> Option<ExprId> {
+        (self.count == 1).then_some(ExprId(self.idx))
+    }
 }
 impl Iterator for ExprIds {
     type Item = ExprId;
@@ -730,6 +734,7 @@ pub enum Expr<T: TreeToken = ()> {
         span: TSpan,
         t_lparen: T,
         elements: ExprIds,
+        named_elements: Box<[(TSpan, ExprId)]>,
         t_rparen: T,
     },
     EnumLiteral {
@@ -1091,7 +1096,7 @@ pub struct Call<T: TreeToken = ()> {
     pub t_lparen: T,
     pub open_paren_start: u32,
     pub args: ExprIds,
-    pub named_args: Vec<(TSpan, ExprId)>,
+    pub named_args: Box<[(TSpan, ExprId)]>,
     pub t_rparen: T,
     pub end: u32,
 }

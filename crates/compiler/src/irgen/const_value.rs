@@ -51,6 +51,7 @@ pub fn translate(
         eval::ConstValue::Aggregate(elems) => match compiler.types.lookup(ty) {
             TypeFull::Instance(BaseType::Invalid, _) => return Err(UndefinedValue),
             TypeFull::Instance(BaseType::Array, _) => todo!(),
+            TypeFull::Tuple { .. } => todo!(),
             TypeFull::Instance(base, generics) => {
                 let def = compiler.get_base_type_def(base);
                 match &def.def {

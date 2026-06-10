@@ -173,7 +173,7 @@ ir::visitor! {
 
     use builtin: ir::Builtin;
     use arith: ir::dialect::Arith;
-    use tuple: ir::dialect::Tuple;
+    // use tuple: ir::dialect::Tuple;
     use mem: ir::dialect::Mem;
     use cf: ir::dialect::Cf;
 

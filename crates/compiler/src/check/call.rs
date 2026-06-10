@@ -1,5 +1,6 @@
 use crate::check::Hooks;
 use crate::types::{BaseType, BuiltinType, TypeFull};
+use crate::typing::NamedMembers;
 use crate::{InvalidTypeError, Type};
 use crate::{
     compiler::{LocalScope, ResolvedStructDef, ResolvedTypeContent, builtins},
@@ -64,9 +65,9 @@ impl<'a, H: Hooks> Ctx<'a, H> {
                 debug_assert!(
                     !matches!(
                         self.compiler.get_base_type_def(base).def,
-                        ResolvedTypeContent::Builtin(BuiltinType::Tuple | BuiltinType::Function)
+                        ResolvedTypeContent::Builtin(BuiltinType::Function)
                     ),
-                    "tuple/function base type should not be possible to obtain"
+                    "function base type should not be possible to obtain"
                 );
                 let generic_count = self.compiler.get_base_type_generic_count(base);
                 let base_generic_count = generic_count.into();
@@ -393,7 +394,10 @@ impl<'a, H: Hooks> Ctx<'a, H> {
         // TODO: auto ref/deref on called value
         let arg_types = self.hir.types.add_multiple_unknown(call.args.len() as _);
         let fn_instance = self.hir.types.add_multiple_info_or_idx([
-            TypeInfoOrIdx::TypeInfo(TypeInfo::Instance(BaseType::Tuple, arg_types)),
+            TypeInfoOrIdx::TypeInfo(TypeInfo::Tuple {
+                members: arg_types,
+                named_members: NamedMembers::EMPTY,
+            }),
             expected.into(),
         ]);
         assert_eq!(

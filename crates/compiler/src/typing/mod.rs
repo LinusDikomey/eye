@@ -1,3 +1,7 @@
+use core::{
+    clone::Clone,
+    iter::{ExactSizeIterator, Iterator},
+};
 use std::{
     collections::HashMap,
     ops::{Index, IndexMut},
@@ -34,6 +38,7 @@ pub struct TypeTable {
     enums: Vec<InferredEnum>,
     variants: Vec<InferredEnumVariant>,
     bounds: Vec<Bound>,
+    named_members: Vec<NamedMember>,
     deferred_checks: Vec<(LocalTypeId, Bounds)>,
 }
 impl Index<LocalTypeId> for TypeTable {
@@ -62,6 +67,30 @@ impl IndexMut<VariantId> for TypeTable {
         &mut self.variants[index.idx()]
     }
 }
+impl Index<NamedMemberId> for TypeTable {
+    type Output = NamedMember;
+
+    fn index(&self, index: NamedMemberId) -> &Self::Output {
+        &self.named_members[index.0 as usize]
+    }
+}
+impl IndexMut<NamedMemberId> for TypeTable {
+    fn index_mut(&mut self, index: NamedMemberId) -> &mut Self::Output {
+        &mut self.named_members[index.0 as usize]
+    }
+}
+impl Index<NamedMembers> for TypeTable {
+    type Output = [NamedMember];
+
+    fn index(&self, index: NamedMembers) -> &Self::Output {
+        &self.named_members[index.start as usize..index.start as usize + index.count as usize]
+    }
+}
+impl IndexMut<NamedMembers> for TypeTable {
+    fn index_mut(&mut self, index: NamedMembers) -> &mut Self::Output {
+        &mut self.named_members[index.start as usize..index.start as usize + index.count as usize]
+    }
+}
 impl Default for TypeTable {
     fn default() -> Self {
         Self::new()
@@ -74,6 +103,7 @@ impl TypeTable {
             enums: Vec::new(),
             variants: Vec::new(),
             bounds: Vec::new(),
+            named_members: Vec::new(),
             deferred_checks: Vec::new(),
         }
     }
@@ -206,6 +236,25 @@ impl TypeTable {
 
     pub fn get_bound(&self, id: BoundId) -> &Bound {
         &self.bounds[id.0 as usize]
+    }
+
+    pub fn add_named_members(
+        &mut self,
+        members: impl Iterator<Item = NamedMember>,
+    ) -> NamedMembers {
+        let start = self.named_members.len() as u32;
+        self.named_members.extend(members);
+        let count = self.named_members.len() as u32 - start;
+        NamedMembers { start, count }
+    }
+
+    pub fn add_missing_named_members(&mut self, count: u32) -> NamedMembers {
+        let start = self.named_members.len() as u32;
+        self.named_members.extend((0..count).map(|_| NamedMember {
+            name: "".into(),
+            ty: LocalTypeId::MISSING,
+        }));
+        NamedMembers { start, count }
     }
 
     pub fn defer_impl_check(&mut self, ty: LocalTypeId, bounds: Bounds) {
@@ -341,7 +390,11 @@ impl TypeTable {
                     self.types[id.idx()] = TypeInfoOrIdx::TypeInfo(info);
                 }
 
-                TypeInfo::Instance(BaseType::Tuple, ids)
+                // TODO: named tuple members
+                TypeInfo::Tuple {
+                    members: ids,
+                    named_members: NamedMembers::EMPTY,
+                }
             }
             UnresolvedType::Function {
                 span_and_return_type,
@@ -381,9 +434,7 @@ impl TypeTable {
             TypeInfo::Known(Type::Invalid) => return Err(InvalidTypeError),
             TypeInfo::UnknownConst => matches!(types.lookup(ty), TypeFull::Const(_)),
             TypeInfo::Known(known) => known.is_same_as(ty)?,
-            TypeInfo::Unknown(bounds) => bounds
-                .iter()
-                .all(|bound| todo!("check bound compatibility")),
+            TypeInfo::Unknown(bounds) => bounds.is_empty() || todo!("check bounds compatible"),
             TypeInfo::Integer => matches!(full, TypeFull::Instance(base, _) if base.is_int()),
             TypeInfo::Float => matches!(full, TypeFull::Instance(base, _) if base.is_float()),
             TypeInfo::Instance(base, generics) => {
@@ -401,6 +452,37 @@ impl TypeTable {
                 true
             }
             TypeInfo::Enum(_) => todo!("check if local enum could infer to real type"),
+            TypeInfo::Tuple {
+                members,
+                named_members,
+            } => {
+                let TypeFull::Tuple {
+                    members: type_members,
+                    named_members: type_named_members,
+                } = full
+                else {
+                    return Ok(false);
+                };
+                if members.count != type_members.len() as u32
+                    || named_members.count != type_named_members.len() as u32
+                {
+                    return Ok(false);
+                }
+                for (v, &ty) in members
+                    .iter()
+                    .chain(named_members.iter().map(|id| self[id].ty))
+                    .zip(
+                        type_members
+                            .iter()
+                            .chain(type_named_members.iter().map(|(_, ty)| ty)),
+                    )
+                {
+                    if !self.compatible_with_type(types, self[v], ty, on_generic_selected)? {
+                        return Ok(false);
+                    }
+                }
+                true
+            }
             TypeInfo::BaseTypeItem(_)
             | TypeInfo::TypeItem(_)
             | TypeInfo::TraitItem { .. }
@@ -565,11 +647,47 @@ impl TypeTable {
         Some(generics)
     }
 
-    pub fn specify_type_instance(
+    /// specify a tuple without named members
+    fn try_specify_tuple(
+        &mut self,
+        var: LocalTypeId,
+        member_count: u32,
+        function_generics: &Generics,
+        compiler: &Compiler,
+    ) -> Option<LocalTypeIds> {
+        let (idx, info) = self.find_shorten(var);
+        if let TypeInfo::Tuple {
+            members,
+            named_members,
+        } = info
+            && members.count == member_count
+            && named_members.count == 0
+        {
+            return Some(members);
+        }
+        let members = self.add_multiple_unknown(member_count);
+        let info = TypeInfo::Tuple {
+            members: LocalTypeIds {
+                idx: members.idx,
+                count: member_count,
+            },
+            named_members: NamedMembers::EMPTY,
+        };
+        if self
+            .try_specify(idx, info, function_generics, compiler)
+            .is_err()
+        {
+            // TODO: better errors
+            return None;
+        }
+        Some(members)
+    }
+
+    pub fn specify_type_instance<'a>(
         &mut self,
         id: LocalTypeId,
         ty: Type,
-        generics: LocalTypeIds,
+        generics: impl Into<LocalOrGlobalInstance<'a>>,
         function_generics: &Generics,
         compiler: &Compiler,
         span: impl FnOnce() -> ModuleSpan,
@@ -745,7 +863,7 @@ impl TypeTable {
                 function,
                 generics: item_generics,
             } => {
-                if generics.is_empty() {
+                if item_generics.is_empty() {
                     return TypeInfo::Known(ty).into();
                 }
                 let item_instance_vars = self.add_multiple_unknown(item_generics.len() as _);
@@ -757,6 +875,29 @@ impl TypeTable {
                     module: function.0,
                     function: function.1,
                     generics: item_instance_vars,
+                }
+                .into()
+            }
+            TypeFull::Tuple {
+                members,
+                named_members,
+            } => {
+                let member_vars = self.add_multiple_unknown(members.len() as _);
+                for (&member, var) in members.iter().zip(member_vars.iter()) {
+                    let info = self.from_type_instance(types, member, generics);
+                    self.replace(var, info);
+                }
+                let named_member_ids = self.add_missing_named_members(named_members.len() as _);
+                for ((name, member), id) in named_members.iter().zip(named_member_ids.iter()) {
+                    let info = self.from_type_instance(types, *member, generics);
+                    self[id] = NamedMember {
+                        name: name.clone(),
+                        ty: self.add_info_or_idx(info),
+                    };
+                }
+                TypeInfo::Tuple {
+                    members: member_vars,
+                    named_members: named_member_ids,
                 }
                 .into()
             }
@@ -877,19 +1018,6 @@ impl TypeTable {
                 BaseType::Invalid => unreachable!(
                     "invalid types should always be represented as Known(Type::Invalid)"
                 ),
-                BaseType::Tuple => {
-                    s.push('(');
-                    let mut first = true;
-                    for member in generics.iter() {
-                        if first {
-                            first = false;
-                        } else {
-                            s.push_str(", ");
-                        }
-                        self.type_to_string_inner(compiler, function_generics, self[member], s);
-                    }
-                    s.push(')');
-                }
                 BaseType::Array => {
                     s.push('[');
                     self.type_to_string_inner(
@@ -959,6 +1087,40 @@ impl TypeTable {
                 s,
                 &self.enums[id.idx()].variants,
             ),
+            TypeInfo::Tuple {
+                members,
+                named_members,
+            } => {
+                s.push('(');
+                let mut first = true;
+                for member in members.iter() {
+                    if first {
+                        first = false;
+                    } else {
+                        s.push_str(", ");
+                    }
+                    self.type_to_string_inner(compiler, function_generics, self[member], s);
+                }
+                for member in named_members.iter() {
+                    if first {
+                        first = false;
+                    } else {
+                        s.push_str(", ");
+                    }
+                    s.push_str(&self[member].name);
+                    s.push_str(": ");
+                    self.type_to_string_inner(
+                        compiler,
+                        function_generics,
+                        self[self[member].ty],
+                        s,
+                    );
+                }
+                if members.count == 1 && named_members.count == 0 {
+                    s.push(',');
+                }
+                s.push(')');
+            }
             TypeInfo::BaseTypeItem(base) => {
                 let name = &compiler.types.get_base(base).name;
                 s.push_str("<base type item: ");
@@ -1129,6 +1291,31 @@ impl TypeTable {
                     },
                 );
                 compiler.types.intern(TypeFull::Instance(base, &[]))
+            }
+            TypeInfo::Tuple {
+                members,
+                named_members,
+            } => {
+                let buf_start = buf.len();
+                buf.reserve(members.count as usize);
+                for var in members.iter() {
+                    let member = self.intern_var(compiler, module, var, buf);
+                    buf.push(member);
+                }
+                // PERF: also buffer
+                let named_members: Box<[_]> = named_members
+                    .iter()
+                    .map(|id| {
+                        let named_member = self.intern_var(compiler, module, self[id].ty, buf);
+                        (self[id].name.clone(), named_member)
+                    })
+                    .collect();
+                let ty = compiler.types.intern(TypeFull::Tuple {
+                    members: &buf[buf_start..buf_start + members.count as usize],
+                    named_members: &named_members,
+                });
+                buf.truncate(buf_start);
+                ty
             }
             TypeInfo::Closure {
                 captures,
@@ -1446,6 +1633,40 @@ impl TypeTable {
                         self.unify_with_generic_type(info, ty, compiler, function_generics)
                     })?
             }
+            TypeFull::Tuple {
+                members,
+                named_members,
+            } => {
+                let TypeInfo::Tuple {
+                    members: member_vars,
+                    named_members: named_member_ids,
+                } = info
+                else {
+                    return Ok(false);
+                };
+                if members.len() != member_vars.count as usize
+                    || named_members.len() != named_member_ids.count as usize
+                {
+                    return Ok(false);
+                };
+                members
+                    .iter()
+                    .zip(member_vars.iter())
+                    .try_all(|(&ty, var)| {
+                        self.unify_with_generic_type(var, ty, compiler, function_generics)
+                    })?
+                    && named_members.iter().zip(named_member_ids.iter()).try_all(
+                        |((name, ty), id)| {
+                            Ok(self[id].name == *name
+                                && self.unify_with_generic_type(
+                                    self[id].ty,
+                                    *ty,
+                                    compiler,
+                                    function_generics,
+                                )?)
+                        },
+                    )?
+            }
 
             // can only unify with itself or Unknown, both already handled above
             TypeFull::Generic(_) => false,
@@ -1489,14 +1710,9 @@ impl TypeTable {
                 let params_tuple = bound.generics.nth(0).unwrap();
                 let return_ty = bound.generics.nth(1).unwrap();
                 let param_count = signature.params.len() as u32;
-                let Some(param_types) = self.try_specify_base(
-                    params_tuple,
-                    BaseType::Tuple,
-                    param_count,
-                    function_generics,
-                    compiler,
-                    |types| types.add_multiple_unknown(param_count),
-                ) else {
+                let Some(param_types) =
+                    self.try_specify_tuple(params_tuple, param_count, function_generics, compiler)
+                else {
                     return Ok(None);
                 };
                 for (&(_, ty), var) in signature.params.iter().zip(param_types.iter()) {
@@ -1640,6 +1856,17 @@ impl TypeTable {
                     .iter()
                     .try_any(|ty| self.is_uninhabited(compiler, self[ty]))
             })?,
+            TypeInfo::Tuple {
+                members,
+                named_members,
+            } => {
+                members
+                    .iter()
+                    .try_any(|ty| self.is_uninhabited(compiler, self[ty]))?
+                    || named_members
+                        .iter()
+                        .try_any(|id| self.is_uninhabited(compiler, self[self[id].ty]))?
+            }
             TypeInfo::BaseTypeItem(_)
             | TypeInfo::TypeItem(_)
             | TypeInfo::TraitItem { .. }
@@ -1675,6 +1902,28 @@ pub enum LocalOrGlobalInstance<'a> {
     Local(LocalTypeIds),
     Global(&'a [Type]),
 }
+impl LocalOrGlobalInstance<'_> {
+    pub fn nth(&self, index: u32) -> Option<TypeInfoOrIdx> {
+        Some(match self {
+            Self::Global(tys) => TypeInfo::Known(*tys.get(index as usize)?).into(),
+            Self::Local(tys) => tys.nth(index)?.into(),
+        })
+    }
+
+    pub fn count(&self) -> u32 {
+        match self {
+            LocalOrGlobalInstance::Local(ids) => ids.count,
+            LocalOrGlobalInstance::Global(items) => items.len() as u32,
+        }
+    }
+
+    pub(crate) fn make_local(&self, table: &mut TypeTable) -> LocalTypeIds {
+        match self {
+            &Self::Local(ids) => ids,
+            Self::Global(types) => table.add_multiple(types.iter().copied().map(TypeInfo::Known)),
+        }
+    }
+}
 impl<'a> From<LocalTypeIds> for LocalOrGlobalInstance<'a> {
     fn from(value: LocalTypeIds) -> Self {
         Self::Local(value)
@@ -1690,6 +1939,30 @@ impl<'a> LocalOrGlobalInstance<'a> {
         match self {
             LocalOrGlobalInstance::Local(ids) => ids.is_empty(),
             LocalOrGlobalInstance::Global(instance) => instance.is_empty(),
+        }
+    }
+}
+impl<'a> Iterator for LocalOrGlobalInstance<'a> {
+    type Item = TypeInfoOrIdx;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Global(tys) => tys.first().map(|&a| {
+                *tys = &tys[1..];
+                TypeInfoOrIdx::TypeInfo(TypeInfo::Known(a))
+            }),
+            Self::Local(tys) => tys
+                .nth(0)
+                .inspect(|_| *tys = tys.skip(1))
+                .map(TypeInfoOrIdx::Idx),
+        }
+    }
+}
+impl<'a> ExactSizeIterator for LocalOrGlobalInstance<'a> {
+    fn len(&self) -> usize {
+        match self {
+            Self::Global(tys) => tys.len(),
+            Self::Local(tys) => tys.count as usize,
         }
     }
 }
@@ -1738,6 +2011,12 @@ pub struct Bound {
     pub span: TSpan,
 }
 
+#[derive(Debug)]
+pub struct NamedMember {
+    pub name: Box<str>,
+    pub ty: LocalTypeId,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Bounds {
     start: u32,
@@ -1759,6 +2038,39 @@ impl Bounds {
 pub struct BoundId(u32);
 
 #[derive(Debug, Clone, Copy)]
+pub struct NamedMembers {
+    start: u32,
+    count: u32,
+}
+impl NamedMembers {
+    pub const EMPTY: Self = Self { start: 0, count: 0 };
+
+    pub fn iter(self) -> impl ExactSizeIterator<Item = NamedMemberId> {
+        (self.start..self.start + self.count).map(NamedMemberId)
+    }
+
+    pub fn nth(&self, i: u32) -> Option<NamedMemberId> {
+        (i < self.count).then_some(NamedMemberId(self.start + i))
+    }
+
+    pub fn split_first(&self) -> Option<(NamedMemberId, Self)> {
+        if self.count == 0 {
+            return None;
+        }
+        Some((
+            NamedMemberId(self.start),
+            Self {
+                start: self.start + 1,
+                count: self.count - 1,
+            },
+        ))
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub struct NamedMemberId(u32);
+
+#[derive(Debug, Clone, Copy)]
 pub enum TypeInfo {
     Unknown(Bounds),
     UnknownConst, // TODO: typed consts
@@ -1767,6 +2079,10 @@ pub enum TypeInfo {
     Float,
     Instance(BaseType, LocalTypeIds),
     Enum(InferredEnumId),
+    Tuple {
+        members: LocalTypeIds,
+        named_members: NamedMembers,
+    },
     BaseTypeItem(BaseType),
     TypeItem(LocalTypeId),
     TraitItem {
@@ -1812,7 +2128,10 @@ impl From<Primitive> for TypeInfo {
 }
 impl TypeInfo {
     pub const INVALID: Self = Self::Known(Type::Invalid);
-    pub const UNIT: Self = Self::Instance(BaseType::Tuple, LocalTypeIds::EMPTY);
+    pub const UNIT: Self = Self::Tuple {
+        members: LocalTypeIds::EMPTY,
+        named_members: NamedMembers::EMPTY,
+    };
 
     pub fn is_invalid(&self) -> bool {
         matches!(self, Self::Known(Type::Invalid))
@@ -1820,69 +2139,113 @@ impl TypeInfo {
 
     pub fn is_unit(&self) -> bool {
         match self {
-            Self::Instance(BaseType::Tuple, elems) if elems.is_empty() => true,
+            Self::Tuple {
+                members,
+                named_members,
+            } if members.is_empty() && named_members.count == 0 => true,
             Self::Known(Type::Unit) => true,
             _ => false,
         }
     }
 
-    pub fn as_base<'c>(
+    pub fn is_unknown(&self) -> bool {
+        matches!(self, Self::Unknown(_))
+    }
+
+    pub fn into_base<'c>(
         &self,
         compiler: &'c Compiler,
-        base: BaseType,
-    ) -> Option<BaseTypeGenerics<'c>> {
+    ) -> Option<(BaseType, LocalOrGlobalInstance<'c>)> {
         match *self {
             Self::Known(ty) => match compiler.types.lookup(ty) {
-                TypeFull::Instance(ty_base, generics) if ty_base == base => {
-                    Some(BaseTypeGenerics::Global(generics))
+                TypeFull::Instance(base, generics) => {
+                    Some((base, LocalOrGlobalInstance::Global(generics)))
                 }
                 _ => None,
             },
-            Self::Instance(ty_base, generics) if ty_base == base => {
-                Some(BaseTypeGenerics::Local(generics))
+            Self::Instance(base, generics) => Some((base, LocalOrGlobalInstance::Local(generics))),
+            _ => None,
+        }
+    }
+
+    pub fn into_tuple<'c>(&self, compiler: &'c Compiler) -> Option<LocalOrGlobalTuple<'c>> {
+        match *self {
+            Self::Tuple {
+                members,
+                named_members,
+            } => Some(LocalOrGlobalTuple::Local(members, named_members)),
+            Self::Known(ty)
+                if let TypeFull::Tuple {
+                    members,
+                    named_members,
+                } = compiler.types.lookup(ty) =>
+            {
+                Some(LocalOrGlobalTuple::Global(members, named_members))
             }
             _ => None,
         }
     }
+
+    pub fn into_specific_base<'c>(
+        &self,
+        compiler: &'c Compiler,
+        base: BaseType,
+    ) -> Option<LocalOrGlobalInstance<'c>> {
+        self.into_base(compiler)
+            .and_then(|(ty_base, generics)| (ty_base == base).then_some(generics))
+    }
 }
 
-pub enum BaseTypeGenerics<'a> {
-    Global(&'a [Type]),
-    Local(LocalTypeIds),
+pub enum LocalOrGlobalTuple<'a> {
+    Local(LocalTypeIds, NamedMembers),
+    Global(&'a [Type], &'a [(Box<str>, Type)]),
 }
-impl<'a> Iterator for BaseTypeGenerics<'a> {
-    type Item = TypeInfoOrIdx;
+impl<'a> LocalOrGlobalTuple<'a> {
+    pub fn positional_count(&self) -> u32 {
+        match self {
+            Self::Local(positional, _) => positional.count,
+            Self::Global(positional, _) => positional.len() as u32,
+        }
+    }
+
+    pub fn members(&self) -> LocalOrGlobalInstance<'a> {
+        match self {
+            &Self::Local(members, _) => LocalOrGlobalInstance::Local(members),
+            Self::Global(members, _) => LocalOrGlobalInstance::Global(members),
+        }
+    }
+
+    pub fn named_members(
+        &self,
+        table: &'a TypeTable,
+    ) -> impl Iterator<Item = (&'a str, TypeInfoOrIdx)> {
+        match self {
+            &Self::Local(_, named) => LocalOrGlobalNamedMembers::Local(named, table),
+            Self::Global(_, named) => LocalOrGlobalNamedMembers::Global(named),
+        }
+    }
+}
+
+enum LocalOrGlobalNamedMembers<'a> {
+    Local(NamedMembers, &'a TypeTable),
+    Global(&'a [(Box<str>, Type)]),
+}
+impl<'a> Iterator for LocalOrGlobalNamedMembers<'a> {
+    type Item = (&'a str, TypeInfoOrIdx);
 
     fn next(&mut self) -> Option<Self::Item> {
         match self {
-            Self::Global(tys) => tys.first().map(|&a| {
-                *tys = &tys[1..];
-                TypeInfoOrIdx::TypeInfo(TypeInfo::Known(a))
-            }),
-            // xys.split_first_mut().map(|(first, rest)| {
-            //     *tys = rest;
-            //     TypeInfoOrIdx::TypeInfo(TypeInfo::Known(*first))
-            // }),
-            Self::Local(tys) => tys
-                .nth(0)
-                .inspect(|_| *tys = tys.skip(1))
-                .map(TypeInfoOrIdx::Idx),
-        }
-    }
-}
-impl<'a> ExactSizeIterator for BaseTypeGenerics<'a> {
-    fn len(&self) -> usize {
-        match self {
-            Self::Global(tys) => tys.len(),
-            Self::Local(tys) => tys.count as usize,
-        }
-    }
-}
-impl BaseTypeGenerics<'_> {
-    pub fn nth(&self, index: u32) -> TypeInfoOrIdx {
-        match self {
-            Self::Global(tys) => TypeInfo::Known(tys[index as usize]).into(),
-            Self::Local(tys) => tys.nth(index).unwrap().into(),
+            Self::Local(members, table) => {
+                let (first, rest) = members.split_first()?;
+                *members = rest;
+                let member = &table[first];
+                Some((&member.name, member.ty.into()))
+            }
+            Self::Global(members) => {
+                let (first, rest) = members.split_first()?;
+                *members = rest;
+                Some((&first.0, TypeInfo::Known(first.1).into()))
+            }
         }
     }
 }
@@ -1939,13 +2302,6 @@ impl Compiler {
             },
             Type::Type => Layout::EMPTY,
             ty => match self.types.lookup(ty) {
-                TypeFull::Instance(BaseType::Tuple, elems) => {
-                    let mut layout = Layout::EMPTY;
-                    for &elem in elems {
-                        layout.accumulate(self.resolved_layout(elem, generics)?);
-                    }
-                    layout
-                }
                 TypeFull::Instance(BaseType::Array, array) => {
                     let elem = array[0];
                     let TypeFull::Const(n) = self.types.lookup(array[1]) else {
@@ -2006,6 +2362,20 @@ impl Compiler {
                             layout
                         }
                     }
+                }
+                TypeFull::Tuple {
+                    members,
+                    named_members,
+                } => {
+                    let mut layout = Layout::EMPTY;
+                    for elem in members
+                        .iter()
+                        .copied()
+                        .chain(named_members.iter().map(|&(_, ty)| ty))
+                    {
+                        layout.accumulate(self.resolved_layout(elem, generics)?);
+                    }
+                    layout
                 }
                 TypeFull::Generic(i) => self.resolved_layout(generics[i], generics.outer())?,
                 TypeFull::FunctionItem { .. } | TypeFull::Const(_) => Layout::EMPTY,
