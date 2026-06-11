@@ -12,7 +12,7 @@ impl TSpan {
     };
 
     pub fn new(start: u32, end: u32) -> Self {
-        debug_assert!(start <= end, "Invalid span constructed");
+        debug_assert!(start <= end, "Invalid span constructed {start}..{end}");
         Self { start, end }
     }
 

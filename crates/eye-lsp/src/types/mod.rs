@@ -12,11 +12,11 @@ use serde::{Deserialize, Serialize};
 pub struct Uri(String);
 impl Uri {
     pub fn from_path(path: &Path) -> Self {
-        Self(format!(
-            "file://{}",
-            path.canonicalize().unwrap().to_string_lossy()
-        ))
+        // TODO: this could probably be handled more gracefully
+        let ending = if path.is_dir() { "/main.eye" } else { "" };
+        Self(format!("file://{}{ending}", path.to_string_lossy()))
     }
+
     pub fn path(&self) -> &Path {
         Path::new(self.0.strip_prefix("file://").unwrap_or(&self.0))
     }
@@ -97,17 +97,54 @@ pub struct ServerInfo {
     pub version: Option<String>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct Range {
     pub start: Position,
     pub end: Position,
 }
 impl Range {
+    // TODO: these aren't computed in UTF-16
     pub fn from_span(span: TSpan, src: &str) -> Self {
         Self {
             start: Position::from_offset(span.start, src),
             end: Position::from_offset(span.end, src),
         }
+    }
+
+    pub fn to_span(&self, src: &str) -> TSpan {
+        debug_assert!(self.start.line <= self.end.line);
+        let mut lines_to_skip = self.start.line;
+        let mut line_start_offset = 0;
+        for (i, &b) in src.as_bytes().iter().enumerate() {
+            if lines_to_skip == 0 {
+                break;
+            }
+            if b == b'\n' {
+                lines_to_skip -= 1;
+                line_start_offset = i + 1;
+            }
+        }
+        let mut lines_to_skip = self.end.line - self.start.line;
+        let mut line_end_offset = line_start_offset;
+        for (i, &b) in src.as_bytes()[line_start_offset..].iter().enumerate() {
+            if lines_to_skip == 0 {
+                break;
+            }
+            if b == b'\n' {
+                lines_to_skip -= 1;
+                line_end_offset = line_start_offset + i + 1;
+            }
+        }
+        tracing::debug!(
+            "Converting range {:?} -> {} .. {}",
+            self,
+            line_start_offset as u32 + self.start.character,
+            line_end_offset as u32 + self.end.character,
+        );
+        TSpan::new(
+            line_start_offset as u32 + self.start.character,
+            line_end_offset as u32 + self.end.character,
+        )
     }
 }
 
@@ -181,7 +218,21 @@ pub struct TextDocumentIdentifier {
     pub uri: DocumentUri,
 }
 
-#[derive(Serialize)]
+#[derive(Deserialize, Debug)]
+pub struct VersionedTextDocumentIdentifier {
+    #[serde(flatten)]
+    pub identifier: TextDocumentIdentifier,
+    pub version: i32,
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(untagged)]
+pub enum TextDocumentContentChangeEvent {
+    TextDocumentContentChangePartial { range: Range, text: String },
+    TextDocumentContentChangeWholeDocument { text: String },
+}
+
+#[derive(Serialize, Debug)]
 pub struct Diagnostic {
     pub range: Range,
     pub severity: Option<DiagnosticSeverity>,
@@ -208,7 +259,7 @@ impl Serialize for DiagnosticSeverity {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 pub struct CodeDescription {
     pub href: Uri,
 }

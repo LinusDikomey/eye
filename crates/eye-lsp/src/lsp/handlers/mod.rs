@@ -1,18 +1,24 @@
 mod complete;
 mod hover;
 
-use std::{cell::OnceCell, path::Path};
+use std::path::Path;
 
-use compiler::{Def, ModuleSpan};
-use error::span::TSpan;
+use compiler::{
+    Def, ModuleSpan,
+    check::ProjectErrors,
+    compiler::{ModuleSymbols, ParsedModule},
+};
+use error::{Errors, span::TSpan};
 use serde_json::Value;
 
 use crate::{
     ResponseError,
     lsp::{Lsp, find_in_ast::FoundType},
     types::{
-        Location, Range, TextEdit,
-        notification::{DidOpenTextDocumentParams, DidSaveTextDocumentParams},
+        Location, Range, TextDocumentContentChangeEvent, TextEdit,
+        notification::{
+            DidChangeTextDocumentParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams,
+        },
         request::{
             CompletionParams, DefinitionParams, DocumentFormattingParams, HoverParams, Request,
         },
@@ -27,6 +33,7 @@ impl Lsp {
     ) -> Result<(), ResponseError> {
         match method {
             "textDocument/didOpen" => self.on_notification(Self::did_open, params),
+            "textDocument/didChange" => self.on_notification(Self::did_change, params),
             "textDocument/didSave" => self.on_notification(Self::did_save, params),
             _ => {
                 tracing::info!("Unhandled notification: {method} {params}");
@@ -53,7 +60,7 @@ impl Lsp {
     }
 
     pub fn did_open(&mut self, open: DidOpenTextDocumentParams) {
-        if let Some(project) = self.find_project_of_uri(&open.textDocument.uri) {
+        if let Some((project, module)) = self.find_project_of_uri(&open.textDocument.uri) {
             tracing::info!(
                 "Opened file {} is part of existing project {} at {}",
                 open.textDocument.uri.path().display(),
@@ -64,6 +71,12 @@ impl Lsp {
                     .as_ref()
                     .unwrap()
                     .display(),
+            );
+            self.update_module(
+                project,
+                module,
+                open.textDocument.text.into_boxed_str(),
+                open.textDocument.version,
             );
             return;
         }
@@ -88,14 +101,64 @@ impl Lsp {
         ) {
             Ok(id) => {
                 self.projects.push(id);
-                self.update_diagnostics();
+                let Some(module) = self.module_by_path(id, open.textDocument.uri.path()) else {
+                    return;
+                };
+                self.update_module(
+                    id,
+                    module,
+                    open.textDocument.text.into_boxed_str(),
+                    open.textDocument.version,
+                );
             }
             Err(err) => tracing::error!("Failed to add new project: {err:?}"),
         }
     }
 
+    pub fn did_change(&mut self, change_params: DidChangeTextDocumentParams) {
+        let Some((project, module_id)) =
+            self.find_project_of_uri(&change_params.textDocument.identifier.uri)
+        else {
+            tracing::warn!(
+                "Could not find file for change at {:?}",
+                change_params.textDocument.identifier
+            );
+            return;
+        };
+
+        let module = &mut self.compiler.modules[module_id.idx()];
+        // assumes the module was parsed already, which should be the case after did_open
+        let parsed = module.parsed.get_mut().unwrap();
+        let mut src = parsed.ast.src().to_owned();
+        for change in change_params.contentChanges {
+            match change {
+                TextDocumentContentChangeEvent::TextDocumentContentChangePartial {
+                    range,
+                    text,
+                } => {
+                    let span = range.to_span(&src);
+                    src.replace_range(span.range(), &text);
+                }
+                TextDocumentContentChangeEvent::TextDocumentContentChangeWholeDocument {
+                    ..
+                } => {
+                    // requested partial changes
+                    unreachable!()
+                }
+            }
+        }
+        tracing::debug!(target: "did_change", "{:?} {project:?}:{module_id:?}:\n{src}", change_params.textDocument.identifier.uri);
+        self.update_module(
+            project,
+            module_id,
+            src.into_boxed_str(),
+            change_params.textDocument.version,
+        );
+    }
+
     pub fn did_save(&mut self, save: DidSaveTextDocumentParams) {
-        let Some(project) = self.find_project_of_uri(&save.textDocument.uri) else {
+        tracing::info!("save {save:?}");
+        let Some((project, _)) = self.find_project_of_uri(&save.textDocument.uri) else {
             tracing::warn!(
                 "Got save notification for file that is not part of any project: {:?}",
                 save.textDocument.uri.path().display()
@@ -103,40 +166,7 @@ impl Lsp {
             return;
         };
 
-        // find all invalidated projects
-        let mut invalidated_projects = dmap::new_set();
-        invalidated_projects.insert(project);
-
-        loop {
-            let mut changed = false;
-            for project in self.compiler.project_ids() {
-                if invalidated_projects.contains(&project) {
-                    continue;
-                }
-                if self
-                    .compiler
-                    .get_project(project)
-                    .dependencies
-                    .iter()
-                    .any(|dep| invalidated_projects.contains(dep))
-                {
-                    invalidated_projects.insert(project);
-                    changed = true;
-                }
-            }
-            if !changed {
-                break;
-            }
-        }
-
-        for module in self.compiler.module_ids() {
-            let project = self.compiler.modules[module.idx()].project;
-            if invalidated_projects.contains(&project) {
-                self.compiler.modules[module.idx()].ast = OnceCell::new();
-            }
-        }
-
-        self.update_diagnostics();
+        self.invalidate_project_and_recheck(project, ProjectErrors::new());
     }
 
     pub fn definition(&mut self, params: DefinitionParams) -> Option<Location> {

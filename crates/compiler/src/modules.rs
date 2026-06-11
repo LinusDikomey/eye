@@ -4,12 +4,9 @@ pub fn module_and_children(
     path: &Path,
     is_root: bool,
 ) -> (PathBuf, impl use<> + Iterator<Item = (String, PathBuf)>) {
-    let (file, modules) = if path.is_file() {
+    let (file, modules) = if !path.is_dir() {
         return (path.to_owned(), None.into_iter().flatten());
     } else {
-        if !path.is_dir() {
-            panic!("project at {} is not a directory or file", path.display());
-        }
         let file = if is_root {
             path.join("main.eye")
         } else {

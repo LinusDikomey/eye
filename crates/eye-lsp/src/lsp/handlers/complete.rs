@@ -36,7 +36,7 @@ impl Lsp {
                     Def::Invalid => CompletionItemKind::Constant,
                     Def::Function(_, _) => CompletionItemKind::Function,
                     Def::BaseType(_) => CompletionItemKind::TypeParameter,
-                    Def::Type(_) => CompletionItemKind::Struct, // there is no Type Kind onfortunately
+                    Def::Type(_) => CompletionItemKind::Struct, // there is no Type Kind unfortunately
                     Def::Trait(_, _) => CompletionItemKind::Interface,
                     Def::ConstValue(_) => CompletionItemKind::Constant,
                     Def::Module(_) => CompletionItemKind::Module,

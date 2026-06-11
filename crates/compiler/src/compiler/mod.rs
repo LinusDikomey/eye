@@ -105,12 +105,6 @@ impl Compiler {
         dependencies: Vec<ProjectId>,
     ) -> Result<ProjectId, ProjectError> {
         let root = root.canonicalize().unwrap_or(root);
-        if !root
-            .try_exists()
-            .map_err(|err| ProjectError::CantAccessPath(err, root.clone()))?
-        {
-            return Err(ProjectError::NonexistentPath(root));
-        }
         for (project, i) in self.projects.iter().zip(0..) {
             if project.name == name && project.root.as_ref().is_some_and(|r| r == &root) {
                 return Ok(ProjectId(i));
@@ -156,7 +150,7 @@ impl Compiler {
             name: name.into_boxed_str(),
             storage: ModuleStorage::String(content),
             project,
-            ast: OnceCell::new(),
+            parsed: OnceCell::new(),
             root: module_id,
             parent: None,
         });
@@ -189,56 +183,62 @@ impl Compiler {
         &self.get_parsed_module(module_id).ast
     }
 
+    pub fn module_pre_definitions(
+        &self,
+        module_id: ModuleId,
+    ) -> (DHashMap<String, ast::Definition>, Vec<ModuleId>) {
+        let module = &self.modules[module_id.idx()];
+        // add dependencies to each module first
+        let mut definitions: DHashMap<String, ast::Definition> = self.projects
+            [module.project.idx()]
+        .dependencies
+        .iter()
+        .map(|dependency| {
+            let dependency = &self.projects[dependency.idx()];
+            (
+                dependency.name.clone(),
+                ast::Definition::Module(dependency.root_module),
+            )
+        })
+        .collect();
+
+        let mut child_modules = Vec::new();
+        match &module.storage {
+            ModuleStorage::Path(path) => {
+                let (_, child_module_paths) =
+                    crate::modules::module_and_children(path, module_id == module.root);
+                for (name, path) in child_module_paths {
+                    let id = ModuleId::from_inner(self.modules.add(Module::at_path(
+                        name.clone().into_boxed_str(),
+                        path,
+                        module.project,
+                        module.root,
+                        Some(module_id),
+                    )));
+                    child_modules.push(id);
+                    definitions.insert(name, ast::Definition::Module(id));
+                }
+            }
+            ModuleStorage::String(_) => {}
+        };
+        (definitions, child_modules)
+    }
+
     pub fn get_parsed_module(&self, module_id: ModuleId) -> &ParsedModule {
-        self.modules[module_id.idx()].ast.get_or_init(|| {
+        self.modules[module_id.idx()].parsed.get_or_init(|| {
             let module = &self.modules[module_id.idx()];
-            let project = module.project;
-            let root = module.root;
 
-            // add dependencies to each module first
-            let mut definitions: DHashMap<String, ast::Definition> = self.projects
-                [module.project.idx()]
-            .dependencies
-            .iter()
-            .map(|dependency| {
-                let dependency = &self.projects[dependency.idx()];
-                (
-                    dependency.name.clone(),
-                    ast::Definition::Module(dependency.root_module),
-                )
-            })
-            .collect();
-
-            let mut child_modules = Vec::new();
+            let (definitions, child_modules) = self.module_pre_definitions(module_id);
             let contents = match &module.storage {
                 ModuleStorage::Path(path) => {
-                    let contents = if path.is_file() {
-                        std::fs::read_to_string(path)
-                    } else {
-                        let (file, child_module_paths) =
-                            crate::modules::module_and_children(path, module_id == module.root);
-                        for (name, path) in child_module_paths {
-                            let id = ModuleId::from_inner(self.modules.add(Module::at_path(
-                                name.clone().into_boxed_str(),
-                                path,
-                                project,
-                                root,
-                                Some(module_id),
-                            )));
-                            definitions.insert(name, ast::Definition::Module(id));
-                            child_modules.push(id);
-                        }
-
-                        // TODO is this path needed?
-                        // self.modules[module_id.idx()].path = file;
-                        std::fs::read_to_string(&file)
-                    };
-                    contents.map_or_else(
+                    let (file, _) =
+                        crate::modules::module_and_children(path, module_id == module.root);
+                    std::fs::read_to_string(file).map_or_else(
                         |err| {
                             panic!(
                                 "compiler failed to open the file {}: {:?}",
                                 path.display(),
-                                err,
+                                err
                             )
                         },
                         String::into_boxed_str,
@@ -246,13 +246,13 @@ impl Compiler {
                 }
                 ModuleStorage::String(contents) => contents.clone(),
             };
-
             let mut errors = Errors::new();
             let ast = parser::parse(contents, &mut errors, definitions);
             self.errors.add_module(module_id, errors);
             let checked = ModuleSymbols::empty(&ast);
             ParsedModule {
                 ast,
+                version: None,
                 child_modules,
                 symbols: checked,
             }
@@ -492,7 +492,7 @@ impl Compiler {
     }
 
     pub fn get_signature(&self, module: ModuleId, id: ast::FunctionId) -> &Signature {
-        let parsed = self.modules[module.idx()].ast.get().unwrap();
+        let parsed = self.modules[module.idx()].parsed.get().unwrap();
         parsed.symbols.function_signatures[id.idx()].get_or_resolve_with(
             || {
                 // TODO: error
@@ -710,7 +710,7 @@ impl Compiler {
     }
 
     pub fn get_trait_name(&self, module: ModuleId, id: ast::TraitId) -> &str {
-        let parsed = self.modules[module.idx()].ast.get().unwrap();
+        let parsed = self.modules[module.idx()].parsed.get().unwrap();
         let trait_def = &parsed.ast[id];
         &parsed.ast.src()[trait_def.associated_name.range()]
     }
@@ -806,7 +806,7 @@ impl Compiler {
     }
 
     pub fn get_hir(&self, module: ModuleId, id: ast::FunctionId) -> &CheckedFunction {
-        let checked = &self.modules[module.idx()].ast.get().unwrap().symbols;
+        let checked = &self.modules[module.idx()].parsed.get().unwrap().symbols;
         checked.functions[id.idx()].get_or_resolve_with(
             || panic!("checked function depends on itself recursively"),
             || check::function(self, module, id, &mut ()),
@@ -814,7 +814,7 @@ impl Compiler {
     }
 
     pub fn get_function_name(&self, module: ModuleId, function: ast::FunctionId) -> &str {
-        let ast = &self.modules[module.idx()].ast.get().unwrap().ast;
+        let ast = &self.modules[module.idx()].parsed.get().unwrap().ast;
         &ast[ast[function].associated_name]
     }
 
@@ -946,7 +946,7 @@ impl Compiler {
             }
 
             for id in ast.type_ids() {
-                let parsed = self.modules[module.idx()].ast.get().unwrap();
+                let parsed = self.modules[module.idx()].parsed.get().unwrap();
                 let id = *parsed.symbols.types[id.idx()].get_or_init(|| {
                     let generic_count = parsed.ast[id].generic_count();
                     self.add_type_def(module, id, "<anonymous type>".into(), generic_count)
@@ -1065,7 +1065,7 @@ impl Compiler {
         while let Some(module) = module_queue.pop_front() {
             let ast = self.get_module_ast(module);
             let functions = ast.function_ids();
-            let checked = &self.modules[module.idx()].ast.get().unwrap().symbols;
+            let checked = &self.modules[module.idx()].parsed.get().unwrap().symbols;
             for function in functions {
                 let Some(hir) = checked.functions[function.idx()].get() else {
                     continue;
@@ -1591,7 +1591,7 @@ pub struct Module {
     pub name: Box<str>,
     pub storage: ModuleStorage,
     pub project: ProjectId,
-    pub ast: OnceCell<ParsedModule>,
+    pub parsed: OnceCell<ParsedModule>,
     pub root: ModuleId,
     pub parent: Option<ModuleId>,
 }
@@ -1607,7 +1607,7 @@ impl Module {
             name,
             storage: ModuleStorage::Path(path),
             project,
-            ast: OnceCell::new(),
+            parsed: OnceCell::new(),
             root,
             parent,
         }
@@ -1615,6 +1615,7 @@ impl Module {
 }
 
 pub enum ModuleStorage {
+    /// Must always be a canonical path
     Path(PathBuf),
     String(Box<str>),
 }
@@ -1629,6 +1630,8 @@ impl ModuleStorage {
 
 pub struct ParsedModule {
     pub ast: Ast,
+    /// used by lsp
+    pub version: Option<i32>,
     pub child_modules: Vec<ModuleId>,
     pub symbols: ModuleSymbols,
 }
@@ -2029,7 +2032,7 @@ pub struct ModuleSymbols {
     pub def_exprs: Box<[Resolvable<Def>]>,
 }
 impl ModuleSymbols {
-    fn empty(ast: &Ast) -> Self {
+    pub fn empty(ast: &Ast) -> Self {
         Self {
             function_signatures: (0..ast.function_count())
                 .map(|_| Resolvable::new())

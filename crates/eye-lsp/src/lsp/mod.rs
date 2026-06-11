@@ -1,6 +1,11 @@
-use std::path::{Component, PathBuf};
+use std::{
+    cell::OnceCell,
+    path::{Component, Path, PathBuf},
+};
 
-use compiler::{Compiler, Def, ModuleSpan, ProjectId, check::ProjectErrors};
+use compiler::{
+    Compiler, Def, ModuleSpan, ProjectId, check::ProjectErrors, compiler::ParsedModule,
+};
 use dmap::DHashMap;
 use parser::ast::{ModuleId, ScopeId};
 use serde_json::Value;
@@ -54,7 +59,7 @@ impl Lsp {
             projects: project.into_iter().collect(),
             std,
         };
-        lsp.update_diagnostics();
+        lsp.update_diagnostics(None);
 
         lsp
     }
@@ -76,15 +81,46 @@ impl Lsp {
         Ok(())
     }
 
-    pub fn find_project_of_uri(&self, uri: &Uri) -> Option<ProjectId> {
+    pub fn find_project_of_uri(&self, uri: &Uri) -> Option<(ProjectId, ModuleId)> {
+        // TODO: doesn't handle adding new files to projects
         let path = uri.path();
-        self.projects.iter().copied().find(|&project| {
-            pathdiff::diff_paths(
-                path,
-                self.compiler.get_project(project).root.as_ref().unwrap(),
-            )
-            .is_some_and(|diff| !diff.components().any(|c| c == Component::ParentDir))
-        })
+        self.projects
+            .iter()
+            .copied()
+            .find_map(|project| Some(project).zip(self.module_by_path(project, path)))
+    }
+
+    pub fn module_by_path(&self, project: ProjectId, path: &Path) -> Option<ModuleId> {
+        let diff = pathdiff::diff_paths(
+            path,
+            self.compiler.get_project(project).root.as_ref().unwrap(),
+        )?;
+        if diff.components().any(|c| c == Component::ParentDir) {
+            return None;
+        }
+        let mut module = self.compiler.get_project(project).root_module;
+        for component in diff.components() {
+            match component {
+                Component::Normal(s) if s == "main.eye" => return Some(module),
+                Component::Normal(s) => {
+                    let path = Path::new(s);
+                    if path.extension().is_some_and(|ext| ext != "eye") {
+                        return None;
+                    }
+                    let name = path.file_stem().and_then(|name| name.to_str())?;
+                    let Def::Module(new_module) =
+                        self.compiler
+                            .resolve_in_module(module, name, ModuleSpan::MISSING)
+                    else {
+                        // TODO: handle new modules that are not yet present on disk here
+                        return None;
+                    };
+                    module = new_module;
+                }
+                _ => return None,
+            }
+        }
+        Some(module)
     }
 
     pub fn uri_from_module(&self, module: ModuleId) -> Uri {
@@ -175,14 +211,91 @@ impl Lsp {
         }
     }
 
-    pub fn update_diagnostics(&mut self) {
+    pub fn update_module(
+        &mut self,
+        project: ProjectId,
+        module: ModuleId,
+        new_text: Box<str>,
+        version: i32,
+    ) {
+        let (definitions, child_modules) = self.compiler.module_pre_definitions(module);
+        let project_errors = ProjectErrors::new();
+        let mut errors = error::Errors::new();
+        let new_ast = parser::parse(new_text, &mut errors, definitions);
+        project_errors.add_module(module, errors);
+        self.compiler.modules[module.idx()].parsed = OnceCell::from(ParsedModule {
+            symbols: compiler::compiler::ModuleSymbols::empty(&new_ast),
+            ast: new_ast,
+            version: Some(version),
+            child_modules,
+        });
+
+        self.invalidate_project_and_recheck(project, project_errors);
+    }
+
+    pub fn invalidate_project_and_recheck(
+        &mut self,
+        project: ProjectId,
+        new_errors: ProjectErrors,
+    ) {
+        // find all invalidated projects
+        let mut invalidated_projects = dmap::new_set();
+        invalidated_projects.insert(project);
+
+        loop {
+            let mut changed = false;
+            for project in self.compiler.project_ids() {
+                if invalidated_projects.contains(&project) {
+                    continue;
+                }
+                if self
+                    .compiler
+                    .get_project(project)
+                    .dependencies
+                    .iter()
+                    .any(|dep| invalidated_projects.contains(dep))
+                {
+                    invalidated_projects.insert(project);
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+
+        for module in self.compiler.module_ids() {
+            let project = self.compiler.modules[module.idx()].project;
+            if invalidated_projects.contains(&project)
+                && let Some(parsed) = self.compiler.modules[module.idx()].parsed.get_mut()
+            {
+                parsed.symbols = compiler::compiler::ModuleSymbols::empty(&parsed.ast);
+            }
+        }
+
+        self.update_diagnostics(Some((project, new_errors)));
+    }
+
+    pub fn update_diagnostics(
+        &mut self,
+        mut new_project_errors: Option<(ProjectId, ProjectErrors)>,
+    ) {
         tracing::debug!("Updating diagnostics for {} projects", self.projects.len());
         for &project in &self.projects {
-            self.compiler.errors = ProjectErrors::new();
+            self.compiler.errors = if new_project_errors
+                .as_ref()
+                .is_some_and(|&(id, _)| id == project)
+            {
+                new_project_errors.take().unwrap().1
+            } else {
+                ProjectErrors::new()
+            };
             self.compiler.check_complete_project(project);
             let errors = std::mem::replace(&mut self.compiler.errors, ProjectErrors::new());
             for (&module, errors) in errors.by_file.borrow().iter() {
-                let src = self.compiler.get_module_ast(module).src();
+                let parsed = self.compiler.get_parsed_module(module);
+                let version = parsed.version;
+                let src = parsed.ast.src();
                 let mut diagnostics = Vec::new();
                 let mut emit = |errors: &[error::CompileError], severity| {
                     for error in errors {
@@ -220,10 +333,12 @@ impl Lsp {
                     uri: Uri::from_path(
                         self.compiler.modules[module.idx()].storage.path().unwrap(),
                     ),
-                    // TODO: track versions of files
-                    version: None,
+                    version,
                     diagnostics,
                 };
+                if !params.diagnostics.is_empty() {
+                    tracing::info!("Emitting {} errors:\n{params:?}", params.diagnostics.len());
+                }
                 send_notification(params);
             }
         }

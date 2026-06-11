@@ -168,6 +168,11 @@ impl<T: TreeToken> Parser<'_, T> {
             if let Some((_, end)) = start_end {
                 if let Some(end_tok) = self.toks.step_if(end) {
                     break end_tok;
+                } else if let Some(eof) = self.toks.step_if(TokenType::Eof) {
+                    self.toks
+                        .errors
+                        .emit_err(unexpected(eof, ExpectedTokens::Specific(end)));
+                    break eof;
                 }
             } else if let Some(eof) = self.toks.step_if(TokenType::Eof) {
                 break eof;

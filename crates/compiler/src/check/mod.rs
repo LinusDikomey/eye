@@ -71,7 +71,7 @@ pub fn function<H: Hooks>(
     id: parser::ast::FunctionId,
     hooks: &mut H,
 ) -> crate::compiler::CheckedFunction {
-    let ast = &compiler.modules[module.idx()].ast.get().unwrap().ast;
+    let ast = &compiler.modules[module.idx()].parsed.get().unwrap().ast;
 
     let function = &ast[id];
     let name = crate::compiler::function_name(ast, function, module, id);
