@@ -230,7 +230,11 @@ impl<T: TreeToken> Parser<'_, T> {
                                 .emit_err(Error::DuplicateDefinition.at_span(name_span))
                         }
                         Entry::Vacant(entry) => {
-                            entry.insert(Definition::Use { t_use, path });
+                            entry.insert(Definition::Use {
+                                t_use,
+                                path,
+                                id: self.ast.next_use_id(),
+                            });
                         }
                     }
                 }

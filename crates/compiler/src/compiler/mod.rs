@@ -20,7 +20,7 @@ use parser::{
     self,
     ast::{
         self, Ast, DefExprId, FunctionId, GenericDef, GlobalId, ModuleId, Primitive, ScopeId,
-        TraitId, UnresolvedType,
+        TraitId, UnresolvedType, UseId,
     },
 };
 use segment_list::SegmentList;
@@ -307,17 +307,37 @@ impl Compiler {
     }
 
     pub fn get_scope_def(&self, module: ModuleId, scope: ScopeId, name: &str) -> Option<Def> {
-        let ast = self.get_module_ast(module);
-        let &def = ast[scope].definitions.get(name)?;
+        let parsed = self.get_parsed_module(module);
+        let &def = parsed.ast[scope].definitions.get(name)?;
         let def = match def {
             // PERF: return reference here instead of cloning if possible
-            ast::Definition::Expr { id, .. } => self.get_def_expr(module, scope, name, id).clone(),
-            ast::Definition::Use { path, .. } => self.resolve_path(module, scope, path),
+            ast::Definition::Expr { id, .. } => *self.get_def_expr(module, scope, name, id),
+            ast::Definition::Use { path, id, .. } => {
+                self.resolve_use(parsed, module, scope, id, path)
+            }
             ast::Definition::Global(id) => Def::Global(module, id),
             ast::Definition::Module(id) => Def::Module(id),
             ast::Definition::Generic(i) => Def::Type(self.types.intern(TypeFull::Generic(i))),
         };
         Some(def)
+    }
+
+    fn resolve_use(
+        &self,
+        parsed: &ParsedModule,
+        module: ModuleId,
+        scope: ScopeId,
+        id: UseId,
+        path: IdentPath,
+    ) -> Def {
+        *parsed.symbols.uses[id.idx()].get_or_resolve_with(
+            || {
+                self.errors
+                    .emit(module, Error::RecursiveDefinition.at_span(path.span()));
+                Def::Invalid
+            },
+            || self.resolve_path(module, scope, path),
+        )
     }
 
     pub fn get_def_expr(
@@ -919,13 +939,12 @@ impl Compiler {
         let root = self.projects[project.idx()].root_module;
         let mut modules_to_check = VecDeque::from([root]);
         while let Some(module) = modules_to_check.pop_front() {
-            let ast = self.get_module_ast(module);
-            for scope in ast.scope_ids() {
-                for (name, def) in &ast[scope].definitions {
+            let parsed = self.get_parsed_module(module);
+            for scope in parsed.ast.scope_ids() {
+                for (name, def) in &parsed.ast[scope].definitions {
                     match *def {
-                        ast::Definition::Use { path, .. } => {
-                            // TODO: cache results to prevent duplicate errors/avoid duplicate resolval
-                            self.resolve_path(module, scope, path);
+                        ast::Definition::Use { path, id, .. } => {
+                            self.resolve_use(parsed, module, scope, id, path);
                         }
                         ast::Definition::Expr { id, .. } => {
                             let def = self.get_def_expr(module, scope, name, id);
@@ -946,7 +965,7 @@ impl Compiler {
                 }
             }
 
-            for id in ast.type_ids() {
+            for id in parsed.ast.type_ids() {
                 let parsed = self.modules[module.idx()].parsed.get().unwrap();
                 let id = *parsed.symbols.types[id.idx()].get_or_init(|| {
                     let generic_count = parsed.ast[id].generic_count();
@@ -965,11 +984,11 @@ impl Compiler {
                 }
             }
 
-            for id in ast.global_ids() {
+            for id in parsed.ast.global_ids() {
                 self.get_checked_global(module, id);
             }
 
-            for id in ast.trait_ids() {
+            for id in parsed.ast.trait_ids() {
                 if let Some(checked) = self.get_checked_trait(module, id) {
                     for impl_ in &checked.impls {
                         for &id in &impl_.functions {
@@ -1307,9 +1326,9 @@ impl<T> Resolvable<T> {
         if self.resolving.set(()).is_err() {
             _ = self.resolved.set(already_resolving());
         } else {
-            self.resolved.set(resolve()).unwrap_or_else(|_| {
-                panic!("Resolvable was already resolved despite resolving not being set")
-            });
+            // if setting failed here it was set by already_resolving in a recursive context
+            // and emitted an error already
+            _ = self.resolved.set(resolve());
         }
         self.resolved.get().unwrap()
     }
@@ -1481,7 +1500,7 @@ impl<'p> LocalScope<'p> {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum Def {
     Invalid,
     Function(ModuleId, ast::FunctionId),
@@ -2031,6 +2050,7 @@ pub struct ModuleSymbols {
     pub globals: Box<[Resolvable<(ConstValue, Type)>]>,
     pub traits: Box<[Resolvable<Option<CheckedTrait>>]>,
     pub def_exprs: Box<[Resolvable<Def>]>,
+    pub uses: Box<[Resolvable<Def>]>,
 }
 impl ModuleSymbols {
     pub fn empty(ast: &Ast) -> Self {
@@ -2047,6 +2067,7 @@ impl ModuleSymbols {
             def_exprs: (0..ast.def_expr_count())
                 .map(|_| Resolvable::new())
                 .collect(),
+            uses: (0..ast.use_count()).map(|_| Resolvable::new()).collect(),
         }
     }
 }

@@ -46,6 +46,7 @@ ids! {
     MemberAccessId
     DefExprId
     ModuleId
+    UseId
 }
 
 impl TypeId {
@@ -130,6 +131,7 @@ pub struct Ast<T: TreeToken = ()> {
     types: Box<[TypeDef<T>]>,
     traits: Box<[TraitDefinition<T>]>,
     globals: Box<[Global<T>]>,
+    use_count: u32,
 }
 impl<T: TreeToken> Ast<T> {
     pub fn src(&self) -> &str {
@@ -187,6 +189,10 @@ impl<T: TreeToken> Ast<T> {
 
     pub fn trait_count(&self) -> usize {
         self.traits.len()
+    }
+
+    pub fn use_count(&self) -> u32 {
+        self.use_count
     }
 }
 impl<T: TreeToken> Index<TSpan> for Ast<T> {
@@ -263,6 +269,7 @@ pub struct AstBuilder<T: TreeToken> {
     types: Vec<TypeDef<T>>,
     traits: Vec<TraitDefinition<T>>,
     globals: Vec<Global<T>>,
+    use_count: u32,
 }
 impl<T: TreeToken> Default for AstBuilder<T> {
     fn default() -> Self {
@@ -275,6 +282,7 @@ impl<T: TreeToken> Default for AstBuilder<T> {
             types: Vec::new(),
             traits: Vec::new(),
             globals: Vec::new(),
+            use_count: 0,
         }
     }
 }
@@ -349,6 +357,12 @@ impl<T: TreeToken> AstBuilder<T> {
         &self.exprs[expr.idx()]
     }
 
+    pub fn next_use_id(&mut self) -> UseId {
+        let id = self.use_count;
+        self.use_count += 1;
+        UseId(id)
+    }
+
     pub fn finish_with_top_level_scope(self, src: Box<str>, top_level_scope: ScopeId) -> Ast<T> {
         Ast {
             src,
@@ -361,6 +375,7 @@ impl<T: TreeToken> AstBuilder<T> {
             types: self.types.into_boxed_slice(),
             traits: self.traits.into_boxed_slice(),
             globals: self.globals.into_boxed_slice(),
+            use_count: self.use_count,
         }
     }
 
@@ -510,6 +525,7 @@ pub enum Definition<T: TreeToken = ()> {
     },
     Use {
         t_use: T,
+        id: UseId,
         path: IdentPath,
     },
     Global(GlobalId),

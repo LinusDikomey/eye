@@ -121,7 +121,11 @@ impl<'a> Converter<'a> {
                 }
                 self.expr(nodes, *expr);
             }
-            &Definition::Use { t_use, path } => {
+            &Definition::Use {
+                t_use,
+                path,
+                id: _,
+            } => {
                 self.tok_s(nodes, t_use);
                 self.path(nodes, path);
             }
