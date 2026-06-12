@@ -1,7 +1,7 @@
 mod lsp;
 mod types;
 
-use std::io::{BufRead, Read, Write};
+use std::io::{BufRead, Read};
 
 use lsp::Lsp;
 use serde::{Deserialize, Serialize};
@@ -265,12 +265,11 @@ fn enable_tracing() {
     let log_dir = std::env::home_dir().unwrap().join(".cache/eye/");
     _ = std::fs::create_dir_all(&log_dir);
     let file = log_dir.join("eye-lsp.log");
-    let mut debug_file = std::fs::OpenOptions::new()
+    let debug_file = std::fs::OpenOptions::new()
         .append(true)
         .create(true)
         .open(file)
         .unwrap();
-    debug_file.write_all(b"test\n").unwrap();
 
     tracing_subscriber::Registry::default()
         .with(

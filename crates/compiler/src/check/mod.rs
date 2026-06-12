@@ -61,7 +61,7 @@ pub trait Hooks {
         _ty: LocalTypeId,
     ) {
     }
-    fn on_exit_scope(&mut self, _scope: &mut LocalScope) {}
+    fn on_exit_scope(&mut self, _scope: &mut LocalScope, _hir: &mut HIRBuilder) {}
 }
 impl Hooks for () {}
 
@@ -183,7 +183,9 @@ pub fn check<H: Hooks>(
     } else {
         check_ctx.check(expr, &mut scope, expected, expected, &mut false)
     };
-    check_ctx.hooks.on_exit_scope(&mut scope);
+    check_ctx
+        .hooks
+        .on_exit_scope(&mut scope, &mut check_ctx.hir);
     check_ctx.finish(root, param_vars, name)
 }
 

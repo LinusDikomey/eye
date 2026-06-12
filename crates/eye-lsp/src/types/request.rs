@@ -103,6 +103,7 @@ pub struct CompletionItem {
     pub labelDetails: Option<CompletionItemLabelDetails>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub documentation: Option<MarkupContent>,
+    pub preselect: bool,
 }
 
 #[derive(Serialize)]

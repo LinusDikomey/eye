@@ -1,11 +1,12 @@
 use compiler::{
     Compiler, Def, ModuleSpan, Type,
+    check::traits,
     compiler::{BodyOrTypes, LocalScope, ResolvedTypeContent, Signature, VarId},
     hir::HIRBuilder,
-    types::TypeFull,
-    typing::LocalTypeId,
+    types::{BaseType, TypeFull},
+    typing::{LocalTypeId, TypeInfo},
 };
-use parser::ast::{Ast, Expr, ExprId, FunctionId, ModuleId, ScopeId};
+use parser::ast::{self, Ast, Expr, ExprId, FunctionId, ModuleId, ScopeId, TraitId};
 
 use crate::{
     lsp::{Lsp, find_in_ast::ScopeContext},
@@ -34,6 +35,7 @@ impl Lsp {
                 detail: None,
                 labelDetails: None,
                 documentation: None,
+                preselect: false,
             }),
             ScopeContext::Function(function_id) => {
                 let ast = self.compiler.get_module_ast(module);
@@ -42,6 +44,7 @@ impl Lsp {
                     variables: &mut variables,
                     target_offset: offset,
                     target_scope: found.scope,
+                    completion_context: CompletionContext::Scope(found.scope),
                     ast,
                     done: false,
                     completing_member_access: None,
@@ -51,38 +54,67 @@ impl Lsp {
                     compiler::check::function(&self.compiler, module, function_id, &mut hooks);
                 if let BodyOrTypes::Body(hir) = &checked.body_or_types {
                     let signature = self.compiler.get_signature(module, function_id);
-                    if let Some((_, expected, left_ty)) = hooks.completing_member_access {
-                        // member access completion
-                        debug_assert!(hooks.variables.is_empty());
-                        let expected = hir[expected];
-                        let left_ty = hir[left_ty];
-                        member_access_completion(
-                            &mut completions,
-                            &self.compiler,
-                            signature,
-                            left_ty,
-                            expected,
-                        );
-                    } else {
-                        const_completions(&mut completions, &self.compiler, module, found.scope);
-
-                        for (name, variable) in variables {
-                            let ty = hir[hir.vars[variable.idx()].ty()];
-                            let ty = self.compiler.types.display(ty, &signature.generics);
-                            completions.push(CompletionItem {
+                    match hooks.completion_context {
+                        CompletionContext::Scope(id) => {
+                            const_completions(
+                                &mut completions,
+                                &self.compiler,
+                                module,
+                                id,
+                                false,
+                                None,
+                            );
+                        }
+                        CompletionContext::MemberAccess {
+                            object,
+                            expected_ty,
+                        } => {
+                            // member access completion
+                            debug_assert!(hooks.variables.is_empty());
+                            let expected = hir[expected_ty];
+                            match object {
+                                MemberObject::Value(left_ty) => {
+                                    let left_ty = hir[left_ty];
+                                    value_member_access_completion(
+                                        &mut completions,
+                                        &self.compiler,
+                                        signature,
+                                        left_ty,
+                                        expected,
+                                    );
+                                }
+                                MemberObject::Module(id) => const_completions(
+                                    &mut completions,
+                                    &self.compiler,
+                                    id,
+                                    self.compiler.get_parsed_module(id).ast.top_level_scope_id(),
+                                    true,
+                                    Some(expected),
+                                ),
+                                // TODO: completion on types and traits
+                                MemberObject::BaseType(_) => {}
+                                MemberObject::Type(_) => {}
+                                MemberObject::Trait(_, _) => {}
+                            }
+                        }
+                    }
+                    for (name, variable) in variables {
+                        let ty = hir[hir.vars[variable.idx()].ty()];
+                        let ty = self.compiler.types.display(ty, &signature.generics);
+                        completions.push(CompletionItem {
                                 label: name,
                                 kind: Some(CompletionItemKind::Variable),
                                 detail: None,
                                 labelDetails: Some(CompletionItemLabelDetails {
-                                    description: Some(format!(": {ty}")),
+                                    description: Some(format!(": {ty} VARIABLE")),
                                     detail: None,
                                 }),
                                 documentation: Some(MarkupContent {
                                     kind: MarkupKind::Markdown,
                                     value: "Documentation for completion will go here\n\nCode block test:\n```eye\nexample :: fn(x i32) {}\n```".to_string(),
                                 }),
+                                preselect: false,
                             });
-                        }
                     }
                 }
             }
@@ -93,14 +125,36 @@ impl Lsp {
     }
 }
 
+enum CompletionContext {
+    Scope(ScopeId),
+    MemberAccess {
+        /// object that we are getting a member of
+        object: MemberObject,
+        /// type that the member should have
+        expected_ty: LocalTypeId,
+    },
+}
+
+enum MemberObject {
+    Value(LocalTypeId),
+    Module(ModuleId),
+    BaseType(BaseType),
+    Type(LocalTypeId),
+    Trait(ModuleId, TraitId),
+}
+
 struct CompletionHooks<'a> {
     variables: &'a mut Vec<(String, VarId)>,
+    /// the static scope the completion was requested in
     target_scope: ScopeId,
+    /// where non-local completions will finally be gathered from
+    completion_context: CompletionContext,
     target_offset: u32,
     ast: &'a Ast,
     done: bool,
-    /// stores the left expr in case a MemberAccess should be completed. Saves the lhs and expected type of both the member and the lhs
-    completing_member_access: Option<(ExprId, LocalTypeId, LocalTypeId)>,
+    /// stores the left expr in case a MemberAccess should be completed. Saves the left expr and
+    /// expected type of the member access
+    completing_member_access: Option<(ExprId, LocalTypeId)>,
 }
 impl<'a> compiler::check::Hooks for CompletionHooks<'a> {
     fn on_check_expr(
@@ -115,9 +169,13 @@ impl<'a> compiler::check::Hooks for CompletionHooks<'a> {
         if self.done {
             return;
         }
-        if let Some((left, _, left_ty)) = &mut self.completing_member_access {
+        if let Some((left, member_expected)) = &mut self.completing_member_access {
             if expr == *left {
-                *left_ty = expected;
+                self.completion_context = CompletionContext::MemberAccess {
+                    object: MemberObject::Value(expected),
+                    expected_ty: *member_expected,
+                };
+                self.completing_member_access = None;
                 self.done = true;
             }
             return;
@@ -126,7 +184,7 @@ impl<'a> compiler::check::Hooks for CompletionHooks<'a> {
             && (name.start.saturating_sub(1)..name.end).contains(&self.target_offset)
         {
             // now start looking for the left expr being checked
-            self.completing_member_access = Some((left, expected, LocalTypeId::MISSING));
+            self.completing_member_access = Some((left, expected));
             return;
         }
         if self.ast[expr].span(self.ast).start < self.target_offset {
@@ -136,7 +194,27 @@ impl<'a> compiler::check::Hooks for CompletionHooks<'a> {
         self.complete_in_scope(scope);
     }
 
-    fn on_exit_scope(&mut self, scope: &mut compiler::compiler::LocalScope) {
+    fn on_exit_scope(&mut self, scope: &mut compiler::compiler::LocalScope, hir: &mut HIRBuilder) {
+        if let CompletionContext::MemberAccess {
+            object: MemberObject::Value(ty),
+            expected_ty,
+        } = self.completion_context
+        {
+            // Now that we are done checking a member access, see if the TypeInfo was some kind of
+            // item and not a normal type. This information will be lost after finishing the types
+            // so we check here and not after the function typecheck completes
+            let new_object = match hir.types[ty] {
+                TypeInfo::ModuleItem(id) => MemberObject::Module(id),
+                TypeInfo::BaseTypeItem(id) => MemberObject::BaseType(id),
+                TypeInfo::TypeItem(id) => MemberObject::Type(id),
+                TypeInfo::TraitItem { module, id } => MemberObject::Trait(module, id),
+                _ => return,
+            };
+            self.completion_context = CompletionContext::MemberAccess {
+                object: new_object,
+                expected_ty,
+            };
+        }
         if !self.done && scope.static_scope.is_some_and(|s| s == self.target_scope) {
             self.complete_in_scope(scope);
         }
@@ -169,18 +247,24 @@ fn const_completions(
     compiler: &Compiler,
     module: ModuleId,
     scope: ScopeId,
+    external: bool,
+    expected: Option<Type>,
 ) {
     let mut current = (module, scope);
-    let mut in_prelude = false;
+    let mut visit_prelude = !external;
     loop {
         let ast = compiler.get_module_ast(current.0);
         let scope = &ast[current.1];
-        for name in scope.definitions.keys() {
+        for (name, def) in &scope.definitions {
+            if external && matches!(def, ast::Definition::Use { .. }) {
+                // don't show uses when completing for an external module
+                continue;
+            }
             let def = compiler.resolve_in_scope(current.0, current.1, name, ModuleSpan::MISSING);
             let kind = match def {
                 Def::Invalid => CompletionItemKind::Constant,
                 Def::Function(module, id) => {
-                    completions.push(function_completion(compiler, name, module, id));
+                    completions.push(function_completion(compiler, name, module, id, expected));
                     continue;
                 }
                 Def::BaseType(base) => base_kind(compiler, base),
@@ -202,19 +286,20 @@ fn const_completions(
                 detail: None,
                 labelDetails: None,
                 documentation: None,
+                preselect: false,
             });
         }
 
         match scope.parent {
             Some(parent) => current.1 = parent,
             None => {
-                if !in_prelude {
+                if visit_prelude {
                     let prelude = compiler::compiler::builtins::get_prelude(compiler);
                     current = (
                         prelude,
                         compiler.get_module_ast(prelude).top_level_scope_id(),
                     );
-                    in_prelude = true;
+                    visit_prelude = false;
                 } else {
                     break;
                 }
@@ -232,24 +317,25 @@ fn base_kind(compiler: &Compiler, base: compiler::types::BaseType) -> Completion
     }
 }
 
-fn member_access_completion(
+fn value_member_access_completion(
     completions: &mut Vec<CompletionItem>,
     compiler: &Compiler,
     signature: &Signature,
     left: Type,
-    _expected: Type,
+    expected: Type,
 ) {
     let mut on_member = |name: &str, ty: Type| {
-        let ty = compiler.types.display(ty, &signature.generics);
+        let type_display = compiler.types.display(ty, &signature.generics);
         completions.push(CompletionItem {
             label: name.to_string(),
             kind: Some(CompletionItemKind::Field),
-            detail: Some(format!("{ty}")),
+            detail: Some(format!("{type_display}")),
             labelDetails: Some(CompletionItemLabelDetails {
-                detail: Some(format!(": {ty}")),
+                detail: Some(format!(": {type_display}")),
                 description: None,
             }),
             documentation: None,
+            preselect: ty == expected,
         });
     };
 
@@ -266,7 +352,13 @@ fn member_access_completion(
                 }
             }
             for (name, function) in &def.methods {
-                completions.push(function_completion(compiler, name, def.module, *function));
+                completions.push(function_completion(
+                    compiler,
+                    name,
+                    def.module,
+                    *function,
+                    Some(expected),
+                ));
             }
         }
         TypeFull::Tuple {
@@ -289,8 +381,20 @@ fn function_completion(
     name: &str,
     module: ModuleId,
     function: FunctionId,
+    expected: Option<Type>,
 ) -> CompletionItem {
     let signature = compiler.get_signature(module, function);
+    let preselect = expected.is_some_and(|expected| {
+        // Check if the return type of the function matches the expected type, considering any
+        // possible generics instantiation.
+        // This function is in `traits` right now but should be moved out and probably named better
+        traits::match_instance(
+            expected,
+            signature.return_type,
+            &compiler.types,
+            &mut vec![None; signature.generics.count() as usize],
+        )
+    });
     CompletionItem {
         label: name.to_owned(),
         kind: Some(CompletionItemKind::Function),
@@ -300,6 +404,7 @@ fn function_completion(
             "```eye\n{name} :: {}\n```",
             display_signature(compiler, signature)
         ))),
+        preselect,
     }
 }
 

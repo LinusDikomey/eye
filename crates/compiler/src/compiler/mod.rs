@@ -34,7 +34,7 @@ use crate::{
     },
     eval::{self, ConstValue, ConstValueId},
     helpers::IteratorExt,
-    hir::{Hir, Var},
+    hir::{HIRBuilder, Hir, Var},
     irgen,
     types::{BaseType, BuiltinType, TypeFull, Types},
     typing::{
@@ -1476,8 +1476,8 @@ impl<'p> LocalScope<'p> {
         }
     }
 
-    pub fn exit<H: Hooks>(mut self, hooks: &mut H) {
-        hooks.on_exit_scope(&mut self);
+    pub fn exit<H: Hooks>(mut self, hooks: &mut H, hir: &mut HIRBuilder) {
+        hooks.on_exit_scope(&mut self, hir);
     }
 }
 
