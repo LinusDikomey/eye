@@ -30,6 +30,10 @@ impl TSpan {
     pub fn contains(&self, offset: u32) -> bool {
         self.start <= offset && offset < self.end
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.start == self.end
+    }
 }
 
 #[derive(Debug, Clone, Copy)]

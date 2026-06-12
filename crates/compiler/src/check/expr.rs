@@ -1051,6 +1051,11 @@ impl<'a, H: Hooks> Ctx<'a, H> {
         let left_ty = self.hir.types.add_unknown();
         let left_node = self.check(left, scope, left_ty, return_ty, noreturn);
         let name = &self.ast.src()[name_span.range()];
+        if name_span.is_empty() {
+            // empty name is emitted on parse error
+            *noreturn = true;
+            return Node::Invalid;
+        }
         match self.hir.types[left_ty] {
             TypeInfo::BaseTypeItem(base) => {
                 let generic_count = self.compiler.types.get_base(base).generic_count;

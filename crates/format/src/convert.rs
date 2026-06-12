@@ -1,15 +1,13 @@
 use error::span::TSpan;
 use parser::ast::{
-    Ast, Attribute, BaseImpl, Definition, Expr, ExprId, ExprIds, Generics, IdentPath, InherentImpl,
+    Attribute, BaseImpl, Definition, Expr, ExprId, ExprIds, Generics, IdentPath, InherentImpl,
     ScopeId, Token, UnresolvedType,
 };
 
 use crate::{
-    ALLOWED_NEWLINES_SCOPE,
+    ALLOWED_NEWLINES_SCOPE, Cst,
     dom::{Cond, Node, R},
 };
-
-type Cst = Ast<Token>;
 
 pub fn module(cst: &Cst) -> Node {
     let mut nodes = Vec::new();

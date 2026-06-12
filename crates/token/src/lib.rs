@@ -2,6 +2,8 @@ mod literal;
 mod primitive;
 mod token_types;
 
+use core::fmt;
+
 pub use literal::{FloatLiteral, IntLiteral};
 pub use primitive::{FloatType, IntType, Primitive};
 pub use token_types::TokenType;
@@ -292,6 +294,34 @@ impl Operator {
                 | Operator::LE
                 | Operator::GE
         )
+    }
+}
+impl fmt::Display for Operator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            Operator::Add => "+",
+            Operator::Sub => "-",
+            Operator::Mul => "*",
+            Operator::Div => "/",
+            Operator::Mod => "%",
+            Operator::Assignment(AssignType::Assign) => "=",
+            Operator::Assignment(AssignType::AddAssign) => "+=",
+            Operator::Assignment(AssignType::SubAssign) => "-=",
+            Operator::Assignment(AssignType::MulAssign) => "*=",
+            Operator::Assignment(AssignType::DivAssign) => "/=",
+            Operator::Assignment(AssignType::ModAssign) => "%=",
+            Operator::Or => "or",
+            Operator::And => "and",
+            Operator::Equals => "==",
+            Operator::NotEquals => "!=",
+            Operator::LT => "<",
+            Operator::GT => ">",
+            Operator::LE => "<=",
+            Operator::GE => ">=",
+            Operator::Range => "..",
+            Operator::RangeExclusive => "..<",
+        };
+        write!(f, "{s}")
     }
 }
 

@@ -337,7 +337,7 @@ impl Lsp {
                     diagnostics,
                 };
                 if !params.diagnostics.is_empty() {
-                    tracing::info!("Emitting {} errors:\n{params:?}", params.diagnostics.len());
+                    tracing::info!("Emitting {} errors", params.diagnostics.len());
                 }
                 send_notification(params);
             }

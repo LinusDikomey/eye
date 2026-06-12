@@ -248,6 +248,7 @@ impl Compiler {
             };
             let mut errors = Errors::new();
             let ast = parser::parse(contents, &mut errors, definitions);
+            tracing::debug!(target: "ast", module = self.module_path(module_id), "Finished parsing:\n{}", ast);
             self.errors.add_module(module_id, errors);
             let checked = ModuleSymbols::empty(&ast);
             ParsedModule {

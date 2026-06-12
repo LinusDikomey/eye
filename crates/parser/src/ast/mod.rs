@@ -1,3 +1,4 @@
+use core::fmt;
 use dmap::{self, DHashMap};
 use error::span::TSpan;
 use std::{fmt::Debug, ops::Index};
@@ -7,6 +8,7 @@ pub use token::{
     AssignType, FloatLiteral, FloatType, IntLiteral, IntType, Operator, Primitive, Token, TokenType,
 };
 
+mod display;
 mod eq;
 
 macro_rules! ids {
@@ -1112,6 +1114,17 @@ pub enum UnOp {
     Not,
     Ref,
     Deref,
+}
+impl fmt::Display for UnOp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let c = match self {
+            Self::Neg => '-',
+            Self::Not => '!',
+            Self::Ref => '&',
+            Self::Deref => '^',
+        };
+        write!(f, "{c}")
+    }
 }
 impl UnOp {
     pub fn postfix(self) -> bool {

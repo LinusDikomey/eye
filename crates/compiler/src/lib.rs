@@ -29,7 +29,7 @@ mod link;
 mod modules;
 /// find the path of the std library
 pub mod std_path;
-mod types;
+pub mod types;
 /// TypeTable data structure and logic for type inference/checking
 pub mod typing;
 

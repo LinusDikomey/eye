@@ -110,6 +110,14 @@ pub struct MarkupContent {
     pub kind: MarkupKind,
     pub value: String,
 }
+impl MarkupContent {
+    pub fn markdown(s: impl Into<String>) -> Self {
+        Self {
+            kind: MarkupKind::Markdown,
+            value: s.into(),
+        }
+    }
+}
 
 #[derive(Serialize)]
 pub enum MarkupKind {

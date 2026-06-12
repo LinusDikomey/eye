@@ -1406,15 +1406,18 @@ impl<T: TreeToken> Parser<'_, T> {
                 }
                 TokenType::Dot => {
                     let dot = self.toks.step_assert(TokenType::Dot);
-                    step_or_unexpected! {self, tok,
-                        Ident => {
+                    let tok = self.toks.peek();
+                    match tok.ty {
+                        TokenType::Ident => {
+                            self.toks.step_assert(TokenType::Ident);
                             Expr::MemberAccess {
                                 left: self.ast.expr(expr),
                                 t_dot: t(dot),
                                 name: tok.span(),
                             }
-                        },
-                        IntLiteral => {
+                        }
+                        TokenType::IntLiteral => {
+                            self.toks.step_assert(TokenType::IntLiteral);
                             let idx = self.toks.src[tok.span().range()].parse().unwrap();
                             Expr::TupleIdx {
                                 left: self.ast.expr(expr),
@@ -1422,6 +1425,21 @@ impl<T: TreeToken> Parser<'_, T> {
                                 t_int: t(tok),
                                 idx,
                                 end: tok.end,
+                            }
+                        }
+                        _ => {
+                            // still create a MemberAccess expr with an empty name. This is helpful
+                            // for diagnostics and lsp completions
+                            self.toks.errors.emit_err(unexpected(
+                                tok,
+                                ExpectedTokens::AnyOf(
+                                    [TokenType::Ident, TokenType::IntLiteral].into(),
+                                ),
+                            ));
+                            Expr::MemberAccess {
+                                left: self.ast.expr(expr),
+                                t_dot: t(dot),
+                                name: TSpan::new(dot.end + 1, dot.end + 1),
                             }
                         }
                     }

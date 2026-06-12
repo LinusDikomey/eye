@@ -279,7 +279,7 @@ fn enable_tracing() {
                 .with_ansi(false)
                 .with_writer(debug_file)
                 .with_filter(tracing_subscriber::filter::LevelFilter::from_level(
-                    tracing::Level::DEBUG,
+                    tracing::Level::INFO,
                 )),
         )
         .init();

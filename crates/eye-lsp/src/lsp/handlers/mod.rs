@@ -3,12 +3,8 @@ mod hover;
 
 use std::path::Path;
 
-use compiler::{
-    Def, ModuleSpan,
-    check::ProjectErrors,
-    compiler::{ModuleSymbols, ParsedModule},
-};
-use error::{Errors, span::TSpan};
+use compiler::{Def, ModuleSpan, check::ProjectErrors};
+use error::span::TSpan;
 use serde_json::Value;
 
 use crate::{
@@ -157,7 +153,6 @@ impl Lsp {
     }
 
     pub fn did_save(&mut self, save: DidSaveTextDocumentParams) {
-        tracing::info!("save {save:?}");
         let Some((project, _)) = self.find_project_of_uri(&save.textDocument.uri) else {
             tracing::warn!(
                 "Got save notification for file that is not part of any project: {:?}",
