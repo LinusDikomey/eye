@@ -226,8 +226,8 @@ pub fn eval<E: EvalEnvironment>(
 ) -> Result<Val, Error> {
     let top_level_function = (top_level_ir, top_level_types);
     if env.debug() {
-        eprintln!(
-            "Evaluating:\n{}",
+        tracing::debug!(
+            "Evaluating IR:\n{}",
             top_level_ir.display(env.env(), top_level_types)
         );
     }

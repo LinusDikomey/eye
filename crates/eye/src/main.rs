@@ -1,5 +1,6 @@
 /// command line argument parsing
 mod args;
+#[cfg(feature = "format")]
 mod fmt_command;
 
 use std::{
@@ -61,6 +62,7 @@ fn main() -> Result<(), MainError> {
             eye_lsp::run();
             return Ok(());
         }
+        #[cfg(feature = "format")]
         args::Cmd::Fmt(fmt_args) => return fmt_command::format(args.path, fmt_args),
         _ => {}
     }
@@ -265,7 +267,9 @@ fn main() -> Result<(), MainError> {
                 }
             }
         }
-        args::Cmd::ListTargets | args::Cmd::Fmt(_) => unreachable!(),
+        args::Cmd::ListTargets => unreachable!(),
+        #[cfg(feature = "format")]
+        args::Cmd::Fmt(_) => unreachable!(),
         #[cfg(feature = "lsp")]
         args::Cmd::Lsp => unreachable!(),
     }

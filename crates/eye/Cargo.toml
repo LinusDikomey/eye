@@ -11,12 +11,14 @@ default = [
 llvm-backend = ["dep:ir-backend-llvm"]
 fast-backend = ["dep:ir-backend-fast"]
 lsp = ["dep:eye-lsp"]
+format = ["dep:format"]
 
 [dependencies]
 compiler.workspace = true
 ir.workspace = true
 error.workspace = true
-format.workspace = true
+format = { workspace = true, optional = true }
+eye-lsp = { workspace = true, optional = true }
 
 tracing.workspace = true
 tracing-subscriber.workspace = true
@@ -24,7 +26,6 @@ tracing-error.workspace = true
 color-format.workspace = true
 
 clap = { version = "4.4.13", features = ["derive"] }
-eye-lsp = { path = "../eye-lsp", optional = true }
 pathdiff = "0.2.1"
 diff = "0.1.13"
 

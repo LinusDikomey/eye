@@ -323,7 +323,7 @@ impl ir::eval::EvalEnvironment for LazyEvalEnv<'_> {
     fn debug(&self) -> bool {
         #[cfg(debug_assertions)]
         {
-            tracing::enabled!(target: "foo", tracing::Level::DEBUG)
+            tracing::enabled!(target: "eval", tracing::Level::DEBUG)
         }
         #[cfg(not(debug_assertions))]
         {

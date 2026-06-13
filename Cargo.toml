@@ -19,6 +19,9 @@ default-members = ["crates/eye"]
 
 resolver = "2"
 
+[profile.release]
+panic = "abort"
+
 [workspace.dependencies]
 compiler.path = "crates/compiler"
 id.path = "crates/id"
@@ -29,6 +32,7 @@ parser.path = "crates/parser"
 token.path = "crates/token"
 format.path = "crates/format"
 segment-list.path = "crates/segment-list"
+eye-lsp.path = "crates/eye-lsp"
 
 pathdiff = "0.2.1"
 tracing = { version = "0.1.41", default-features = false, features = ["release_max_level_off"] }

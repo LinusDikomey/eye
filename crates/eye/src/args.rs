@@ -15,6 +15,7 @@ pub enum Cmd {
     /// lists all available targets for the selected backend
     ListTargets,
     /// format a project
+    #[cfg(feature = "format")]
     Fmt(FmtArgs),
 }
 
@@ -127,6 +128,7 @@ pub struct Args {
     pub optimize: bool,
 }
 
+#[cfg(feature = "format")]
 #[derive(clap::Parser)]
 pub struct FmtArgs {
     #[clap(short, long)]
