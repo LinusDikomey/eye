@@ -785,11 +785,6 @@ pub enum Expr<T: TreeToken = ()> {
         span: TSpan,
         t: T,
     },
-    Declare {
-        pat: ExprId,
-        t_colon: T,
-        annotated_ty: UnresolvedType,
-    },
     DeclareWithVal {
         pat: ExprId,
         t_colon_and_equals_or_colon_equals: T::Either<(T, T), T>,
@@ -1006,9 +1001,6 @@ impl<T: TreeToken> Expr<T> {
             Expr::Function { id } => scopes[functions[id.idx()].scope.idx()].span,
             Expr::Type { id } => types[id.idx()].span(scopes),
             Expr::Trait { id } => traits[id.idx()].span(scopes),
-            Expr::Declare {
-                pat, annotated_ty, ..
-            } => TSpan::new(s(pat), annotated_ty.span().end),
             Expr::DeclareWithVal { pat, val, .. } => TSpan::new(s(pat), e(val)),
             Expr::Return { start, val, .. } => TSpan::new(*start, e(val)),
             &Expr::ReturnUnit { start, .. } => TSpan::new(start, start + 4),

@@ -121,11 +121,7 @@ impl<'a> Converter<'a> {
                 }
                 self.expr(nodes, *expr);
             }
-            &Definition::Use {
-                t_use,
-                path,
-                id: _,
-            } => {
+            &Definition::Use { t_use, path, id: _ } => {
                 self.tok_s(nodes, t_use);
                 self.path(nodes, path);
             }
@@ -301,15 +297,6 @@ impl<'a> Converter<'a> {
                 }
             }
             &Expr::Function { id } => self.function(nodes, id),
-            Expr::Declare {
-                pat,
-                t_colon,
-                annotated_ty,
-            } => {
-                self.expr(nodes, *pat);
-                self.tok_s(nodes, *t_colon);
-                nodes.push(self.ty(annotated_ty));
-            }
             Expr::DeclareWithVal {
                 pat,
                 t_colon_and_equals_or_colon_equals,

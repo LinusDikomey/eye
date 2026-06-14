@@ -4,7 +4,7 @@ mod display;
 use core::iter::Iterator;
 use std::{
     cell::{OnceCell, RefCell},
-    collections::VecDeque,
+    collections::{VecDeque, hash_map},
     ops::Index,
     path::{Path, PathBuf},
 };
@@ -1010,29 +1010,20 @@ impl Compiler {
         id: ast::FunctionId,
         generics: Box<[Type]>,
     ) -> Option<ir::FunctionId> {
-        // TODO: this check is probably not sufficient for error handling
-        // check that none of the types is invalid, we never wan't to generate an instance for an
-        // invalid type. The caller should build a crash point in that case.
-        for &ty in &generics {
-            if ty == Type::Invalid {
-                return None;
-            }
-        }
-        Some(
-            instances.get_or_create_function(module, id, generics, |generics| {
-                let signature = self.get_signature(module, id);
-                let checked = self.get_hir(module, id);
-                let func = irgen::declare_function(self, ir, checked, signature, module, generics);
-                let ir_id = ir.add_function(dialects.main, func);
-                to_generate.push(FunctionToGenerate {
-                    ir_id,
-                    module,
-                    ast_function_id: id,
-                    generics: generics.into(),
-                });
-                ir_id
-            }),
-        )
+        instances.get_or_create_function(module, id, generics, |generics| {
+            let signature = self.get_signature(module, id);
+            let checked = self.get_hir(module, id);
+            let func =
+                irgen::declare_function(self, ir, checked, signature, module, generics).ok()?;
+            let ir_id = ir.add_function(dialects.main, func);
+            to_generate.push(FunctionToGenerate {
+                ir_id,
+                module,
+                ast_function_id: id,
+                generics: generics.into(),
+            });
+            Some(ir_id)
+        })
     }
 
     pub fn generate_ir_body(
@@ -2139,17 +2130,21 @@ impl Instances {
         Self::default()
     }
 
+    /// Gets exising instance or creates a new one, returning None if any of the types are invalid
     pub fn get_or_create_function(
         &mut self,
         module: ast::ModuleId,
         function: ast::FunctionId,
         generics: Box<[Type]>,
-        create: impl FnOnce(&[Type]) -> ir::FunctionId,
-    ) -> ir::FunctionId {
-        *self
-            .functions
-            .entry((module, function, generics))
-            .or_insert_with_key(|(_, _, generics)| create(generics))
+        create: impl FnOnce(&[Type]) -> Option<ir::FunctionId>,
+    ) -> Option<ir::FunctionId> {
+        Some(match self.functions.entry((module, function, generics)) {
+            hash_map::Entry::Occupied(occupied_entry) => *occupied_entry.get(),
+            hash_map::Entry::Vacant(vacant_entry) => {
+                let func = create(&vacant_entry.key().2)?;
+                *vacant_entry.insert(func)
+            }
+        })
     }
 
     pub fn get_or_create_global(

@@ -104,13 +104,6 @@ impl<'a> fmt::Display for HirDisplay<'a> {
             Node::InferredEnumOrdinal(id) => {
                 cwrite!(f, "(#b<enum-ordinal> {}{})", "#", id.0)?;
             }
-            &Node::Declare { pattern } => {
-                cwrite!(
-                    f,
-                    "(#b<decl> {})",
-                    hir.display_pattern(pattern, compiler, generics)
-                )?;
-            }
             &Node::DeclareWithVal { pattern, val } => {
                 cwrite!(
                     f,

@@ -259,7 +259,6 @@ impl<'a, H: Hooks> Ctx<'a, H> {
             }
 
             &Expr::Ident { span, .. } => self.check_ident(scope, expected, span),
-            Expr::Declare { .. } => todo!("check variable declarations without values"),
             Expr::DeclareWithVal {
                 pat,
                 annotated_ty,

@@ -370,45 +370,43 @@ impl<T: TreeToken> Parser<'_, T> {
                     TokenType::Colon => {
                         let colon = self.toks.step_assert(TokenType::Colon);
                         let annotated_ty = self.parse_type()?;
-                        if let Some(equals) = self.toks.step_if(TokenType::Equals) {
-                            // typed variable with initial value
-                            let pat = self.ast.expr(Expr::Ident {
-                                span: ident_span,
-                                t: T::t(ident),
-                            });
-                            let val = self.parse_expr(scope)?;
-                            let val = self.ast.expr(val);
-                            ItemValue::Expr(Expr::DeclareWithVal {
-                                pat,
-                                annotated_ty,
-                                t_colon_and_equals_or_colon_equals: T::either_a((
-                                    t(colon),
-                                    t(equals),
-                                )),
-                                val,
-                            })
-                        } else if let Some(second_colon) = self.toks.step_if(TokenType::Colon) {
-                            // typed constant
-                            let value = self.parse_expr(scope)?;
-                            ItemValue::Definition {
-                                t_name: t(ident),
-                                name: name.to_owned(),
-                                name_span: ident_span,
-                                t_colon_colon: T::either_b((t(colon), t(second_colon))),
-                                annotated_ty,
-                                value: self.ast.expr(value),
+                        let token = self
+                            .toks
+                            .step_expect([TokenType::Equals, TokenType::Colon])?;
+                        match token.ty {
+                            TokenType::Equals => {
+                                let equals = token;
+                                // typed variable with initial value
+                                let pat = self.ast.expr(Expr::Ident {
+                                    span: ident_span,
+                                    t: T::t(ident),
+                                });
+                                let val = self.parse_expr(scope)?;
+                                let val = self.ast.expr(val);
+                                ItemValue::Expr(Expr::DeclareWithVal {
+                                    pat,
+                                    annotated_ty,
+                                    t_colon_and_equals_or_colon_equals: T::either_a((
+                                        t(colon),
+                                        t(equals),
+                                    )),
+                                    val,
+                                })
                             }
-                        } else {
-                            // typed variable without initial value
-                            let pat = self.ast.expr(Expr::Ident {
-                                span: ident_span,
-                                t: t(ident),
-                            });
-                            ItemValue::Expr(Expr::Declare {
-                                pat,
-                                t_colon: t(colon),
-                                annotated_ty,
-                            })
+                            TokenType::Colon => {
+                                let second_colon = token;
+                                // typed constant
+                                let value = self.parse_expr(scope)?;
+                                ItemValue::Definition {
+                                    t_name: t(ident),
+                                    name: name.to_owned(),
+                                    name_span: ident_span,
+                                    t_colon_colon: T::either_b((t(colon), t(second_colon))),
+                                    annotated_ty,
+                                    value: self.ast.expr(value),
+                                }
+                            }
+                            _ => unreachable!(), // handled by step_expect
                         }
                     }
                     // Variable declaration with inferred type
@@ -986,21 +984,13 @@ impl<T: TreeToken> Parser<'_, T> {
     fn stmt_postfix(&mut self, expr: Expr<T>, scope: ScopeId) -> ParseResult<Expr<T>> {
         let expr = if let Some(colon) = self.toks.step_if(TokenType::Colon) {
             let annotated_ty = self.parse_type()?;
-            match self.toks.step_if(TokenType::Equals) {
-                Some(equals) => {
-                    let val = self.parse_expr(scope)?;
-                    Expr::DeclareWithVal {
-                        pat: self.ast.expr(expr),
-                        t_colon_and_equals_or_colon_equals: T::either_a((t(colon), t(equals))),
-                        annotated_ty,
-                        val: self.ast.expr(val),
-                    }
-                }
-                None => Expr::Declare {
-                    pat: self.ast.expr(expr),
-                    t_colon: t(colon),
-                    annotated_ty,
-                },
+            let equals = self.toks.step_expect(TokenType::Equals)?;
+            let val = self.parse_expr(scope)?;
+            Expr::DeclareWithVal {
+                pat: self.ast.expr(expr),
+                t_colon_and_equals_or_colon_equals: T::either_a((t(colon), t(equals))),
+                annotated_ty,
+                val: self.ast.expr(val),
             }
         } else if let Some(declare) = self.toks.step_if(TokenType::Declare) {
             let val = self.parse_expr(scope)?;

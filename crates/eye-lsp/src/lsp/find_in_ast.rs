@@ -196,10 +196,6 @@ fn find_at_offset_expr(ast: &Ast, offset: u32, scope: ScopeId, expr: ExprId) -> 
             scope,
             span,
         }),
-        Expr::Declare {
-            pat, annotated_ty, ..
-        } => find_at_offset_expr(ast, offset, scope, *pat)
-            .or_else(|| find_at_offset_ty(offset, scope, annotated_ty)),
         Expr::DeclareWithVal {
             pat,
             annotated_ty,

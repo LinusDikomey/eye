@@ -217,16 +217,6 @@ impl Ast<()> {
             Expr::Ident { span: a, .. } => {
                 matches!(b, &Expr::Ident { span: b, .. } if self.src[a.range()] == other.src[b.range()])
             }
-            Expr::Declare {
-                pat: a_pat,
-                annotated_ty: a_ty,
-                ..
-            } => {
-                matches!(b, Expr::Declare { pat: b_pat, annotated_ty: b_ty, .. }
-                    if self.eq_expr(other, *a_pat, *b_pat)
-                    && self.eq_ty(other, a_ty, b_ty)
-                )
-            }
             Expr::DeclareWithVal {
                 pat,
                 t_colon_and_equals_or_colon_equals,

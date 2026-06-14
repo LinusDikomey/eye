@@ -231,10 +231,6 @@ pub enum Node {
         enum_ty: LocalTypeId,
     },
     InferredEnumOrdinal(VariantId),
-
-    Declare {
-        pattern: PatternId,
-    },
     DeclareWithVal {
         pattern: PatternId,
         val: NodeId,

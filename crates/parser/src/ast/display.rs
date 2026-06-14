@@ -207,9 +207,6 @@ impl<'a> fmt::Display for ExprDisplay<'a> {
             }
             Expr::Trait { .. } => Ok(()),
             &Expr::Ident { span, .. } => write!(f, "{}", &self.ast[span]),
-            Expr::Declare {
-                pat, annotated_ty, ..
-            } => write!(f, "{}: {}", expr(*pat), ty(annotated_ty)),
             Expr::DeclareWithVal {
                 pat,
                 annotated_ty,

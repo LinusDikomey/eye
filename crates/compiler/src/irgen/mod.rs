@@ -21,7 +21,7 @@ use crate::compiler::{
 use crate::hir::{CastType, LValue, LValueId, Node, Pattern, PatternId, Var};
 use crate::types::{BaseType, TypeFull};
 use crate::typing::{LocalTypeId, LocalTypeIds, OrdinalType};
-use crate::{Compiler, Type};
+use crate::{Compiler, InvalidTypeError, Type};
 use crate::{
     compiler::CheckedFunction,
     hir::{Hir, NodeId},
@@ -73,12 +73,10 @@ pub fn declare_function(
     signature: &Signature,
     module: ModuleId,
     generics: &[Type],
-) -> ir::Function {
+) -> std::result::Result<ir::Function, InvalidTypeError> {
     let name = compiler.mangle_name(checked, module, generics);
     let mut types = ir::Types::new();
-    // TODO: figure out what to do when params/return_type are Invalid or never types. We can no
-    // longer generate a valid signature
-    let params = match signature.callconv {
+    let params = (match signature.callconv {
         CallConv::Eye => types::get_multiple(
             compiler,
             ir,
@@ -111,8 +109,8 @@ pub fn declare_function(
                 },
             )
         }
-    }
-    .unwrap_or_else(|| types.add_multiple((0..checked.params.count).map(|_| ir::Type::UNIT)));
+    })
+    .ok_or(InvalidTypeError)?;
 
     let return_type = types::get(
         compiler,
@@ -124,10 +122,16 @@ pub fn declare_function(
             outer: None,
         },
     )
-    .unwrap_or(ir::Type::UNIT);
+    .ok_or(InvalidTypeError)?;
     let return_type = types.add(return_type);
 
-    ir::Function::declare(name, types, params.iter(), checked.varargs, return_type)
+    Ok(ir::Function::declare(
+        name,
+        types,
+        params.iter(),
+        checked.varargs,
+        return_type,
+    ))
 }
 
 type Result<T> = std::result::Result<T, NoReturn>;
@@ -263,8 +267,7 @@ impl Ctx<'_> {
         id: ast::FunctionId,
         generics: Box<[Type]>,
     ) -> Option<ir::FunctionId> {
-        Self::get_ir_id_inner(
-            self.compiler,
+        self.compiler.get_ir_function_id(
             self.builder.env,
             self.dialects,
             self.instances,
@@ -272,41 +275,6 @@ impl Ctx<'_> {
             module,
             id,
             generics,
-        )
-    }
-
-    fn get_ir_id_inner(
-        compiler: &Compiler,
-        env: &mut ir::Environment,
-        dialects: &Dialects,
-        instances: &mut Instances,
-        to_generate: &mut Vec<FunctionToGenerate>,
-        module: ModuleId,
-        id: ast::FunctionId,
-        generics: Box<[Type]>,
-    ) -> Option<ir::FunctionId> {
-        // TODO: this check is probably not sufficient for error handling
-        // check that none of the types is invalid, we never wan't to generate an instance for an
-        // invalid type. The caller should build a crash point in that case.
-        for &ty in &generics {
-            if ty == Type::Invalid {
-                return None;
-            }
-        }
-        Some(
-            instances.get_or_create_function(module, id, generics, |generics| {
-                let signature = compiler.get_signature(module, id);
-                let checked = compiler.get_hir(module, id);
-                let func = declare_function(compiler, env, checked, signature, module, generics);
-                let ir_id = env.add_function(dialects.main, func);
-                to_generate.push(FunctionToGenerate {
-                    ir_id,
-                    module,
-                    ast_function_id: id,
-                    generics: generics.into(),
-                });
-                ir_id
-            }),
         )
     }
 
@@ -546,8 +514,6 @@ fn lower_expr(ctx: &mut Ctx, node: NodeId) -> Result<ValueOrPlace> {
                 }
             }
         }
-
-        Node::Declare { pattern: _ } => todo!("lower declarations without values"),
         &Node::DeclareWithVal { pattern, val } => {
             let val = lower(ctx, val)?;
             lower_pattern(ctx, pattern, val, None)?;
@@ -1386,17 +1352,17 @@ fn build_crash_point_inner(
     let msg = "program reached a compile error at runtime";
     let (msg, _str_ty) = lower_string_literal_inner(builder, dialects, ptr_ty, msg);
     let (panic_mod, panic_function) = builtins::get_panic(compiler);
-    let panic_function = Ctx::get_ir_id_inner(
-        compiler,
-        builder.env,
-        dialects,
-        instances,
-        to_generate,
-        panic_mod,
-        panic_function,
-        Box::new([]),
-    )
-    .expect("panic function is invalid so can't generate crash point");
+    let panic_function = compiler
+        .get_ir_function_id(
+            builder.env,
+            dialects,
+            instances,
+            to_generate,
+            panic_mod,
+            panic_function,
+            Box::new([]),
+        )
+        .expect("panic function is invalid so can't generate crash point");
     let unit = builder.types.add(ir::Type::UNIT);
     builder.append((panic_function, (msg), unit));
     let value = builder.append_undef(return_ty);
