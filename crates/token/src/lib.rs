@@ -123,9 +123,14 @@ pub enum Keyword {
     In,
 }
 impl From<Keyword> for &'static str {
-    fn from(k: Keyword) -> Self {
-        match k {
-            Keyword::Primitive(p) => p.into(),
+    fn from(value: Keyword) -> Self {
+        value.into_str()
+    }
+}
+impl Keyword {
+    const fn into_str(self) -> &'static str {
+        match self {
+            Keyword::Primitive(p) => p.into_str(),
             Keyword::Fn => "fn",
             Keyword::Ret => "ret",
             Keyword::And => "and",
@@ -149,8 +154,7 @@ impl From<Keyword> for &'static str {
             Keyword::In => "in",
         }
     }
-}
-impl Keyword {
+
     pub fn parse(s: &str) -> Option<Keyword> {
         use Keyword::Primitive as P;
         use Primitive::*;
@@ -200,6 +204,12 @@ impl Keyword {
             "in" => Keyword::In,
             _ => return None,
         })
+    }
+
+    /// character length of the keyword
+    #[allow(clippy::len_without_is_empty)]
+    pub const fn len(self) -> u32 {
+        self.into_str().len() as u32
     }
 }
 impl From<Keyword> for TokenType {

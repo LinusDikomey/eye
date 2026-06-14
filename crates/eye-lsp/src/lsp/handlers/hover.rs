@@ -1,24 +1,32 @@
 use std::fmt::Write;
 
 use compiler::{
-    Compiler, Def,
-    compiler::{BodyOrTypes, LocalItem, LocalScope, VarId},
-    hir::HIRBuilder,
-    typing::LocalTypeId,
+    Def,
+    compiler::{BodyOrTypes, LocalItem, VarId},
 };
-use error::span::TSpan;
-use parser::ast::{Ast, ExprId};
 
 use crate::{
     lsp::{
         Lsp,
         find_in_ast::{FoundType, ScopeContext},
+        handlers::FindHooks,
     },
     types::{
         Range,
         request::{Hover, HoverContents, HoverParams, MarkedString},
     },
 };
+
+fn text(s: impl Into<String>) -> MarkedString {
+    MarkedString::String(s.into())
+}
+
+fn code(s: impl Into<String>) -> MarkedString {
+    MarkedString::Code {
+        language: "eye".to_owned(),
+        value: s.into(),
+    }
+}
 
 impl Lsp {
     pub fn hover(&mut self, hover: HoverParams) -> Hover {
@@ -34,20 +42,12 @@ impl Lsp {
         match found.ty {
             FoundType::None => Hover::default(),
             FoundType::Error => hover("syntax error".into()),
-            FoundType::Ident | FoundType::Literal | FoundType::EnumLiteral => {
-                let is_ident = matches!(found.ty, FoundType::Ident);
+            FoundType::Ident | FoundType::Literal | FoundType::EnumLiteral | FoundType::Member => {
                 match context {
                     ScopeContext::TopLevel => Hover::default(),
                     ScopeContext::Function(function_id) => {
                         let ast = self.compiler.get_module_ast(module);
-                        let mut hooks = HoverHooks {
-                            span: found.span,
-                            ast,
-                            local_item: None,
-                            ty: None,
-                            compiler: &self.compiler,
-                            is_ident,
-                        };
+                        let mut hooks = FindHooks::new(found.span, ast, &self.compiler, found.ty);
                         let checked = compiler::check::function(
                             &self.compiler,
                             module,
@@ -142,18 +142,23 @@ impl Lsp {
                     }
                 }
             }
-            FoundType::Primitive(_) => hover(HoverContents::MarkedStrings(vec![
-                MarkedString::String("primitive type ".to_owned()),
-                MarkedString::Code {
-                    language: "eye".into(),
-                    value: ast.src()[found.span.range()].to_owned(),
-                },
+            FoundType::Primitive(p) => hover(HoverContents::MarkedStrings(vec![
+                text("primitive type "),
+                code(p.into_str()),
             ])),
-            // FoundType::Path(_) => todo!(),
+            FoundType::Path(path) => {
+                let def = self.compiler.resolve_path(module, found.scope, path);
+                hover(format!("Definition {def:?}").into())
+            }
             // FoundType::TypePlaceholder => todo!(),
             // FoundType::Underscore => todo!(),
-            // FoundType::RootModule => todo!(),
-            // FoundType::Member => todo!(),
+            FoundType::RootModule => hover(HoverContents::MarkedStrings(vec![
+                text("Root module at "),
+                code(
+                    self.compiler
+                        .module_path(self.compiler.modules[module.idx()].root),
+                ),
+            ])),
             // FoundType::ParameterName => todo!(),
             FoundType::Keyword => hover(HoverContents::MarkedStrings(vec![
                 MarkedString::String("Keyword ".into()),
@@ -165,74 +170,5 @@ impl Lsp {
             // FoundType::Generic => todo!(),
             _ => hover(format!("TODO: implement hover type {found:?}").into()),
         }
-    }
-}
-
-struct HoverHooks<'a> {
-    span: TSpan,
-    ast: &'a Ast,
-    compiler: &'a Compiler,
-    local_item: Option<LocalItem>,
-    ty: Option<LocalTypeId>,
-    is_ident: bool,
-}
-impl<'a> HoverHooks<'a> {
-    fn handle_hovered_expr(
-        &mut self,
-        _expr: ExprId,
-        hir: &mut HIRBuilder,
-        scope: &mut LocalScope,
-        ty: LocalTypeId,
-        is_pattern: bool,
-    ) {
-        let name = &self.ast.src()[self.span.range()];
-        self.ty = Some(ty);
-        if self.is_ident && !is_pattern {
-            // TODO: this should probably not emit errors
-            let item = scope.resolve(name, self.span, self.compiler, &mut hir.vars);
-            self.local_item = Some(item);
-        }
-    }
-}
-impl<'a> compiler::check::Hooks for HoverHooks<'a> {
-    fn on_check_expr(
-        &mut self,
-        expr: parser::ast::ExprId,
-        hir: &mut HIRBuilder,
-        scope: &mut compiler::compiler::LocalScope,
-        ty: compiler::typing::LocalTypeId,
-        _return_ty: compiler::typing::LocalTypeId,
-        _noreturn: &mut bool,
-    ) {
-        if self.ast[expr].span(self.ast) != self.span {
-            return;
-        }
-        self.handle_hovered_expr(expr, hir, scope, ty, false);
-    }
-
-    fn on_checked_lvalue(
-        &mut self,
-        expr: parser::ast::ExprId,
-        hir: &mut HIRBuilder,
-        scope: &mut compiler::compiler::LocalScope,
-        ty: LocalTypeId,
-    ) {
-        if self.ast[expr].span(self.ast) != self.span {
-            return;
-        }
-        self.handle_hovered_expr(expr, hir, scope, ty, false);
-    }
-
-    fn on_check_pattern(
-        &mut self,
-        expr: ExprId,
-        hir: &mut HIRBuilder,
-        scope: &mut LocalScope,
-        ty: LocalTypeId,
-    ) {
-        if self.ast[expr].span(self.ast) != self.span {
-            return;
-        }
-        self.handle_hovered_expr(expr, hir, scope, ty, true);
     }
 }

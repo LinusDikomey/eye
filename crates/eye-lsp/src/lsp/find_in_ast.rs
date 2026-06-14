@@ -1,5 +1,8 @@
 use error::span::{IdentPath, TSpan};
-use parser::ast::{self, Ast, Definition, Expr, ExprId, ScopeId, UnresolvedType};
+use parser::ast::{
+    self, Ast, BaseImpl, Definition, Expr, ExprId, FunctionId, Generics, Keyword, Method, ScopeId,
+    UnresolvedType,
+};
 
 #[derive(Debug)]
 pub struct Found {
@@ -21,9 +24,7 @@ pub enum FoundType {
     Ident,
     Literal,
     EnumLiteral,
-    #[allow(unused)] // TODO: remove unused
     Primitive(ast::Primitive),
-    #[allow(unused)] // TODO: remove unused
     Path(IdentPath),
     TypePlaceholder,
     Underscore,
@@ -49,31 +50,19 @@ fn find_at_offset_scope(ast: &Ast, offset: u32, scope_id: ScopeId) -> Option<Fou
     if !scope.span.contains(offset) {
         return None;
     }
-    for def in scope.definitions.values() {
-        match def {
-            &Definition::Expr { id, .. } => {
-                let expr = ast[id].0;
-                if let Some(found) = find_at_offset_expr(ast, offset, scope_id, expr) {
-                    return Some(found);
-                };
-            }
-            &Definition::Use { path, .. } => {
-                if path.span().contains(offset) {
-                    return Some(Found {
-                        ty: FoundType::Path(path),
-                        span: path.span(),
-                        scope: scope_id,
-                    });
-                }
-            }
-            &Definition::Global(global_id) => {
-                let expr = ast[global_id].val;
-                find_at_offset_expr(ast, offset, scope_id, expr);
-            }
-            Definition::Module(_) | Definition::Generic(_) => {}
+    scope.definitions.values().find_map(|def| match def {
+        &Definition::Expr { id, .. } => {
+            let expr = ast[id].0;
+            find_at_offset_expr(ast, offset, scope_id, expr)
         }
-    }
-    None
+        &Definition::Use { path: p, .. } => path(offset, scope_id, p),
+        &Definition::Global(global_id) => {
+            let global = &ast[global_id];
+            find_at_offset_ty(offset, scope_id, &global.ty)
+                .or_else(|| find_at_offset_expr(ast, offset, scope_id, global.val))
+        }
+        Definition::Module(_) | Definition::Generic(_) => None,
+    })
 }
 
 fn find_at_offset_expr(ast: &Ast, offset: u32, scope: ScopeId, expr: ExprId) -> Option<Found> {
@@ -86,6 +75,13 @@ fn find_at_offset_expr(ast: &Ast, offset: u32, scope: ScopeId, expr: ExprId) -> 
         ty: FoundType::None,
         span,
         scope,
+    };
+    let keyword = |span: TSpan| {
+        span.contains(offset).then_some(Found {
+            ty: FoundType::Keyword,
+            span,
+            scope,
+        })
     };
     let found = match &ast[expr] {
         Expr::Error(_) => Some(Found {
@@ -132,64 +128,50 @@ fn find_at_offset_expr(ast: &Ast, offset: u32, scope: ScopeId, expr: ExprId) -> 
                 args.into_iter().find_map(rec)
             }
         }
-        &Expr::Function { id } => {
-            let function = &ast[id];
-            let scope = function.scope;
-            for generic_def in &function.generics.types {
-                if generic_def.name.contains(offset) {
-                    return Some(Found {
-                        ty: FoundType::Generic,
-                        span: generic_def.name,
-                        scope,
-                    });
-                }
-                for bound in &generic_def.bounds {
-                    if bound.path.span().contains(offset) {
-                        return Some(Found {
-                            ty: FoundType::Path(bound.path),
-                            span,
-                            scope,
-                        });
-                    }
-                    if let Some(found) = bound
-                        .generics
-                        .iter()
-                        .find_map(|ty| find_at_offset_ty(offset, scope, ty))
-                    {
-                        return Some(found);
-                    }
-                }
-            }
-            for (name, ty) in &function.params {
-                if name.contains(offset) {
-                    return Some(Found {
-                        ty: FoundType::ParameterName,
-                        span: *name,
-                        scope: function.scope,
-                    });
-                }
-                if let Some(found) = find_at_offset_ty(offset, function.scope, ty) {
-                    return Some(found);
-                }
-            }
-            Some(
-                function
-                    .body
-                    .and_then(|body| find_at_offset_expr(ast, offset, scope, body))
-                    .unwrap_or(Found {
-                        ty: FoundType::None,
-                        span: ast[scope].span,
-                        scope,
-                    }),
-            )
-        }
+        &Expr::Function { id } => function(ast, offset, id),
         &Expr::Primitive { primitive, .. } => Some(Found {
             ty: FoundType::Primitive(primitive),
             span,
             scope,
         }),
         // TODO: find in trait/type definitions
-        &Expr::Type { .. } => None,
+        &Expr::TypeDeclaration { id } => {
+            let def = &ast[id];
+            let scope = def.scope;
+            if let Some(found) = generics(offset, scope, &def.generics) {
+                return Some(found);
+            }
+            (match &def.content {
+                ast::TypeContent::Struct { members } => {
+                    keyword(TSpan::new(span.start, span.start + Keyword::Struct.len())).or_else(
+                        || {
+                            members
+                                .iter()
+                                .find_map(|member| find_at_offset_ty(offset, scope, &member.ty))
+                        },
+                    )
+                }
+                ast::TypeContent::Enum { variants } => {
+                    keyword(TSpan::new(span.start, span.start + Keyword::Enum.len())).or_else(
+                        || {
+                            variants.iter().find_map(|variant| {
+                                variant
+                                    .args
+                                    .iter()
+                                    .find_map(|arg| find_at_offset_ty(offset, scope, arg))
+                            })
+                        },
+                    )
+                }
+            })
+            .or_else(|| def.methods.iter().find_map(|(_, m)| method(ast, offset, m)))
+            .or_else(|| {
+                def.impls.iter().find_map(|impl_| {
+                    path(offset, scope, impl_.implemented_trait)
+                        .or_else(|| base_impl(ast, offset, scope, &impl_.base))
+                })
+            })
+        }
         Expr::Trait { .. } => None,
         Expr::Ident { .. } => Some(Found {
             ty: FoundType::Ident,
@@ -211,7 +193,7 @@ fn find_at_offset_expr(ast: &Ast, offset: u32, scope: ScopeId, expr: ExprId) -> 
         }),
         Expr::UnOp { inner, .. } => rec(*inner),
         &Expr::BinOp { l, r, .. } => rec(l).or_else(|| rec(r)),
-        Expr::As { value, ty, .. } => rec(*value).or_else(|| find_at_offset_ty(offset, scope, ty)),
+        Expr::As { value, ty, .. } => rec(*value).or_else(|| find_at_offset_ty(offset, scope, ty)), // TODO: as keyword
         Expr::Root { .. } => Some(Found {
             ty: FoundType::RootModule,
             span,
@@ -230,39 +212,85 @@ fn find_at_offset_expr(ast: &Ast, offset: u32, scope: ScopeId, expr: ExprId) -> 
         }
         &Expr::Index { expr, idx, .. } => rec(expr).or_else(|| rec(idx)),
         &Expr::TupleIdx { left, .. } => rec(left),
-        &Expr::ReturnUnit { .. } => None,
-        &Expr::Return { val, .. } => rec(val),
-        &Expr::If { cond, then, .. } => rec(cond).or_else(|| rec(then)),
+        &Expr::ReturnUnit { .. } => keyword(span),
+        &Expr::Return { val, start, .. } => keyword(TSpan::new(start, start + Keyword::Ret.len()))
+            .or_else(|| rec(val))
+            .or_else(|| keyword(TSpan::new(start, start + Keyword::Ret.len()))),
+        &Expr::If {
+            start, cond, then, ..
+        } => keyword(TSpan::new(start, start + Keyword::If.len()))
+            .or_else(|| rec(cond))
+            .or_else(|| rec(then)),
+
         &Expr::IfElse {
-            cond, then, else_, ..
-        } => rec(cond).or_else(|| rec(then)).or_else(|| rec(else_)),
+            start,
+            cond,
+            then,
+            else_,
+            ..
+        } => keyword(TSpan::new(start, start + Keyword::If.len()))
+            .or_else(|| rec(cond))
+            .or_else(|| rec(then))
+            // TODO: else keyword
+            .or_else(|| rec(else_)),
         &Expr::IfPat {
-            pat, value, then, ..
-        } => find_at_offset_expr(ast, offset, scope, pat)
+            pat,
+            value,
+            then,
+            start,
+            ..
+        } => keyword(TSpan::new(start, start + Keyword::If.len()))
+            .or_else(|| find_at_offset_expr(ast, offset, scope, pat))
             .or_else(|| rec(value))
             .or_else(|| rec(then)),
         &Expr::IfPatElse {
+            start,
             pat,
             value,
             then,
             else_,
             ..
-        } => find_at_offset_expr(ast, offset, scope, pat)
+        } => keyword(TSpan::new(start, start + Keyword::If.len()))
+            .or_else(|| find_at_offset_expr(ast, offset, scope, pat))
             .or_else(|| rec(value))
             .or_else(|| rec(then))
+            // TODO: else keyword
             .or_else(|| rec(else_)),
-        &Expr::Match { val, branches, .. } => rec(val).or_else(|| {
-            branches.into_iter().find_map(|(pat, val)| {
-                find_at_offset_expr(ast, offset, scope, pat).or_else(|| rec(val))
-            })
-        }),
-        &Expr::While { cond, body, .. } => rec(cond).or_else(|| rec(body)),
-        &Expr::WhilePat { pat, val, body, .. } => find_at_offset_expr(ast, offset, scope, pat)
+        &Expr::Match {
+            span,
+            val,
+            branches,
+            ..
+        } => keyword(TSpan::new(span.start, span.start + Keyword::Match.len()))
+            .or_else(|| rec(val))
+            .or_else(|| {
+                branches.into_iter().find_map(|(pat, val)| {
+                    find_at_offset_expr(ast, offset, scope, pat).or_else(|| rec(val))
+                })
+            }),
+        &Expr::While {
+            start, cond, body, ..
+        } => keyword(TSpan::new(start, start + Keyword::While.len()))
+            .or_else(|| rec(cond))
+            .or_else(|| rec(body)),
+        &Expr::WhilePat {
+            start,
+            pat,
+            val,
+            body,
+            ..
+        } => keyword(TSpan::new(start, start + Keyword::While.len()))
+            .or_else(|| find_at_offset_expr(ast, offset, scope, pat))
             .or_else(|| rec(val))
             .or_else(|| rec(body)),
         &Expr::For {
-            pat, iter, body, ..
-        } => find_at_offset_expr(ast, offset, scope, pat)
+            start,
+            pat,
+            iter,
+            body,
+            ..
+        } => keyword(TSpan::new(start, start + Keyword::While.len()))
+            .or_else(|| find_at_offset_expr(ast, offset, scope, pat))
             .or_else(|| rec(iter))
             .or_else(|| rec(body)),
         &Expr::FunctionCall(call_id) => {
@@ -294,13 +322,41 @@ fn find_at_offset_expr(ast: &Ast, offset: u32, scope: ScopeId, expr: ExprId) -> 
             }
             args.into_iter().find_map(rec)
         }
-        Expr::Break { .. } | Expr::Continue { .. } => Some(Found {
-            ty: FoundType::Keyword,
-            span,
-            scope,
-        }),
+        Expr::Break { .. } | Expr::Continue { .. } => keyword(span),
     };
     Some(found.unwrap_or(nothing))
+}
+
+fn generics(offset: u32, scope: ScopeId, generics: &Generics) -> Option<Found> {
+    generics.types.iter().find_map(|generic_def| {
+        generic_def
+            .name
+            .contains(offset)
+            .then_some(Found {
+                ty: FoundType::Generic,
+                span: generic_def.name,
+                scope,
+            })
+            .or_else(|| {
+                generic_def.bounds.iter().find_map(|bound| {
+                    path(offset, scope, bound.path).or_else(|| {
+                        bound
+                            .generics
+                            .iter()
+                            .find_map(|ty| find_at_offset_ty(offset, scope, ty))
+                    })
+                })
+            })
+    })
+}
+
+fn path(offset: u32, scope: ScopeId, path: IdentPath) -> Option<Found> {
+    // use inclusive contains here so completions at the end of a path work
+    path.span().contains_inclusive(offset).then_some(Found {
+        ty: FoundType::Path(path),
+        span: path.span(),
+        scope,
+    })
 }
 
 fn find_at_offset_ty(offset: u32, scope: ScopeId, ty: &UnresolvedType) -> Option<Found> {
@@ -345,4 +401,61 @@ fn find_at_offset_ty(offset: u32, scope: ScopeId, ty: &UnresolvedType) -> Option
             scope,
         },
     })
+}
+
+fn base_impl(ast: &Ast, offset: u32, scope: ScopeId, base: &BaseImpl) -> Option<Found> {
+    generics(offset, scope, &base.generics)
+        .or_else(|| {
+            base.trait_generics
+                .iter()
+                .find_map(|ty| find_at_offset_ty(offset, scope, ty))
+        })
+        .or_else(|| base.functions.iter().find_map(|m| method(ast, offset, m)))
+}
+
+fn method(ast: &Ast, offset: u32, method: &Method<()>) -> Option<Found> {
+    // TODO: name of method
+    function(ast, offset, method.function)
+}
+
+fn function(ast: &Ast, offset: u32, id: FunctionId) -> Option<Found> {
+    let function = &ast[id];
+    let scope = function.scope;
+    let span = ast[scope].span;
+    if !span.contains(offset) {
+        return None;
+    }
+    let keyword_span = TSpan::new(span.start, span.start + Keyword::Fn.len());
+    if keyword_span.contains(offset) {
+        return Some(Found {
+            ty: FoundType::Keyword,
+            span: keyword_span,
+            scope,
+        });
+    }
+    if let Some(found) = generics(offset, scope, &function.generics) {
+        return Some(found);
+    }
+    for (name, ty) in &function.params {
+        if name.contains(offset) {
+            return Some(Found {
+                ty: FoundType::ParameterName,
+                span: *name,
+                scope: function.scope,
+            });
+        }
+        if let Some(found) = find_at_offset_ty(offset, function.scope, ty) {
+            return Some(found);
+        }
+    }
+    Some(
+        function
+            .body
+            .and_then(|body| find_at_offset_expr(ast, offset, scope, body))
+            .unwrap_or(Found {
+                ty: FoundType::None,
+                span: ast[scope].span,
+                scope,
+            }),
+    )
 }

@@ -1386,6 +1386,7 @@ pub struct LocalScope<'p> {
     /// should only be none if this scope has a parent
     pub static_scope: Option<ScopeId>,
 }
+#[derive(Debug)]
 pub enum LocalItem {
     Var(VarId),
     Def(Def),

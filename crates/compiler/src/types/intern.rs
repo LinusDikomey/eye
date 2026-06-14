@@ -42,7 +42,7 @@ impl Types {
         let consts = SegmentList::new();
 
         for (builtin, i) in BuiltinType::VARIANTS.into_iter().zip(0..) {
-            let module = ModuleId::from_inner(0); // TODO: put something sensible here
+            let module = ModuleId::MISSING;
             let generics = builtin.generics();
             bases.add(ResolvableTypeDef {
                 module,

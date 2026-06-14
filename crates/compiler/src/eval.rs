@@ -147,7 +147,7 @@ pub fn def_expr(
                 Def::Invalid
             }
         }
-        &Expr::Type { id } => {
+        &Expr::TypeDeclaration { id } => {
             let Ok(matches) = compiler.annotation_matches_type(ty, Type::Type, module, scope)
             else {
                 return Def::Invalid;

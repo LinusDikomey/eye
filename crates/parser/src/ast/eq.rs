@@ -208,8 +208,8 @@ impl Ast<()> {
             Expr::Primitive { primitive: a, .. } => {
                 matches!(b, Expr::Primitive { primitive: b, .. } if a == b)
             }
-            &Expr::Type { id: a } => {
-                matches!(b, &Expr::Type { id: b } if self.eq_type_def(other, a, b))
+            &Expr::TypeDeclaration { id: a } => {
+                matches!(b, &Expr::TypeDeclaration { id: b } if self.eq_type_def(other, a, b))
             }
             &Expr::Trait { id: a } => {
                 matches!(b, &Expr::Trait { id: b } if self.eq_trait_def(other, a, b))

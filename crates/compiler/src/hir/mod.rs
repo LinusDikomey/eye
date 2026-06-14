@@ -492,6 +492,16 @@ pub enum TypeProperty {
     Stride,
 }
 impl TypeProperty {
+    pub const ALL: &[Self] = &[Self::Size, Self::Align, Self::Stride];
+
+    pub const fn into_str(self) -> &'static str {
+        match self {
+            TypeProperty::Size => "size",
+            TypeProperty::Align => "align",
+            TypeProperty::Stride => "stride",
+        }
+    }
+
     pub fn from_name(name: &str) -> Option<Self> {
         Some(match name {
             "size" => Self::Size,

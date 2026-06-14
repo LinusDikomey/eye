@@ -198,7 +198,7 @@ impl<'a> fmt::Display for ExprDisplay<'a> {
                 }
             }
             &Expr::Primitive { primitive, .. } => write!(f, "{primitive}"),
-            &Expr::Type { id } => {
+            &Expr::TypeDeclaration { id } => {
                 let def = &self.ast[id];
                 match &def.content {
                     TypeContent::Struct { .. } => Ok(()),

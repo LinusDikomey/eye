@@ -328,7 +328,7 @@ impl<'a> Converter<'a> {
                 self.tok_s(nodes, t_ret);
                 self.expr(nodes, val);
             }
-            &Expr::Type { id } => {
+            &Expr::TypeDeclaration { id } => {
                 let def = &self.cst[id];
                 self.tok(nodes, def.t_introducer);
                 self.generics(nodes, &def.generics);

@@ -5,7 +5,8 @@ use std::{fmt::Debug, ops::Index};
 
 pub use error::span::IdentPath;
 pub use token::{
-    AssignType, FloatLiteral, FloatType, IntLiteral, IntType, Operator, Primitive, Token, TokenType,
+    AssignType, FloatLiteral, FloatType, IntLiteral, IntType, Keyword, Operator, Primitive, Token,
+    TokenType,
 };
 
 mod display;
@@ -773,7 +774,7 @@ pub enum Expr<T: TreeToken = ()> {
         start: u32,
         t: T,
     },
-    Type {
+    TypeDeclaration {
         id: TypeId,
     },
     Trait {
@@ -999,11 +1000,11 @@ impl<T: TreeToken> Expr<T> {
             | Expr::EnumLiteral { span, .. } => *span,
             Expr::Block { scope, .. } => scopes[scope.idx()].span,
             Expr::Function { id } => scopes[functions[id.idx()].scope.idx()].span,
-            Expr::Type { id } => types[id.idx()].span(scopes),
+            Expr::TypeDeclaration { id } => types[id.idx()].span(scopes),
             Expr::Trait { id } => traits[id.idx()].span(scopes),
             Expr::DeclareWithVal { pat, val, .. } => TSpan::new(s(pat), e(val)),
             Expr::Return { start, val, .. } => TSpan::new(*start, e(val)),
-            &Expr::ReturnUnit { start, .. } => TSpan::new(start, start + 4),
+            &Expr::ReturnUnit { start, .. } => TSpan::new(start, start + Keyword::Ret.len()),
             &Expr::Hole { loc, .. } => TSpan::new(loc, loc + 1),
             Expr::If { start, then, .. } | Expr::IfPat { start, then, .. } => {
                 TSpan::new(*start, e(then))

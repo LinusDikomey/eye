@@ -1,15 +1,19 @@
 use compiler::{
     Compiler, Def, ModuleSpan, Type,
     check::traits,
-    compiler::{BodyOrTypes, LocalScope, ResolvedTypeContent, Signature, VarId},
-    hir::HIRBuilder,
+    compiler::{BodyOrTypes, LocalScope, ResolvedTypeContent, ResolvedTypeDef, Signature, VarId},
+    hir::{HIRBuilder, TypeProperty},
     types::{BaseType, TypeFull},
     typing::{LocalTypeId, TypeInfo},
 };
-use parser::ast::{self, Ast, Expr, ExprId, FunctionId, ModuleId, ScopeId, TraitId};
+use error::span::{IdentPath, TSpan};
+use parser::ast::{self, Ast, Expr, ExprId, ModuleId, ScopeId, TraitId};
 
 use crate::{
-    lsp::{Lsp, find_in_ast::ScopeContext},
+    lsp::{
+        Lsp,
+        find_in_ast::{FoundType, ScopeContext},
+    },
     types::request::{
         CompletionItem, CompletionItemKind, CompletionItemLabelDetails, CompletionParams,
         MarkupContent, MarkupKind,
@@ -26,6 +30,18 @@ impl Lsp {
         let ast = self.compiler.get_module_ast(module);
         tracing::info!("AST at completion time:\n{}", ast);
         let mut completions = Vec::new();
+
+        if let FoundType::Path(p) = found.ty {
+            // complete a path
+            let chopped_path = TSpan::new(p.span().start, offset);
+            self.complete_path(
+                &mut completions,
+                module,
+                found.scope,
+                IdentPath::new(chopped_path),
+            );
+            return completions;
+        }
 
         let context = self.find_context_for_scope(module, found.scope);
         match context {
@@ -91,10 +107,53 @@ impl Lsp {
                                     true,
                                     Some(expected),
                                 ),
-                                // TODO: completion on types and traits
-                                MemberObject::BaseType(_) => {}
-                                MemberObject::Type(_) => {}
-                                MemberObject::Trait(_, _) => {}
+                                MemberObject::BaseType(id) => {
+                                    let def = self.compiler.get_base_type_def(id);
+
+                                    base_type_completions(
+                                        &mut completions,
+                                        &self.compiler,
+                                        def,
+                                        expected,
+                                    );
+                                }
+                                MemberObject::Type(id) => {
+                                    if let TypeFull::Instance(id, _) =
+                                        self.compiler.types.lookup(hir[id])
+                                    {
+                                        base_type_completions(
+                                            &mut completions,
+                                            &self.compiler,
+                                            self.compiler.get_base_type_def(id),
+                                            expected,
+                                        )
+                                    }
+                                    for prop in TypeProperty::ALL {
+                                        completions.push(member_completion(
+                                            &self.compiler,
+                                            signature,
+                                            prop.into_str(),
+                                            Type::U64,
+                                            expected,
+                                        ));
+                                    }
+                                }
+                                MemberObject::Trait(module, id) => {
+                                    if let Some(checked) =
+                                        self.compiler.get_checked_trait(module, id)
+                                    {
+                                        for (name, function_idx) in &checked.functions_by_name {
+                                            let signature =
+                                                &checked.functions[*function_idx as usize];
+                                            completions.push(function_completion(
+                                                &self.compiler,
+                                                name,
+                                                signature,
+                                                Some(expected),
+                                            ))
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -122,6 +181,61 @@ impl Lsp {
 
         tracing::info!("Returning {} completions", completions.len());
         completions
+    }
+
+    fn complete_path(
+        &self,
+        completions: &mut Vec<CompletionItem>,
+        module: ModuleId,
+        mut scope: ScopeId,
+        path: IdentPath,
+    ) {
+        let ast = self.compiler.get_module_ast(module);
+        let (root, segments, last) = path.segments(ast.src());
+        let mut current_module = module;
+        if root.is_some() {
+            let module = &self.compiler.modules[current_module.idx()];
+            current_module = module.root;
+            scope = self
+                .compiler
+                .get_module_ast(current_module)
+                .top_level_scope_id();
+        }
+        for (name, name_span) in segments {
+            match self.compiler.resolve_in_scope(
+                current_module,
+                scope,
+                name,
+                ModuleSpan {
+                    module,
+                    span: name_span,
+                },
+            ) {
+                Def::Module(new_mod) => {
+                    current_module = new_mod;
+                    scope = self
+                        .compiler
+                        .get_module_ast(current_module)
+                        .top_level_scope_id();
+                }
+                Def::Invalid => return,
+                _ => return, // invalid item in path, can't complete anything
+            }
+        }
+        let Some((_name, _name_span)) = last else {
+            // path is just "root"
+            // TODO Could still return items here in the future I guess?
+            return;
+        };
+        let external = current_module != module && root.is_none();
+        const_completions(
+            completions,
+            &self.compiler,
+            current_module,
+            scope,
+            external,
+            None,
+        );
     }
 }
 
@@ -181,7 +295,7 @@ impl<'a> compiler::check::Hooks for CompletionHooks<'a> {
             return;
         }
         if let Expr::MemberAccess { left, name, .. } = self.ast[expr]
-            && (name.start.saturating_sub(1)..name.end).contains(&self.target_offset)
+            && (self.ast[left].span(self.ast).end + 1..name.end).contains(&self.target_offset)
         {
             // now start looking for the left expr being checked
             self.completing_member_access = Some((left, expected));
@@ -264,7 +378,12 @@ fn const_completions(
             let kind = match def {
                 Def::Invalid => CompletionItemKind::Constant,
                 Def::Function(module, id) => {
-                    completions.push(function_completion(compiler, name, module, id, expected));
+                    completions.push(function_completion(
+                        compiler,
+                        name,
+                        compiler.get_signature(module, id),
+                        expected,
+                    ));
                     continue;
                 }
                 Def::BaseType(base) => base_kind(compiler, base),
@@ -317,6 +436,26 @@ fn base_kind(compiler: &Compiler, base: compiler::types::BaseType) -> Completion
     }
 }
 
+fn member_completion(
+    compiler: &Compiler,
+    signature: &Signature,
+    name: &str,
+    ty: Type,
+    expected: Type,
+) -> CompletionItem {
+    let type_display = compiler.types.display(ty, &signature.generics);
+    CompletionItem {
+        label: name.to_string(),
+        kind: Some(CompletionItemKind::Field),
+        detail: Some(format!("{type_display}")),
+        labelDetails: Some(CompletionItemLabelDetails {
+            detail: Some(format!(": {type_display}")),
+            description: None,
+        }),
+        documentation: None,
+        preselect: ty == expected,
+    }
+}
 fn value_member_access_completion(
     completions: &mut Vec<CompletionItem>,
     compiler: &Compiler,
@@ -324,21 +463,6 @@ fn value_member_access_completion(
     left: Type,
     expected: Type,
 ) {
-    let mut on_member = |name: &str, ty: Type| {
-        let type_display = compiler.types.display(ty, &signature.generics);
-        completions.push(CompletionItem {
-            label: name.to_string(),
-            kind: Some(CompletionItemKind::Field),
-            detail: Some(format!("{type_display}")),
-            labelDetails: Some(CompletionItemLabelDetails {
-                detail: Some(format!(": {type_display}")),
-                description: None,
-            }),
-            documentation: None,
-            preselect: ty == expected,
-        });
-    };
-
     match compiler.types.lookup(left) {
         TypeFull::Instance(base, ty_generics) => {
             let def = compiler.get_base_type_def(base);
@@ -347,43 +471,50 @@ fn value_member_access_completion(
                 ResolvedTypeContent::Struct(struct_def) => {
                     for (name, ty, _default) in &struct_def.named_fields {
                         let ty = compiler.types.instantiate(*ty, ty_generics);
-                        on_member(name, ty);
+                        member_completion(compiler, signature, name, ty, expected);
                     }
                 }
             }
-            for (name, function) in &def.methods {
-                completions.push(function_completion(
-                    compiler,
-                    name,
-                    def.module,
-                    *function,
-                    Some(expected),
-                ));
-            }
+            base_type_completions(completions, compiler, def, expected);
         }
         TypeFull::Tuple {
             members,
             named_members,
         } => {
             for (ty, i) in members.iter().zip(0..) {
-                on_member(&format!("{i}"), *ty);
+                member_completion(compiler, signature, &format!("{i}"), *ty, expected);
             }
             for (name, ty) in named_members {
-                on_member(name, *ty);
+                member_completion(compiler, signature, name, *ty, expected);
             }
         }
         _ => {}
     }
 }
 
+fn base_type_completions(
+    completions: &mut Vec<CompletionItem>,
+    compiler: &Compiler,
+    def: &ResolvedTypeDef,
+    expected: Type,
+) {
+    for (name, function) in &def.methods {
+        completions.push(function_completion(
+            compiler,
+            name,
+            compiler.get_signature(def.module, *function),
+            Some(expected),
+        ));
+    }
+}
+
+#[must_use]
 fn function_completion(
     compiler: &Compiler,
     name: &str,
-    module: ModuleId,
-    function: FunctionId,
+    signature: &Signature,
     expected: Option<Type>,
 ) -> CompletionItem {
-    let signature = compiler.get_signature(module, function);
     let preselect = expected.is_some_and(|expected| {
         // Check if the return type of the function matches the expected type, considering any
         // possible generics instantiation.

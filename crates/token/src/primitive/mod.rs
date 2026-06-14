@@ -67,11 +67,10 @@ impl Primitive {
         debug_assert_eq!(Into::<&'static str>::into(self).len(), len.get() as usize);
         len
     }
-}
-impl From<Primitive> for &'static str {
-    fn from(p: Primitive) -> Self {
+
+    pub const fn into_str(self) -> &'static str {
         use Primitive::*;
-        match p {
+        match self {
             I8 => "i8",
             U8 => "u8",
             I16 => "i16",
@@ -88,8 +87,13 @@ impl From<Primitive> for &'static str {
         }
     }
 }
+impl From<Primitive> for &'static str {
+    fn from(value: Primitive) -> Self {
+        value.into_str()
+    }
+}
 impl fmt::Display for Primitive {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", Into::<&'static str>::into(*self))
+        write!(f, "{}", self.into_str())
     }
 }

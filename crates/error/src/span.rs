@@ -31,6 +31,11 @@ impl TSpan {
         self.start <= offset && offset < self.end
     }
 
+    /// offset is either inside or immediately after this span
+    pub fn contains_inclusive(&self, offset: u32) -> bool {
+        self.start <= offset && offset <= self.end
+    }
+
     pub fn is_empty(&self) -> bool {
         self.start == self.end
     }

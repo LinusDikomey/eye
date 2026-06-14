@@ -6,7 +6,8 @@ use crate::{
     Type,
     check::Hooks,
     compiler::{
-        Def, LocalItem, LocalScope, LocalScopeParent, ModuleSpan, ResolvedTypeContent, builtins,
+        Def, LocalItem, LocalScope, LocalScopeParent, ModuleSpan, ResolvedTypeContent, Signature,
+        builtins,
     },
     eval::ConstValueId,
     hir::{self, Comparison, LValue, Logic, Node, Pattern},
@@ -231,7 +232,7 @@ impl<'a, H: Hooks> Ctx<'a, H> {
                 });
                 Node::Invalid
             }
-            &Expr::Type { id } => {
+            &Expr::TypeDeclaration { id } => {
                 let generic_count = self.ast[id].generic_count();
                 let base = self.compiler.add_type_def(
                     self.module,
@@ -1001,6 +1002,25 @@ impl<'a, H: Hooks> Ctx<'a, H> {
             signature
                 .generics
                 .instantiate(&mut self.hir.types, &self.compiler.types, span);
+        self.function_item_with_generics(
+            function_module,
+            function,
+            signature,
+            generics,
+            expected,
+            |_| span,
+        )
+    }
+
+    fn function_item_with_generics(
+        &mut self,
+        function_module: ModuleId,
+        function: FunctionId,
+        signature: &Signature,
+        generics: LocalTypeIds,
+        expected: LocalTypeId,
+        span: impl Copy + Fn(&Ast) -> TSpan,
+    ) -> Node {
         // a function item immediately becomes a fn() type only if it was expected to become one
         // already from the type, meaning passing to functions or assigning to an annotated variable
         // work without requiring subtyping.
@@ -1013,11 +1033,11 @@ impl<'a, H: Hooks> Ctx<'a, H> {
         {
             let return_ty = args_and_return.next().unwrap();
             let signature_return_ty = self.from_type_instance(signature.return_type, generics);
-            self.specify_or_unify(signature_return_ty, return_ty, |_| span);
+            self.specify_or_unify(signature_return_ty, return_ty, span);
             let args = args_and_return;
             for (&(_, signature_ty), ty) in signature.params.iter().zip(args) {
                 let signature_ty = self.from_type_instance(signature_ty, generics);
-                self.specify_or_unify(signature_ty, ty, |_| span);
+                self.specify_or_unify(signature_ty, ty, span);
             }
         } else {
             self.specify(
@@ -1027,7 +1047,7 @@ impl<'a, H: Hooks> Ctx<'a, H> {
                     function,
                     generics,
                 },
-                |_| span,
+                span,
             );
         }
         Node::FunctionItem {
@@ -1397,20 +1417,14 @@ impl<'a, H: Hooks> Ctx<'a, H> {
                 LocalOrGlobalInstance::Local(generics),
                 span(self.ast),
             );
-            self.specify(
+            return self.function_item_with_generics(
+                module,
+                method,
+                signature,
+                call_generics,
                 expected,
-                TypeInfo::FunctionItem {
-                    module,
-                    function: method,
-                    generics: call_generics,
-                },
                 span,
             );
-            return Node::FunctionItem {
-                function: (module, method),
-                generics: call_generics,
-                ty: expected,
-            };
         }
         if let ResolvedTypeContent::Enum(def) = &ty.def
             && let Some((_, ordinal, args)) = def.get_by_name(name)

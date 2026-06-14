@@ -1043,12 +1043,12 @@ impl<T: TreeToken> Parser<'_, T> {
             TokenType::Keyword(Keyword::Struct) => {
                 let def = self.struct_definition(first, scope)?;
                 let id = self.ast.type_def(def);
-                Expr::Type { id }
+                Expr::TypeDeclaration { id }
             }
             TokenType::Keyword(Keyword::Enum) => {
                 let def = self.enum_definition(first, scope)?;
                 let id = self.ast.type_def(def);
-                Expr::Type { id }
+                Expr::TypeDeclaration { id }
             }
             TokenType::Keyword(Keyword::Trait) => {
                 let trait_def = self.parse_trait_def(first, scope, TSpan::MISSING)?;
