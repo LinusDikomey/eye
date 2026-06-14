@@ -26,8 +26,12 @@ pub struct Builtins {
     eq_trait: OnceCell<(ModuleId, TraitId)>,
 }
 impl Builtins {
-    pub fn set_std(&mut self, std: ProjectId) {
-        self.std = std;
+    pub fn resolve(std: ProjectId, compiler: &mut Compiler) -> Builtins {
+        Self {
+            std,
+            primitives: Primitives::resolve(std, compiler),
+            ..Self::default()
+        }
     }
 }
 
@@ -39,8 +43,8 @@ impl Primitives {
         TypeInfo::Known(self.bool)
     }
 
-    pub fn resolve(compiler: &mut Compiler) -> Primitives {
-        let std = compiler.get_project(compiler.builtins.std).root_module;
+    pub fn resolve(std: ProjectId, compiler: &mut Compiler) -> Primitives {
+        let std = compiler.get_project(std).root_module;
         let primitive = resolve_module(compiler, std, "primitive");
         Self {
             bool: resolve_type(compiler, primitive, "bool"),

@@ -32,6 +32,7 @@ impl Lsp {
             || initialize.root_path.as_deref().map(PathBuf::from),
             |uri| Some(uri.path().to_path_buf()),
         );
+        tracing::info!("Initializing with root path {:?}", project_path);
         let std = match compiler.add_project("std".to_owned(), compiler::std_path::find(), vec![]) {
             Ok(std) => {
                 compiler.resolve_builtins(std);
@@ -51,7 +52,17 @@ impl Lsp {
                 return None;
             }
             compiler
-                .add_project(name, path, std.into_iter().collect())
+                .add_project(name, path, Vec::new())
+                .inspect(|&project| {
+                    // only add std as a dependency if they aren't the same. If they are indeed the
+                    // same, that means we are in the std library already and shouldn't add it as
+                    // a dependency as that would cause issues
+                    if let Some(std) = std
+                        && std != project
+                    {
+                        compiler.projects[project.idx()].dependencies.push(std);
+                    }
+                })
                 .ok()
         });
         let mut lsp = Self {
@@ -271,6 +282,12 @@ impl Lsp {
             {
                 parsed.symbols = compiler::compiler::ModuleSymbols::empty(&parsed.ast);
             }
+        }
+
+        if let Some(std) = self.std
+            && invalidated_projects.contains(&std)
+        {
+            self.compiler.resolve_builtins(std);
         }
 
         self.update_diagnostics(Some((project, new_errors)));

@@ -45,7 +45,7 @@ use crate::{
 use builtins::Builtins;
 
 pub struct Compiler {
-    projects: SegmentList<Project>,
+    pub projects: SegmentList<Project>,
     pub modules: SegmentList<Module>,
     pub const_values: SegmentList<(ConstValue, Type)>,
     pub types: Types,
@@ -235,11 +235,11 @@ impl Compiler {
                 ModuleStorage::Path(path) => {
                     let (file, _) =
                         crate::modules::module_and_children(path, module_id == module.root);
-                    std::fs::read_to_string(file).map_or_else(
+                    std::fs::read_to_string(&file).map_or_else(
                         |err| {
                             panic!(
                                 "compiler failed to open the file {}: {:?}",
-                                path.display(),
+                                file.display(),
                                 err
                             )
                         },
@@ -1247,8 +1247,7 @@ impl Compiler {
     }
 
     pub fn resolve_builtins(&mut self, std: ProjectId) {
-        self.builtins.std = std;
-        self.builtins.primitives = builtins::Primitives::resolve(self);
+        self.builtins = Builtins::resolve(std, self);
     }
 
     pub fn mangle_name(
