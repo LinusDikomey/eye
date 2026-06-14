@@ -238,6 +238,7 @@ impl<'a, H: Hooks> Ctx<'a, H> {
                     self.module,
                     id,
                     "<anonymous type>".into(),
+                    TSpan::MISSING,
                     generic_count,
                 );
                 self.compiler.get_parsed_module(self.module).symbols.types[id.idx()]

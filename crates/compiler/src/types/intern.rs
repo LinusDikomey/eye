@@ -7,6 +7,7 @@ use std::{
 
 use color_format::cwrite;
 use dmap::DHashMap;
+use error::span::TSpan;
 use fxhash::FxHasher;
 use hashbrown::HashTable;
 use parser::ast::{self, FunctionId, ModuleId};
@@ -48,6 +49,7 @@ impl Types {
                 module,
                 id: ast::TypeId::from_inner(0),
                 name: builtin.name().into(),
+                name_span: TSpan::MISSING,
                 generic_count: generics.count(),
                 resolved: crate::compiler::Resolvable::resolved(ResolvedTypeDef {
                     def: crate::compiler::ResolvedTypeContent::Builtin(builtin),
@@ -198,6 +200,7 @@ impl Types {
         module: ModuleId,
         id: ast::TypeId,
         name: Box<str>,
+        name_span: TSpan,
         generic_count: u8,
     ) -> BaseType {
         BaseType(self.bases.add(ResolvableTypeDef {
@@ -205,6 +208,7 @@ impl Types {
             module,
             id,
             name,
+            name_span,
             resolved: Resolvable::new(),
         }))
     }
@@ -222,6 +226,7 @@ impl Types {
             module,
             id,
             name,
+            name_span: TSpan::MISSING,
             resolved: Resolvable::resolved(resolved),
         }))
     }

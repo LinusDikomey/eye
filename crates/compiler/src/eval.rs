@@ -1,6 +1,6 @@
 use std::num::NonZeroU64;
 
-use error::Error;
+use error::{Error, span::TSpan};
 use ir::eval::Val;
 use parser::ast::{
     Ast, Expr, ExprId, FloatLiteral, IntLiteral, ModuleId, Primitive, ScopeId, UnresolvedType,
@@ -57,6 +57,7 @@ pub fn def_expr(
     ast: &Ast,
     expr: ExprId,
     name: &str,
+    name_span: TSpan,
     ty: &UnresolvedType,
 ) -> Def {
     let mismatched_type = |compiler: &Compiler, found| {
@@ -136,7 +137,9 @@ pub fn def_expr(
             }
             Def::ConstValue(compiler.add_const_value(ConstValue::Unit, ty))
         }
-        &Expr::Return { val, .. } => def_expr(compiler, module, scope, ast, val, name, ty),
+        &Expr::Return { val, .. } => {
+            def_expr(compiler, module, scope, ast, val, name, name_span, ty)
+        }
         &Expr::Function { id } => {
             if compiler
                 .check_signature_with_type((module, id), ty, scope, module)
@@ -159,7 +162,7 @@ pub fn def_expr(
             let symbols = &compiler.get_parsed_module(module).symbols;
             let base = *symbols.types[id.idx()].get_or_init(|| {
                 let generic_count = ast[id].generic_count();
-                compiler.add_type_def(module, id, name.into(), generic_count)
+                compiler.add_type_def(module, id, name.into(), name_span, generic_count)
             });
             let generic_count = compiler.get_base_type_generic_count(base);
             if generic_count == 0 {

@@ -521,6 +521,7 @@ impl<T: TreeToken> Scope<T> {
 pub enum Definition<T: TreeToken = ()> {
     Expr {
         t_name: T,
+        name_span: TSpan,
         t_colon_colon: T::Either<T, (T, T)>,
         id: DefExprId,
     },
@@ -633,6 +634,7 @@ pub struct BaseImpl<T: TreeToken = ()> {
 #[derive(Debug)]
 pub struct Global<T: TreeToken = ()> {
     pub name: Box<str>,
+    pub name_span: TSpan,
     pub t_name: T,
     pub scope: ScopeId,
     pub t_colon_and_equals_or_colon_equals: T::Either<(T, T), T>,

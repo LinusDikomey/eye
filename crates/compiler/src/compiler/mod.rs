@@ -162,9 +162,11 @@ impl Compiler {
         module: ModuleId,
         id: ast::TypeId,
         name: Box<str>,
+        name_span: TSpan,
         generic_count: u8,
     ) -> BaseType {
-        self.types.add_base(module, id, name, generic_count)
+        self.types
+            .add_base(module, id, name, name_span, generic_count)
     }
 
     pub fn add_const_value(&self, value: ConstValue, ty: Type) -> ConstValueId {
@@ -311,7 +313,9 @@ impl Compiler {
         let &def = parsed.ast[scope].definitions.get(name)?;
         let def = match def {
             // PERF: return reference here instead of cloning if possible
-            ast::Definition::Expr { id, .. } => *self.get_def_expr(module, scope, name, id),
+            ast::Definition::Expr { id, name_span, .. } => {
+                *self.get_def_expr(module, scope, name, name_span, id)
+            }
             ast::Definition::Use { path, id, .. } => {
                 self.resolve_use(parsed, module, scope, id, path)
             }
@@ -345,6 +349,7 @@ impl Compiler {
         module: ModuleId,
         scope: ScopeId,
         name: &str,
+        name_span: TSpan,
         id: DefExprId,
     ) -> &Def {
         let parsed = self.get_parsed_module(module);
@@ -361,7 +366,7 @@ impl Compiler {
                 let ast = &parsed.ast;
                 let (value, ty) = &ast[id];
                 let value = *value;
-                eval::def_expr(self, module, scope, ast, value, name, ty)
+                eval::def_expr(self, module, scope, ast, value, name, name_span, ty)
             },
         )
     }
@@ -918,6 +923,7 @@ impl Compiler {
                     ast,
                     global.val,
                     &global.name,
+                    global.name_span,
                     &global.ty,
                 ) {
                     Def::ConstValue(id) => self.const_values[id.idx()].clone(),
@@ -946,8 +952,8 @@ impl Compiler {
                         ast::Definition::Use { path, id, .. } => {
                             self.resolve_use(parsed, module, scope, id, path);
                         }
-                        ast::Definition::Expr { id, .. } => {
-                            let def = self.get_def_expr(module, scope, name, id);
+                        ast::Definition::Expr { id, name_span, .. } => {
+                            let def = self.get_def_expr(module, scope, name, name_span, id);
                             if let &Def::Function(module, id) = def {
                                 self.get_hir(module, id);
                             }
@@ -969,7 +975,13 @@ impl Compiler {
                 let parsed = self.modules[module.idx()].parsed.get().unwrap();
                 let id = *parsed.symbols.types[id.idx()].get_or_init(|| {
                     let generic_count = parsed.ast[id].generic_count();
-                    self.add_type_def(module, id, "<anonymous type>".into(), generic_count)
+                    self.add_type_def(
+                        module,
+                        id,
+                        "<anonymous type>".into(),
+                        TSpan::MISSING,
+                        generic_count,
+                    )
                 });
                 let resolved = self.get_base_type_def(id);
                 for &method in resolved.methods.values() {
@@ -2020,6 +2032,7 @@ pub struct ResolvableTypeDef {
     pub module: ModuleId,
     pub id: ast::TypeId,
     pub name: Box<str>,
+    pub name_span: TSpan,
     pub generic_count: u8,
     pub resolved: Resolvable<ResolvedTypeDef>,
 }
@@ -2029,6 +2042,7 @@ impl Default for ResolvableTypeDef {
             module: ModuleId::from_inner(0),
             id: ast::TypeId::from_inner(0),
             name: "".into(),
+            name_span: TSpan::MISSING,
             generic_count: 0,
             resolved: Resolvable::new(),
         }

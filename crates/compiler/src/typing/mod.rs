@@ -1346,6 +1346,7 @@ impl TypeTable {
                     module,
                     ast::TypeId::MISSING,
                     format!("closure{}", function.idx()).into_boxed_str(),
+                    TSpan::MISSING,
                     type_generics.count.try_into().unwrap(),
                 );
                 let impl_generics: Box<[_]> = (0..generics.count())

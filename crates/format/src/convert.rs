@@ -105,6 +105,7 @@ impl<'a> Converter<'a> {
                 t_name,
                 t_colon_colon,
                 id,
+                ..
             } => {
                 let (expr, ty) = &self.cst[id];
                 self.tok_s(nodes, t_name);

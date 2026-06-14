@@ -212,6 +212,7 @@ impl<T: TreeToken> Parser<'_, T> {
                         Entry::Vacant(vacant_entry) => {
                             vacant_entry.insert(Definition::Expr {
                                 t_name,
+                                name_span,
                                 t_colon_colon,
                                 id: self.ast.def_expr(value, annotated_ty),
                             });
@@ -274,6 +275,7 @@ impl<T: TreeToken> Parser<'_, T> {
                         let name = self.toks.src[span.range()].to_owned();
                         let id = self.ast.global(Global {
                             name: name.clone().into_boxed_str(),
+                            name_span: *span,
                             t_name: t.clone(),
                             scope: scope_id,
                             t_colon_and_equals_or_colon_equals: t_colon_and_equals_or_colon_equals

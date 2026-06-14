@@ -196,7 +196,13 @@ impl Lsp {
                 return None;
             }
             let ast = compiler.get_module_ast(def.module);
-            Some((def.module, ast[def.id].span(ast.scopes())))
+            let name_span = compiler.types.get_base(id).name_span;
+            let span = if name_span == TSpan::MISSING {
+                ast[def.id].span(ast.scopes())
+            } else {
+                name_span
+            };
+            Some((def.module, span))
         }
 
         fn goto_type_definition(
