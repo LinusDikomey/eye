@@ -400,12 +400,19 @@ impl<'a> fmt::Display for HirDisplay<'a> {
                     }
                     cwrite!(f, "{}", display_ty(hir[generic]))?;
                 }
-                cwrite!(f, "]): ")?;
-                display_ty(hir[ty]);
+                cwrite!(f, "]): {}", display_ty(hir[ty]))?;
             }
             &Node::Capture(id) => cwrite!(f, "(#b<capture> #y<{}>)", id.0)?,
             &Node::Break(n) => cwrite!(f, "(#b<break> #y<{n}>)")?,
             &Node::Continue(n) => cwrite!(f, "(#b<continue> #y<{n}>)")?,
+            &Node::Type { value, value_ty } => {
+                cwrite!(
+                    f,
+                    "(#b<type> {}): {}",
+                    display_ty(value),
+                    display_ty(hir[value_ty])
+                )?;
+            }
         }
         Ok(())
     }

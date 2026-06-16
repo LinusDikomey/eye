@@ -227,10 +227,12 @@ impl<'a, H: Hooks> Ctx<'a, H> {
                 node
             }
             &Expr::Primitive { primitive, .. } => {
-                self.specify(expected, TypeInfo::BaseTypeItem(primitive.into()), |ast| {
-                    ast[expr].span(ast)
-                });
-                Node::Invalid
+                let ty = self.hir.types.add(TypeInfo::Known(primitive.into()));
+                self.specify(expected, TypeInfo::TypeItem(ty), |ast| ast[expr].span(ast));
+                Node::Type {
+                    value: primitive.into(),
+                    value_ty: expected,
+                }
             }
             &Expr::TypeDeclaration { id } => {
                 let generic_count = self.ast[id].generic_count();
@@ -890,21 +892,24 @@ impl<'a, H: Hooks> Ctx<'a, H> {
             Def::Function(module, id) => self.function_item(module, id, expected, span),
             Def::BaseType(id) => {
                 self.specify(expected, TypeInfo::BaseTypeItem(id), |_| span);
-                Node::Invalid
+                Node::Unit
             }
             Def::Type(ty) => {
-                let ty = self.hir.types.add(TypeInfo::Known(ty));
-                self.specify(expected, TypeInfo::TypeItem(ty), |_| span);
-                Node::Invalid
+                let ty_var = self.hir.types.add(TypeInfo::Known(ty));
+                self.specify(expected, TypeInfo::TypeItem(ty_var), |_| span);
+                Node::Type {
+                    value: ty,
+                    value_ty: expected,
+                }
             }
             Def::Trait(module, id) => {
                 self.specify(expected, TypeInfo::TraitItem { module, id }, |_| span);
-                Node::Invalid
+                Node::Unit
             }
             Def::ConstValue(const_val) => self.const_value_to_node(expected, const_val, span),
             Def::Module(id) => {
                 self.specify(expected, TypeInfo::ModuleItem(id), |_| span);
-                Node::Invalid
+                Node::Unit
             }
             Def::Global(module, id) => {
                 let (_, ty) = self.compiler.get_checked_global(module, id);

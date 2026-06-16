@@ -172,8 +172,11 @@ impl TypeTable {
             }
             (BaseTypeItem(a_ty), BaseTypeItem(b_ty)) if a_ty == b_ty => a,
             (TypeItem(a_ty), TypeItem(b_ty)) => {
-                if !self.try_unify(a_ty, b_ty, function_generics, compiler) {
-                    return None;
+                // TODO: this could technically cause TypeItem to be converted to type unnecessarily
+                // when both the types are the same. Maybe in the future, TypeItem should just hold
+                // a Type, not a Type var
+                if a_ty != b_ty {
+                    return Some(TypeInfo::Known(Type::Type).into());
                 }
                 a
             }

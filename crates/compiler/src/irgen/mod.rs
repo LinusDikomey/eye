@@ -1064,6 +1064,16 @@ fn lower_expr(ctx: &mut Ctx, node: NodeId) -> Result<ValueOrPlace> {
             ctx.builder.append(cf.Goto(BlockTarget::new(target)));
             return Err(NoReturn);
         }
+        &Node::Type { value, value_ty } => {
+            if let Type::Type = ctx.hir[value_ty] {
+                // types are just stored as u32
+                let ir_ty = ctx.builder.types.add(ir::Primitive::U32);
+                ctx.builder.append(arith.Int(value.0.into(), ir_ty))
+            } else {
+                // value type must still be a Type item so it's zero-sized
+                Ref::UNIT
+            }
+        }
     };
     Ok(ValueOrPlace::Value(value))
 }

@@ -33,7 +33,7 @@ pub fn get(
                     BuiltinType::U128 => ir::Type::Primitive(ir::Primitive::U128.into()),
                     BuiltinType::F32 => ir::Type::Primitive(ir::Primitive::F32.into()),
                     BuiltinType::F64 => ir::Type::Primitive(ir::Primitive::F64.into()),
-                    BuiltinType::Type => ir::Type::Primitive(ir::Primitive::U64.into()), // TODO: convert Type Type
+                    BuiltinType::Type => ir::Type::Primitive(ir::Primitive::U32.into()),
                     BuiltinType::Pointer | BuiltinType::Function => {
                         ir::Type::Primitive(ir::Primitive::Ptr.into())
                     }

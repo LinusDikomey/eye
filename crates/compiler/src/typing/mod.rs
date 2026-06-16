@@ -25,6 +25,7 @@ use crate::{
         Def, Generics, Instance, ModuleSpan, ResolvedEnumDef, ResolvedTypeContent, ResolvedTypeDef,
         builtins,
     },
+    eval::ConstValue,
     helpers::IteratorExt,
     layout::Layout,
     types::{BaseType, TypeFull, Types},
@@ -358,7 +359,25 @@ impl TypeTable {
                         }
                         TypeInfo::Known(ty)
                     }
-                    Def::ConstValue(_) => todo!("consts as types"),
+                    Def::ConstValue(id) => {
+                        if let &Some((_, span)) = generics {
+                            compiler
+                                .errors
+                                .emit(module, Error::UnexpectedGenerics.at_span(span));
+                        }
+                        let (value, ty) = &compiler.const_values[id.idx()];
+                        if *ty != Type::Type {
+                            compiler
+                                .errors
+                                .emit(module, Error::TypeExpected.at_span(path.span()));
+                        }
+                        let &ConstValue::Int(i) = value else {
+                            unreachable!()
+                        };
+                        debug_assert!(i <= u32::MAX as u64);
+                        let ty = Type(i as u32);
+                        TypeInfo::Known(ty)
+                    }
                     Def::Module(_) | Def::Global(_, _) | Def::Function(_, _) | Def::Trait(_, _) => {
                         compiler
                             .errors
@@ -1583,6 +1602,7 @@ impl TypeTable {
                 }
                 return Ok(true);
             }
+            TypeInfo::TypeItem(_) if ty == Type::Type => return Ok(true),
             _ => {}
         }
         Ok(match compiler.types.lookup(ty) {

@@ -299,6 +299,7 @@ impl Types {
     }
 }
 
+#[must_use]
 pub struct TypeDisplay<'a> {
     types: &'a Types,
     generics: &'a Generics,

@@ -340,6 +340,10 @@ pub enum Node {
     Capture(CaptureId),
     Break(u32),
     Continue(u32),
+    Type {
+        value: Type,
+        value_ty: LocalTypeId,
+    },
 }
 
 #[derive(Clone, Copy, Debug)]

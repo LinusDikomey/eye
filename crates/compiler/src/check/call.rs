@@ -1,6 +1,6 @@
 use crate::check::Hooks;
-use crate::types::{BaseType, BuiltinType, TypeFull};
-use crate::typing::NamedMembers;
+use crate::types::{BaseType, BuiltinType};
+use crate::typing::{LocalOrGlobalInstance, NamedMembers};
 use crate::{InvalidTypeError, Type};
 use crate::{
     compiler::{LocalScope, ResolvedStructDef, ResolvedTypeContent, builtins},
@@ -26,27 +26,26 @@ impl<'a, H: Hooks> Ctx<'a, H> {
         let called_ty = self.hir.types.add_unknown();
         let called_node = self.check(call.called_expr, scope, called_ty, return_ty, noreturn);
         let call_span = TSpan::new(call.open_paren_start, call.end);
-        let mut base_type_called = |ctx: &mut Self, base: BaseType, instance: LocalTypeIds| {
-            let resolved = ctx.compiler.get_base_type_def(base);
-            match &resolved.def {
-                ResolvedTypeContent::Struct(struct_def) => {
-                    ctx.specify(expected, TypeInfo::Instance(base, instance), |ast| {
-                        ast[expr].span(ast)
-                    });
-                    ctx.check_struct_initializer(
-                        struct_def, instance, call, scope, return_ty, noreturn,
-                    )
-                    .unwrap_or_else(|_| {
-                        ctx.invalidate(expected);
+        let mut instance_type_called =
+            |ctx: &mut Self, base: BaseType, info: TypeInfo, instance: LocalOrGlobalInstance| {
+                let resolved = ctx.compiler.get_base_type_def(base);
+                match &resolved.def {
+                    ResolvedTypeContent::Struct(struct_def) => {
+                        ctx.specify(expected, info, |ast| ast[expr].span(ast));
+                        ctx.check_struct_initializer(
+                            struct_def, instance, call, scope, return_ty, noreturn,
+                        )
+                        .unwrap_or_else(|_| {
+                            ctx.invalidate(expected);
+                            Node::Invalid
+                        })
+                    }
+                    ResolvedTypeContent::Builtin(_) | ResolvedTypeContent::Enum(_) => {
+                        ctx.emit(Error::FunctionOrStructTypeExpected.at_span(ctx.span(expr)));
                         Node::Invalid
-                    })
+                    }
                 }
-                ResolvedTypeContent::Builtin(_) | ResolvedTypeContent::Enum(_) => {
-                    ctx.emit(Error::FunctionOrStructTypeExpected.at_span(ctx.span(expr)));
-                    Node::Invalid
-                }
-            }
-        };
+            };
 
         let mut s = String::new();
         self.hir.types.type_to_string_inner(
@@ -56,11 +55,25 @@ impl<'a, H: Hooks> Ctx<'a, H> {
             &mut s,
         );
 
-        match self.hir.types[called_ty] {
-            TypeInfo::Known(Type::Invalid) => {
-                self.invalidate(expected);
-                return Node::Invalid;
-            }
+        let called_info = self.hir.types[called_ty];
+        if called_info.is_invalid() {
+            self.invalidate(expected);
+            return Node::Invalid;
+        } else if let Some(function_instance) =
+            called_info.into_specific_base(self.compiler, BaseType::Function)
+        {
+            return self.function_type_call(
+                function_instance,
+                call,
+                called_node,
+                call_span,
+                scope,
+                expected,
+                return_ty,
+                noreturn,
+            );
+        }
+        match called_info {
             TypeInfo::BaseTypeItem(base) => {
                 debug_assert!(
                     !matches!(
@@ -72,33 +85,22 @@ impl<'a, H: Hooks> Ctx<'a, H> {
                 let generic_count = self.compiler.get_base_type_generic_count(base);
                 let base_generic_count = generic_count.into();
                 let base_generics = self.hir.types.add_multiple_unknown(base_generic_count);
-                return base_type_called(self, base, base_generics);
+                let info = TypeInfo::Instance(base, base_generics);
+                return instance_type_called(self, base, info, base_generics.into());
             }
             TypeInfo::TypeItem(ty) => {
-                match self.hir.types[ty] {
-                    TypeInfo::Instance(BaseType::Invalid, _) => {
+                let info = self.hir.types[ty];
+                if let TypeInfo::Unknown(bounds) = info {
+                    self.emit_unknown(bounds, self.span(call.called_expr));
+                    self.invalidate(expected);
+                    return Node::Invalid;
+                } else if let Some((base, generics)) = info.into_base(self.compiler) {
+                    if base == BaseType::Invalid {
                         self.invalidate(expected);
                         return Node::Invalid;
                     }
-                    TypeInfo::Unknown(bounds) => {
-                        self.emit_unknown(bounds, self.span(call.called_expr));
-                        self.invalidate(expected);
-                        return Node::Invalid;
-                    }
-                    TypeInfo::Instance(base, instance_generics) => {
-                        return base_type_called(self, base, instance_generics);
-                    }
-                    TypeInfo::Known(ty) => {
-                        if let TypeFull::Instance(base, generics) = self.compiler.types.lookup(ty) {
-                            let generics = self
-                                .hir
-                                .types
-                                .add_multiple(generics.iter().map(|&ty| TypeInfo::Known(ty)));
-                            return base_type_called(self, base, generics);
-                        }
-                    }
-                    _ => {}
-                };
+                    return instance_type_called(self, base, info, generics);
+                }
             }
             TypeInfo::FunctionItem {
                 module,
@@ -118,7 +120,7 @@ impl<'a, H: Hooks> Ctx<'a, H> {
                     call_span,
                     call.args,
                     &call.named_args,
-                    generics,
+                    generics.into(),
                     &signature.params,
                     &signature.named_params,
                     signature.varargs,
@@ -164,38 +166,6 @@ impl<'a, H: Hooks> Ctx<'a, H> {
                     }
                 }
             }
-            TypeInfo::Instance(BaseType::Function, generics) => {
-                return self.function_type_call(
-                    generics,
-                    call,
-                    called_node,
-                    call_span,
-                    scope,
-                    expected,
-                    return_ty,
-                    noreturn,
-                );
-            }
-            TypeInfo::Known(ty) => {
-                if let TypeFull::Instance(BaseType::Function, generics) =
-                    self.compiler.types.lookup(ty)
-                {
-                    let generics = self
-                        .hir
-                        .types
-                        .add_multiple(generics.iter().copied().map(TypeInfo::Known));
-                    return self.function_type_call(
-                        generics,
-                        call,
-                        called_node,
-                        call_span,
-                        scope,
-                        expected,
-                        return_ty,
-                        noreturn,
-                    );
-                }
-            }
             TypeInfo::MethodItem {
                 module,
                 function,
@@ -215,7 +185,7 @@ impl<'a, H: Hooks> Ctx<'a, H> {
                     call_span,
                     call.args,
                     &call.named_args,
-                    generics,
+                    generics.into(),
                     signature_params,
                     &signature.named_params,
                     signature.varargs,
@@ -353,7 +323,7 @@ impl<'a, H: Hooks> Ctx<'a, H> {
                     call_span,
                     call.args,
                     &call.named_args,
-                    generics,
+                    generics.into(),
                     &signature.params,
                     &signature.named_params,
                     signature.varargs,
@@ -447,7 +417,7 @@ impl<'a, H: Hooks> Ctx<'a, H> {
 
     fn function_type_call(
         &mut self,
-        function_generics: LocalTypeIds,
+        function_generics: LocalOrGlobalInstance,
         call: &Call,
         called_node: Node,
         call_span: TSpan,
@@ -457,7 +427,13 @@ impl<'a, H: Hooks> Ctx<'a, H> {
         noreturn: &mut bool,
     ) -> Node {
         let return_type = function_generics.nth(0).unwrap();
-        let params = function_generics.skip(1);
+        let params = match function_generics {
+            LocalOrGlobalInstance::Local(ids) => ids.skip(1),
+            LocalOrGlobalInstance::Global(items) => self
+                .hir
+                .types
+                .add_multiple(items.iter().copied().skip(1).map(TypeInfo::Known)),
+        };
         // TODO: call noreturn checking
         let call_noreturn = false;
         // let call_noreturn = matches!(
@@ -470,7 +446,7 @@ impl<'a, H: Hooks> Ctx<'a, H> {
         //     ),
         //     Ok(true)
         // );
-        self.unify(expected, return_type, |_| call_span);
+        self.specify_or_unify(expected.into(), return_type, |_| call_span);
         match self.check_call_args_inner(
             scope,
             return_ty,
@@ -513,7 +489,7 @@ impl<'a, H: Hooks> Ctx<'a, H> {
         arg_count: u32,
         params: &[(Box<str>, Type)],
         named_params: &[(Box<str>, Type, Option<ConstValueId>)],
-        generics: LocalTypeIds,
+        generics: LocalOrGlobalInstance,
         varargs: bool,
         extra_arg_slot: bool,
     ) -> Result<LocalTypeIds, Error> {
@@ -555,7 +531,7 @@ impl<'a, H: Hooks> Ctx<'a, H> {
         span: TSpan,
         args: ExprIds,
         named_args: &[(TSpan, ExprId)],
-        generics: LocalTypeIds,
+        generics: LocalOrGlobalInstance,
         params: &[(Box<str>, Type)],
         named_params: &[(Box<str>, Type, Option<ConstValueId>)],
         varargs: bool,
@@ -691,7 +667,7 @@ impl<'a, H: Hooks> Ctx<'a, H> {
     fn check_struct_initializer(
         &mut self,
         struct_def: &ResolvedStructDef,
-        generics: LocalTypeIds,
+        generics: LocalOrGlobalInstance,
         call: &Call,
         scope: &mut LocalScope,
         return_ty: LocalTypeId,

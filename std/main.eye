@@ -147,6 +147,9 @@ Eq :: trait {
   impl _ for bool {
     eq :: fn(this bool, other bool) -> bool: intrinsics.eq(this, other)
   }
+  impl _ for type {
+    eq :: fn(this type, other type) -> bool: intrinsics.eq(this, other)
+  }
 
   impl[T: Eq, U: Eq] _ for (T, U) {
     eq :: fn(this (T, U), other (T, U)) -> bool {
