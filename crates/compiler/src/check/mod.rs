@@ -235,7 +235,7 @@ pub struct Ctx<'a, H: Hooks> {
     /// tracks a stack of any control flow that break/continue apply to (loops)
     /// labels will make the Vec actually useful to track labeled break/continue
     pub control_flow_stack: Vec<()>,
-    /// Exhaustion value, type, pattern expr
+    /// Exhaustion value, type, corresponding expr
     pub deferred_exhaustions: Vec<(Exhaustion, LocalTypeId, ExprId)>,
     /// from, to, cast_expr
     pub deferred_casts: Vec<(LocalTypeId, LocalTypeId, ExprId, CastId)>,

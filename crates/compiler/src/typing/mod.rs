@@ -1284,6 +1284,7 @@ impl TypeTable {
                     let ordinal = variant.ordinal;
                     let params = variant
                         .args
+                        .skip(1) // skip the ordinal type
                         .iter()
                         .map(|param| self.intern_var(compiler, module, param, buf))
                         .collect();

@@ -1,7 +1,10 @@
 use dmap::DHashMap;
 
 use crate::{
-    Compiler, InvalidTypeError, Type, compiler::Instance, helpers::IteratorExt, types::TypeFull,
+    Compiler, InvalidTypeError, Type,
+    compiler::{Instance, ResolvedTypeContent},
+    helpers::IteratorExt,
+    types::TypeFull,
 };
 
 #[derive(Clone, Copy)]
@@ -24,7 +27,7 @@ pub enum Exhaustion {
         true_: bool,
         false_: bool,
     },
-    Enum(DHashMap<String, Vec<Exhaustion>>),
+    Enum(DHashMap<String, Box<[Exhaustion]>>),
     Tuple(Vec<Exhaustion>),
     Invalid,
 }
@@ -72,41 +75,29 @@ impl Exhaustion {
                 }
                 _ => return Err(InvalidTypeError),
             },
-            Exhaustion::Enum(_) => {
-                todo!("check enums")
-                /*
-                match ty {
-                    TypeInfo::Resolved(symbol, generics) => {
-                        let ResolvedTypeBody::Enum(enum_def) = &symbols.get_type(symbol).body else { return None };
-                        for (name, (_, _, arg_types)) in &enum_def.variants {
-                            let Some(args) = exhausted_variants.get(name) else { return Some(false) };
-                            if args.len() != arg_types.len() { return None };
-                            for (arg, arg_ty) in args.iter().zip(arg_types.iter()) {
-                                let arg_ty = arg_ty.as_info(types, |i| generics.nth(i as u32).into());
-                                let arg_ty = types.get_info_or_idx(arg_ty);
-                                if !arg.is_exhausted(arg_ty, types, symbols)? {
-                                    return Some(false)
-                                }
-                            }
-                        }
-                    }
-                    TypeInfo::Enum { .. } => {
-                        for i in 0..count as usize {
-                            let TypeInfo::Tuple(variant)
-                            let (name, arg_types) = &types.get_enum_variants(variants)[i];
-                            let Some(args) = exhausted_variants.get(name) else { return Some(false) };
-                            if args.len() != arg_types.len() { return None };
-                            for (arg, arg_ty) in args.iter().zip(arg_types.iter()) {
-                                if !arg.is_exhausted(types[arg_ty], types, symbols)? {
-                                    return Some(false)
-                                }
-                            }
-                        }
-                    }
-                    _ => return None
+            Exhaustion::Enum(exhaustion) => {
+                let TypeFull::Instance(enum_base, instance) = types.lookup(ty) else {
+                    return Err(InvalidTypeError);
+                };
+                let def = compiler.get_base_type_def(enum_base);
+                let ResolvedTypeContent::Enum(enum_) = &def.def else {
+                    return Err(InvalidTypeError);
+                };
+                if exhaustion.len() != enum_.variants.len() {
+                    return Ok(false);
                 }
-                true
-                */
+                enum_.variants.iter().try_all(|(name, _, args)| {
+                    let Some(arg_exhaustions) = exhaustion.get(&**name) else {
+                        return Err(InvalidTypeError);
+                    };
+                    debug_assert_eq!(args.len(), arg_exhaustions.len());
+                    args.iter()
+                        .zip(arg_exhaustions)
+                        .try_all(|(ty, exhaustion)| {
+                            let ty = compiler.types.instantiate(*ty, instance);
+                            exhaustion.is_exhausted(ty, compiler)
+                        })
+                })?
             }
             &Exhaustion::Bool { true_, false_ } => true_ && false_,
             Exhaustion::Tuple(members) => {
@@ -270,6 +261,50 @@ impl Exhaustion {
             _ => {
                 *self = Self::Invalid;
                 false
+            }
+        }
+    }
+
+    pub fn enum_variant<'a>(
+        &'a mut self,
+        name: &str,
+        arg_count: u32,
+    ) -> Option<&'a mut [Exhaustion]> {
+        // extrmee borrowing bullshit: this could all be done with the entry api but multiple places
+        // cause issuse when returning obtained values directly
+        if matches!(self, Self::None) {
+            *self = Self::Enum(DHashMap::default());
+        }
+        match self {
+            Self::Enum(variants) => match variants.entry(name.to_owned()) {
+                std::collections::hash_map::Entry::Occupied(occupied) => {
+                    let len = occupied.get().len();
+                    if len != arg_count as usize {
+                        *self = Self::Invalid;
+                        None
+                    } else {
+                        let Self::Enum(variants) = self else {
+                            unreachable!()
+                        };
+                        let args = variants.get_mut(name).unwrap();
+                        Some(&mut *args)
+                    }
+                }
+                std::collections::hash_map::Entry::Vacant(_) => {
+                    let Self::Enum(variants) = self else {
+                        unreachable!();
+                    };
+                    variants.insert(
+                        name.to_owned(),
+                        std::iter::repeat_n(Exhaustion::None, arg_count as usize).collect(),
+                    );
+                    Some(variants.get_mut(name).unwrap())
+                }
+            },
+            Self::Full => None,
+            _ => {
+                *self = Self::Invalid;
+                None
             }
         }
     }

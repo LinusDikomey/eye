@@ -150,13 +150,18 @@ pub fn check<H: Hooks>(
                 Ok((ordinal, arg_types)) => {
                     debug_assert_eq!(arg_types.count, args.count + 1);
                     let arg_patterns = ctx.hir.add_invalid_patterns(args.count);
+                    let mut arg_exhaustions = exhaustion
+                        .enum_variant(name, args.count)
+                        .map(|args| args.iter_mut());
                     for ((arg_ty, arg), r) in
                         arg_types.iter().skip(1).zip(args).zip(arg_patterns.iter())
                     {
-                        let mut arg_exhaustion = Exhaustion::None;
-                        let pat = check(ctx, scope, &mut arg_exhaustion, arg, arg_ty);
+                        let arg_exhaustion =
+                            arg_exhaustions.as_mut().map(|args| args.next().unwrap());
+                        let mut full_exhaustion = Exhaustion::Full;
+                        let arg_exhaustion = arg_exhaustion.unwrap_or(&mut full_exhaustion);
+                        let pat = check(ctx, scope, arg_exhaustion, arg, arg_ty);
                         ctx.hir.modify_pattern(r, pat);
-                        // TODO: enum argument exhaustion
                     }
                     Pattern::EnumVariant {
                         ordinal,

@@ -727,6 +727,10 @@ impl<'a, H: Hooks> Ctx<'a, H> {
                     self.hooks.on_exit_scope(&mut branch_scope, &mut self.hir);
                     branch_scope.variables.clear();
                 }
+                if !exhaustion.is_trivially_exhausted() {
+                    self.deferred_exhaustions
+                        .push((exhaustion, matched_ty, val));
+                }
                 if all_branches_noreturn {
                     *noreturn = true;
                 }
