@@ -10,7 +10,7 @@ use ir::{
     slots::Slots,
 };
 
-use crate::arch::x86::{Reg, X86};
+use crate::arch::x86::{Reg, X86, isa::Size};
 
 pub fn codegen(
     env: &Environment,
@@ -90,24 +90,31 @@ fn primitive_of_ref(r: Ref, ir: &IrModify, types: &Types) -> Primitive {
     p.try_into().expect("Invalid primitive encountered")
 }
 
-enum IntSize {
-    I8,
-    I16,
-    I32,
-    I64,
-    I128,
+fn int_size_of_ref(r: Ref, ir: &IrModify, types: &Types) -> Size {
+    arith_class(r, ir, types).1
 }
 
-fn int_size_of_ref(r: Ref, ir: &IrModify, types: &Types) -> IntSize {
+enum ArithClass {
+    Signed,
+    Unsigned,
+    Float,
+}
+
+fn arith_class(r: Ref, ir: &IrModify, types: &Types) -> (ArithClass, Size) {
     match primitive_of_ref(r, ir, types) {
-        Primitive::I8 | Primitive::U8 => IntSize::I8,
-        Primitive::I16 | Primitive::U16 => IntSize::I16,
-        Primitive::I32 | Primitive::U32 => IntSize::I32,
-        Primitive::I64 | Primitive::U64 => IntSize::I64,
-        Primitive::I128 | Primitive::U128 => IntSize::I128,
-        Primitive::I1 | Primitive::F32 | Primitive::F64 | Primitive::Ptr => {
-            unreachable!()
-        }
+        Primitive::I1 | Primitive::I8 => (ArithClass::Signed, Size::S8),
+        Primitive::I16 => (ArithClass::Signed, Size::S16),
+        Primitive::I32 => (ArithClass::Signed, Size::S32),
+        Primitive::I64 => (ArithClass::Signed, Size::S64),
+        Primitive::I128 => (ArithClass::Signed, Size::S128),
+        Primitive::U8 => (ArithClass::Unsigned, Size::S8),
+        Primitive::U16 => (ArithClass::Unsigned, Size::S16),
+        Primitive::U32 => (ArithClass::Unsigned, Size::S32),
+        Primitive::U64 => (ArithClass::Unsigned, Size::S64),
+        Primitive::U128 => (ArithClass::Unsigned, Size::S128),
+        Primitive::F32 => (ArithClass::Float, Size::S32),
+        Primitive::F64 => (ArithClass::Float, Size::S64),
+        Primitive::Ptr => unreachable!("unsupported type Ptr for arithmetic"),
     }
 }
 
@@ -123,11 +130,11 @@ fn cmp_branch<
 >(
     ctx: &mut IselCtx<X86>,
     ir: &mut IrModify,
+    types: &Types,
     env: &Environment,
-    x86: ModuleOf<X86>,
-    mc: ModuleOf<Mc>,
+    dialects: &InstructionSelector,
     block: BlockId,
-    cmp: Ref,
+    cmp_r: Ref,
     r: Ref,
     a: Ref,
     b: Ref,
@@ -142,27 +149,86 @@ fn cmp_branch<
     impl use<A1, F1, A2, F2> + IntoArgs<'static>,
     TypeId,
 ) {
+    cmp(ctx, ir, types, env, dialects, cmp_r, a, b);
+    branch(
+        ctx,
+        ir,
+        env,
+        dialects,
+        block,
+        r,
+        b1,
+        b1_args,
+        b2,
+        b2_args,
+        cond_jmp,
+        inverse_cond_jmp,
+    )
+}
+
+fn branch<
+    A1: IntoArgs<'static>,
+    F1: Fn(BlockId) -> (FunctionId, A1, TypeId),
+    A2: IntoArgs<'static>,
+    F2: Fn(BlockId) -> (FunctionId, A2, TypeId),
+>(
+    ctx: &mut IselCtx<X86>,
+    ir: &mut IrModify,
+    env: &Environment,
+    dialects: &InstructionSelector,
+    block: BlockId,
+    r: Ref,
+    b1: BlockId,
+    b1_args: Vec<Ref>,
+    b2: BlockId,
+    b2_args: Vec<Ref>,
+    cond_jmp: F1,
+    inverse_cond_jmp: F2,
+) -> (
+    FunctionId,
+    impl use<A1, F1, A2, F2> + IntoArgs<'static>,
+    TypeId,
+) {
+    let InstructionSelector { x86, mc, .. } = *dialects;
     let next_block = ctx.next_block(block);
-    match (ctx.regs.get(a), ctx.regs.get(b)) {
-        (&[a], &[b]) => {
-            ir.replace(env, cmp, x86.cmp_rr32(a, b, ctx.unit));
-        }
-        _ => todo!("large int comparisons"),
-    }
     if next_block.is_some_and(|next| next == b1) {
         // if b1 is the next block, we want to invert the condition to only emit one jump
-        ctx.create_args_copy(env, r, mc, ir, b2, &b2_args.to_vec());
+        create_args_copy(
+            ctx,
+            env,
+            r,
+            dialects.mc,
+            dialects.x86,
+            ir,
+            b2,
+            &b2_args.to_vec(),
+        );
         ir.add_before(env, r, inverse_cond_jmp(b2));
-        ctx.create_args_copy(env, r, mc, ir, b1, &b1_args.to_vec());
+        create_args_copy(ctx, env, r, mc, x86, ir, b1, &b1_args.to_vec());
         // the jmp is still emitted (to maintain correct successor info)
         // but will be remvoed during emit
-        x86.jmp(b1, ctx.unit)
+        x86.jmp(b1)
     } else {
-        ctx.create_args_copy(env, r, mc, ir, b1, &b1_args.to_vec());
+        create_args_copy(ctx, env, r, mc, x86, ir, b1, &b1_args.to_vec());
         ir.add_before(env, r, cond_jmp(b1));
-        ctx.create_args_copy(env, r, mc, ir, b2, &b2_args.to_vec());
-        x86.jmp(b2, ctx.unit)
+        create_args_copy(ctx, env, r, mc, x86, ir, b2, &b2_args.to_vec());
+        x86.jmp(b2)
     }
+}
+
+fn create_args_copy(
+    ctx: &mut IselCtx<X86>,
+    env: &Environment,
+    before: Ref,
+    mc: ModuleOf<Mc>,
+    x86: ModuleOf<X86>,
+    ir: &mut IrModify,
+    target: BlockId,
+    args: &[Ref],
+) {
+    ctx.create_args_copy(env, before, mc, ir, target, args, |ir, env, reg, b| {
+        ir.add_before(env, before, x86.mov_ri8(reg, b as u32));
+    });
 }
 
 ir::visitor! {
@@ -187,93 +253,56 @@ ir::visitor! {
     (%r = arith.Int (#x)) => {
         let regs = ctx.regs.get(r);
         match int_size_of_ref(r, ir, types) {
-            IntSize::I8 => {
-                ir.replace(env, r, x86.mov_ri8(regs[0], x as u8 as u32, ctx.unit));
+            Size::S8 => {
+                ir.replace(env, r, x86.mov_ri8(regs[0], x as u8 as u32));
             }
-            IntSize::I16 => {
-                ir.replace(env, r, x86.mov_ri16(regs[0], x as u16 as u32, ctx.unit));
+            Size::S16 => {
+                ir.replace(env, r, x86.mov_ri16(regs[0], x as u16 as u32));
             }
-            IntSize::I32 => {
-                ir.replace(env, r, x86.mov_ri32(regs[0], x as u32, ctx.unit));
+            Size::S32 => {
+                ir.replace(env, r, x86.mov_ri32(regs[0], x as u32));
             }
-            IntSize::I64 => {
+            Size::S64 => {
                 if x > u32::MAX as u64 {
                     todo!()
                 }
-                ir.replace(env, r, x86.mov_ri64(regs[0], x.try_into().unwrap(), ctx.unit));
+                ir.replace(env, r, x86.mov_ri64(regs[0], x.try_into().unwrap()));
             }
-            IntSize::I128 => todo!("128 bit ints"),
+            Size::S128 => todo!("128 bit ints"),
         }
     };
+    (%r = arith.Float (float _f)) => todo!("floats") as ();
     (%r = arith.Neg x) => {
         let x = ctx.regs.get(x);
         let out = ctx.regs.get(r);
         match int_size_of_ref(r, ir, types) {
-            IntSize::I8 => {
+            Size::S8 => {
                 let (&[out], &[x]) = (out, x) else { unreachable!() };
                 ctx.copy(env, r, mc, ir, &[out, x]);
-                ir.replace(env, r, x86.neg_r8(out, ctx.unit));
+                ir.replace(env, r, x86.neg_r8(out));
             }
-            IntSize::I16 => {
+            Size::S16 => {
                 let (&[out], &[x]) = (out, x) else { unreachable!() };
                 ctx.copy(env, r, mc, ir, &[out, x]);
-                ir.replace(env, r, x86.neg_r16(out, ctx.unit));
+                ir.replace(env, r, x86.neg_r16(out));
             }
-            IntSize::I32 => {
+            Size::S32 => {
                 let (&[out], &[x]) = (out, x) else { unreachable!() };
                 ctx.copy(env, r, mc, ir, &[out, x]);
-                ir.replace(env, r, x86.neg_r32(x, ctx.unit));
+                ir.replace(env, r, x86.neg_r32(x));
             }
-            IntSize::I64 => {
+            Size::S64 => {
                 let (&[out], &[x]) = (out, x) else { unreachable!() };
                 ctx.copy(env, r, mc, ir, &[out, x]);
-                ir.replace(env, r, x86.neg_r64(x, ctx.unit));
+                ir.replace(env, r, x86.neg_r64(x));
             }
-            IntSize::I128 => todo!(),
+            Size::S128 => todo!(),
         }
     };
-    (%r = cf.Ret value) => {
-        ctx.abi.implement_return(value, ir, env, mc, x86, types, &ctx.regs, r, ctx.unit);
-    };
-    (%r = cf.Goto (@b b_args)) => {
-        let b_args = b_args.to_vec();
-        ctx.create_args_copy(env, r, mc, ir, b, &b_args);
-        x86.jmp(b, ctx.unit)
-    };
-    (%r = cf.Branch (%cmp = arith.Eq a b) (@b1 b1_args) (@b2 b2_args)) if ctx.single_use(cmp) => {
-        // PERF: cloning the args here
-        cmp_branch(ctx, ir, env, x86, mc, block, cmp, r, a, b, b1, b1_args.to_vec(), b2, b2_args.to_vec(),
-            |b| x86.je(b),
-            |b| x86.jne(b),
-        )
-    };
-    (%r = cf.Branch (%cmp = arith.LT a b) (@b1 b1_args) (@b2 b2_args)) if ctx.single_use(cmp) => {
-        // PERF: cloning the args here
-        cmp_branch(ctx, ir, env, x86, mc, block, cmp, r, a, b, b1, b1_args.to_vec(), b2, b2_args.to_vec(),
-            |b| x86.jl(b),
-            |b| x86.jge(b),
-        )
-    };
-    (%r = cf.Branch (%cmp = arith.GT a b) (@b1 b1_args) (@b2 b2_args)) if ctx.single_use(cmp) => {
-        // PERF: cloning the args here
-        cmp_branch(ctx, ir, env, x86, mc, block, cmp, r, a, b, b1, b1_args.to_vec(), b2, b2_args.to_vec(),
-            |b| x86.jg(b),
-            |b| x86.jle(b),
-        )
-    };
-    (%r = cf.Branch (%cmp = arith.LE a b) (@b1 b1_args) (@b2 b2_args)) if ctx.single_use(cmp) => {
-        // PERF: cloning the args here
-        cmp_branch(ctx, ir, env, x86, mc, block, cmp, r, a, b, b1, b1_args.to_vec(), b2, b2_args.to_vec(),
-            |b| x86.jle(b),
-            |b| x86.jg(b),
-        )
-    };
-    (%r = cf.Branch (%cmp = arith.GE a b) (@b1 b1_args) (@b2 b2_args)) if ctx.single_use(cmp) => {
-        // PERF: cloning the args here
-        cmp_branch(ctx, ir, env, x86, mc, block, cmp, r, a, b, b1, b1_args.to_vec(), b2, b2_args.to_vec(),
-            |b| x86.jge(b),
-            |b| x86.jl(b),
-        )
+    (%r = arith.Not x) => {
+        let out = ctx.regs.get_one(r);
+        ctx.copy(env, r, mc, ir, &[out, ctx.regs.get_one(x)]);
+        x86.xor_ri8(out, 1)
     };
     (%r = arith.Add a b) => int_bin_op(ctx, ir, types, env, dialects, r, a, b, IntBinOp {
         i8: [X86::add_rr8, X86::add_ri8],
@@ -296,14 +325,14 @@ ir::visitor! {
                 let out = ctx.regs.get_one(r);
                 ctx.copy(env, r, mc, ir, &[out, a]);
                 // TODO: figure out how to truncate
-                ir.add_before(env, r, x86.imul_ri16(out, x as _, ctx.unit));
+                ir.add_before(env, r, x86.imul_ri16(out, x as _));
                 ir.replace_with(env, r, Ref::UNIT);
             }
             Primitive::I16 => {
                 let a = ctx.regs.get_one(a);
                 let out = ctx.regs.get_one(r);
                 ctx.copy(env, r, mc, ir, &[out, a]);
-                ir.replace(env, r, x86.imul_ri16(out, x as _, ctx.unit));
+                ir.replace(env, r, x86.imul_ri16(out, x as _));
             }
             Primitive::I32 => todo!(),
             Primitive::I64 => todo!(),
@@ -318,27 +347,118 @@ ir::visitor! {
             Primitive::Ptr => todo!(),
         }
     };
+    (%r = arith.Div a b) => todo!("div") as ();
+    (%r = arith.Rem a b) => todo!("rem") as ();
+    (%r = arith.Or a b) => {
+        x86.or_rr8(ctx.regs.get_one(a), ctx.regs.get_one(b))
+    };
+    (%r = arith.And a b) => {
+        x86.and_rr8(ctx.regs.get_one(a), ctx.regs.get_one(b))
+    };
+    (%r = arith.Eq a b) => cmp_op(ctx, ir, types, env, dialects, r, a, b, X86::sete);
+    (%r = arith.NE a b) => cmp_op(ctx, ir, types, env, dialects, r, a, b, X86::setne);
+    (%r = arith.LT a b) if ctx.use_count(r) > 0 => cmp_op(ctx, ir, types, env, dialects, r, a, b, CmpOp {
+        signed: X86::setl,
+        unsigned: X86::setc,
+    });
+    (%r = arith.GT a b) => cmp_op(ctx, ir, types, env, dialects, r, a, b, CmpOp {
+        signed: X86::setg,
+        unsigned: X86::seta,
+    });
+    (%r = arith.LE a b) => cmp_op(ctx, ir, types, env, dialects, r, a, b, CmpOp {
+        signed: X86::setle,
+        unsigned: X86::setbe,
+    });
+    (%r = arith.GE a b) => cmp_op(ctx, ir, types, env, dialects, r, a, b, CmpOp {
+        signed: X86::setge,
+        unsigned: X86::setnc,
+    });
+    (%r = cf.Ret value) => {
+        ctx.abi.implement_return(value, ir, env, mc, x86, types, &ctx.regs, r, ctx.unit);
+    };
+    (%r = cf.Goto (@b b_args)) => {
+        let b_args = b_args.to_vec();
+        create_args_copy(ctx, env, r, mc, x86, ir, b, &b_args);
+        x86.jmp(b)
+    };
+    (%r = cf.Branch (%cmp = arith.Eq a b) (@b1 b1_args) (@b2 b2_args)) if ctx.single_use(cmp) => {
+        // PERF: cloning the args here
+        let b1_args = b1_args.to_vec();
+        let b2_args = b2_args.to_vec();
+        ctx.remove_use(cmp, ir, env);
+        cmp_branch(ctx, ir, types, env, dialects, block, cmp, r, a, b, b1, b1_args, b2, b2_args,
+            |b| x86.je(b),
+            |b| x86.jne(b),
+        )
+    };
+    (%r = cf.Branch (%cmp = arith.LT a b) (@b1 b1_args) (@b2 b2_args)) if ctx.single_use(cmp) => {
+        // PERF: cloning the args here
+        let b1_args = b1_args.to_vec();
+        let b2_args = b2_args.to_vec();
+        ctx.remove_use(cmp, ir, env);
+        cmp_branch(ctx, ir, types, env, dialects, block, cmp, r, a, b, b1, b1_args, b2, b2_args,
+            |b| x86.jl(b),
+            |b| x86.jge(b),
+        )
+    };
+    (%r = cf.Branch (%cmp = arith.GT a b) (@b1 b1_args) (@b2 b2_args)) if ctx.single_use(cmp) => {
+        // PERF: cloning the args here
+        let b1_args = b1_args.to_vec();
+        let b2_args = b2_args.to_vec();
+        ctx.remove_use(cmp, ir, env);
+        cmp_branch(ctx, ir, types, env, dialects, block, cmp, r, a, b, b1, b1_args, b2, b2_args,
+            |b| x86.jg(b),
+            |b| x86.jle(b),
+        )
+    };
+    (%r = cf.Branch (%cmp = arith.LE a b) (@b1 b1_args) (@b2 b2_args)) if ctx.single_use(cmp) => {
+        // PERF: cloning the args here
+        let b1_args = b1_args.to_vec();
+        let b2_args = b2_args.to_vec();
+        ctx.remove_use(cmp, ir, env);
+        cmp_branch(ctx, ir, types, env, dialects, block, cmp, r, a, b, b1, b1_args, b2, b2_args,
+            |b| x86.jle(b),
+            |b| x86.jg(b),
+        )
+    };
+    (%r = cf.Branch (%cmp = arith.GE a b) (@b1 b1_args) (@b2 b2_args)) if ctx.single_use(cmp) => {
+        // PERF: cloning the args here
+        let b1_args = b1_args.to_vec();
+        let b2_args = b2_args.to_vec();
+        ctx.remove_use(cmp, ir, env);
+        cmp_branch(ctx, ir, types, env, dialects, block, cmp, r, a, b, b1, b1_args, b2, b2_args,
+            |b| x86.jge(b),
+            |b| x86.jl(b),
+        )
+    };
+    (%r = cf.Branch cond (@b1 b1_args) (@b2 b2_args)) => {
+        let cond = ctx.regs.get_one(cond);
+        let b1_args = b1_args.to_vec();
+        let b2_args = b2_args.to_vec();
+        ir.add_before(env, r, x86.test_rr8(cond, cond));
+        branch(ctx, ir, env, dialects, block, r, b1, b1_args, b2, b2_args, |b| x86.jne(b), |b| x86.je(b))
+    };
     (%r = mem.Decl (type ty)) => {
         let layout = ir::type_layout(types[ty], types, env.primitives());
         let offset = ctx.alloc_stack(layout);
         let out = ctx.regs.get_one(r);
-        x86.lea_rm64(out, MCReg::from_phys(Reg::rbp), (-(offset as i32)) as u32, ctx.unit)
+        x86.lea_rm64(out, MCReg::from_phys(Reg::rbp), (-(offset as i32)) as u32)
     };
     (%r = mem.Load ptr) => {
         let ptr = ctx.regs.get_one(ptr);
         match types[ir.get_ref_ty(r)] {
             Type::Primitive(primitive_id) => match Primitive::try_from(primitive_id).unwrap() {
                 Primitive::I1 | Primitive::I8 | Primitive::U8 => {
-                    ir.replace(env, r, x86.mov_rm8(ctx.regs.get_one(r), ptr, 0, ctx.unit));
+                    ir.replace(env, r, x86.mov_rm8(ctx.regs.get_one(r), ptr, 0));
                 }
                 Primitive::I16 | Primitive::U16 => {
-                    ir.replace(env, r, x86.mov_rm16(ctx.regs.get_one(r), ptr, 0, ctx.unit));
+                    ir.replace(env, r, x86.mov_rm16(ctx.regs.get_one(r), ptr, 0));
                 }
                 Primitive::I32 | Primitive::U32 => {
-                    ir.replace(env, r, x86.mov_rm32(ctx.regs.get_one(r), ptr, 0, ctx.unit));
+                    ir.replace(env, r, x86.mov_rm32(ctx.regs.get_one(r), ptr, 0));
                 }
                 Primitive::I64 | Primitive::U64 | Primitive::Ptr => {
-                    ir.replace(env, r, x86.mov_rm64(ctx.regs.get_one(r), ptr, 0, ctx.unit));
+                    ir.replace(env, r, x86.mov_rm64(ctx.regs.get_one(r), ptr, 0));
                 }
                 Primitive::F32 | Primitive::F64 => todo!("load floats"),
                 Primitive::I128 | Primitive::U128 => todo!("load 128-bit integers"),
@@ -351,16 +471,16 @@ ir::visitor! {
         match types[ir.get_ref_ty(value)] {
             Type::Primitive(primitive_id) => match Primitive::try_from(primitive_id).unwrap() {
                 Primitive::I1 | Primitive::I8 | Primitive::U8 => {
-                    ir.replace(env, r, x86.mov_mr8(ptr, 0, ctx.regs.get_one(value), ctx.unit));
+                    ir.replace(env, r, x86.mov_mr8(ptr, 0, ctx.regs.get_one(value)));
                 }
                 Primitive::I16 | Primitive::U16 => {
-                    ir.replace(env, r, x86.mov_mr16(ptr, 0, ctx.regs.get_one(value), ctx.unit));
+                    ir.replace(env, r, x86.mov_mr16(ptr, 0, ctx.regs.get_one(value)));
                 }
                 Primitive::I32 | Primitive::U32 => {
-                    ir.replace(env, r, x86.mov_mr32(ptr, 0, ctx.regs.get_one(value), ctx.unit));
+                    ir.replace(env, r, x86.mov_mr32(ptr, 0, ctx.regs.get_one(value)));
                 }
                 Primitive::I64 | Primitive::U64 | Primitive::Ptr => {
-                    ir.replace(env, r, x86.mov_mr64(ptr, 0, ctx.regs.get_one(value), ctx.unit));
+                    ir.replace(env, r, x86.mov_mr64(ptr, 0, ctx.regs.get_one(value)));
                 }
                 Primitive::F32 | Primitive::F64 => todo!("store floats"),
                 Primitive::I128 | Primitive::U128 => todo!("store 128-bit integers"),
@@ -433,4 +553,79 @@ fn int_bin_op(
             );
         }
     }
+}
+
+struct CmpOp {
+    signed: X86,
+    unsigned: X86,
+}
+impl From<X86> for CmpOp {
+    fn from(value: X86) -> Self {
+        Self {
+            signed: value,
+            unsigned: value,
+        }
+    }
+}
+
+fn cmp(
+    ctx: &mut IselCtx<X86>,
+    ir: &mut IrModify,
+    types: &Types,
+    env: &Environment,
+    dialects: &InstructionSelector,
+    before: Ref,
+    a: Ref,
+    b: Ref,
+) {
+    let (_, size) = arith_class(a, ir, types);
+    let cmp_op = match size {
+        Size::S8 => X86::cmp_rr8,
+        Size::S16 => X86::cmp_rr16,
+        Size::S32 => X86::cmp_rr32,
+        Size::S64 => X86::cmp_rr64,
+        Size::S128 => todo!(),
+    };
+    let a = ctx.regs.get_one(a);
+    let b = ctx.regs.get_one(b);
+    ir.add_before(
+        env,
+        before,
+        (
+            FunctionId::new(dialects.x86.id(), cmp_op.id()),
+            (a, b),
+            TypeId::UNIT,
+        ),
+    );
+}
+
+fn cmp_op(
+    ctx: &mut IselCtx<X86>,
+    ir: &mut IrModify,
+    types: &Types,
+    env: &Environment,
+    dialects: &InstructionSelector,
+    r: Ref,
+    a: Ref,
+    b: Ref,
+    ops: impl Into<CmpOp>,
+) {
+    let ops = ops.into();
+    let (class, _) = arith_class(a, ir, types);
+    cmp(ctx, ir, types, env, dialects, r, a, b);
+    let after_cmp_op = match class {
+        ArithClass::Signed => ops.signed,
+        ArithClass::Unsigned => ops.unsigned,
+        ArithClass::Float => todo!("floats"),
+    };
+    let out = ctx.regs.get_one(r);
+    ir.replace(
+        env,
+        r,
+        (
+            FunctionId::new(dialects.x86.id(), after_cmp_op.id()),
+            out,
+            TypeId::UNIT,
+        ),
+    );
 }

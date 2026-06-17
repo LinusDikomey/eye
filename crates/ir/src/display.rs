@@ -312,7 +312,16 @@ impl<'a, R: Register> fmt::Display for InstructionDisplay<'a, R> {
                 function: &called.name,
             }
         )?;
-        for arg in inst.args_inner(&called.params, called.varargs, &ir.blocks, &ir.extra) {
+        for (arg, param) in inst
+            .args_inner(&called.params, called.varargs, &ir.blocks, &ir.extra)
+            .zip(
+                called
+                    .params
+                    .iter()
+                    .copied()
+                    .chain(std::iter::repeat(called.varargs.unwrap_or(Parameter::Ref))),
+            )
+        {
             match arg {
                 Argument::Ref(r) => write!(f, " {r}")?,
                 Argument::BlockId(id) => cwrite!(f, " {}", id)?,
@@ -330,7 +339,10 @@ impl<'a, R: Register> fmt::Display for InstructionDisplay<'a, R> {
                         cwrite!(f, ")")?;
                     }
                 }
-                Argument::Int(n) => cwrite!(f, " #y<{}>", n)?,
+                Argument::Int(n) => match param {
+                    Parameter::Int32 => cwrite!(f, " #y<{}>", n as u32 as i32)?,
+                    _ => cwrite!(f, " #y<{}>", n as i64)?,
+                },
                 Argument::Float(x) => cwrite!(f, " #y<{}>", x)?,
                 Argument::TypeId(ty) => {
                     let display = types.display_type(ty, &env.primitives);

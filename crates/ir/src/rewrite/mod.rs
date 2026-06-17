@@ -1,4 +1,5 @@
 mod macros;
+
 pub use macros::visitor;
 
 use crate::{
@@ -71,7 +72,7 @@ impl RewriteStrategy for ReverseRewriteOrder {
 
     fn iterate_block(&self, ir: &IrModify, block: BlockId) -> Self::BlockInstructions {
         let info = ir.get_block(block);
-        let s = info.args_idx + info.arg_count;
+        let s = info.body_idx;
         (s..s + info.len).rev()
     }
 }
@@ -151,8 +152,8 @@ pub fn rewrite_in_place<Ctx: RewriteCtx, R: Visitor<Ctx, Output = Rewrite>>(
                 //     std::convert::identity,
                 // );
                 if inst.function.module == BUILTIN.id()
-                    && inst.function.function == Builtin::Nothing.id()
-                    || inst.function.function == Builtin::Copy.id()
+                    && (inst.function.function == Builtin::Nothing.id()
+                        || inst.function.function == Builtin::Copy.id())
                 {
                     // no longer a real instruction, we are done
                     break;

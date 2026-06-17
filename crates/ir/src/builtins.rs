@@ -5,7 +5,7 @@ use crate::{Instruction, ModuleId, ModuleOf, instructions};
 instructions! {
     Builtin "builtin" BuiltinInsts
 
-    Nothing  !pure;
+    Nothing  !pure => unit;
     BlockArg !pure;
     Undef    !pure;
     Copy     arg: Ref !pure;

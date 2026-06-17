@@ -3,7 +3,7 @@ use std::{collections::VecDeque, fmt};
 use crate::{
     Argument, ArgumentMut, Bitmap, BlockGraph, BlockId, Environment, FunctionIr, MCReg, ModuleOf,
     Ref, Types, Usage,
-    mc::{McInst, RegClass},
+    mc::{Abi, McInst, RegClass},
     pipeline::FunctionPass,
 };
 
@@ -12,6 +12,8 @@ use super::{Mc, Register};
 pub struct Regalloc<I: McInst> {
     pub mc: ModuleOf<crate::mc::Mc>,
     pub preoccupied: <I::Reg as Register>::RegisterBits,
+    pub abi: &'static dyn Abi<I>,
+    pub isa: ModuleOf<I>,
 }
 impl<I: McInst> fmt::Debug for Regalloc<I> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -27,7 +29,16 @@ impl<I: McInst, State> FunctionPass<State> for Regalloc<I> {
         name: &str,
         _: &mut State,
     ) -> (FunctionIr, Option<Types>) {
-        regalloc::<I>(env, self.mc, &mut ir, types, self.preoccupied, name);
+        regalloc(
+            env,
+            self.mc,
+            &mut ir,
+            self.isa,
+            self.abi,
+            types,
+            self.preoccupied,
+            name,
+        );
         (ir, None)
     }
 }
@@ -36,6 +47,8 @@ pub fn regalloc<I: McInst>(
     env: &Environment,
     mc: ModuleOf<Mc>,
     ir: &mut FunctionIr,
+    isa: ModuleOf<I>,
+    abi: &'static dyn Abi<I>,
     types: &crate::Types,
     preoccupied_bits: <I::Reg as Register>::RegisterBits,
     function: &str,
@@ -45,10 +58,12 @@ pub fn regalloc<I: McInst>(
     let mut liveins: Box<[Bitmap]> = (0..ir.block_count())
         .map(|_| Bitmap::new(ir.mc_reg_count() as usize))
         .collect();
-    analyze_liveness::<I>(
+    analyze_liveness(
         env,
         mc,
         ir,
+        isa,
+        abi,
         &graph,
         &mut liveins,
         &mut intersecting_precolored,
@@ -80,6 +95,8 @@ fn analyze_liveness<I: McInst>(
     env: &Environment,
     mc: ModuleOf<Mc>,
     ir: &mut FunctionIr,
+    isa: ModuleOf<I>,
+    abi: &'static dyn Abi<I>,
     graph: &BlockGraph<FunctionIr>,
     liveins: &mut [Bitmap],
     intersecting_precolored: &mut [<I::Reg as Register>::RegisterBits],
@@ -98,6 +115,8 @@ fn analyze_liveness<I: McInst>(
                 env,
                 mc,
                 ir,
+                isa,
+                abi,
                 &mut live,
                 &mut live_precolored,
                 intersecting_precolored,
@@ -118,6 +137,8 @@ fn analyze_inst_liveness<I: McInst>(
     env: &Environment,
     mc: ModuleOf<Mc>,
     ir: &mut FunctionIr,
+    isa: ModuleOf<I>,
+    abi: &'static dyn Abi<I>,
     live: &mut Bitmap,
     live_precolored: &mut <I::Reg as Register>::RegisterBits,
     intersecting_precolored: &mut [<I::Reg as Register>::RegisterBits],
@@ -157,6 +178,17 @@ fn analyze_inst_liveness<I: McInst>(
                 return;
             }
         }
+    } else if let Some(inst) = ir.get_inst(inst_r).as_module(isa) {
+        let defs = inst.inst.implicit_def(abi);
+        let uses = inst.inst.implicit_use(abi);
+        // all physical regs used here are now alive
+        *live_precolored = *live_precolored | uses;
+        let defs_and_uses = defs | uses;
+        if defs_and_uses != I::Reg::NO_BITS {
+            live.visit_set_bits(|vreg| {
+                intersecting_precolored[vreg] = intersecting_precolored[vreg] | defs_and_uses;
+            });
+        }
     }
 
     for arg in ir.args_mut(inst_r, env) {
@@ -181,18 +213,6 @@ fn analyze_inst_liveness<I: McInst>(
             }
         }
     }
-    // TODO: implicit usages
-    /*
-    for &reg in inst.inst.implicit_uses() {
-        if !reg.get_bit(live_precolored) {
-            reg.set_bit(live_precolored, true);
-            reg.set_bit(&mut inst.implicit_dead, true);
-        }
-    }
-    for &reg in inst.inst.implicit_defs() {
-        reg.set_bit(live_precolored, false);
-    }
-    */
 }
 
 fn perform_regalloc<R: Register>(

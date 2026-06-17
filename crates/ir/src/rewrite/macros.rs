@@ -19,6 +19,11 @@ macro_rules! arg {
             unreachable!("invalid argument type, expected Int");
         };
     };
+    ($modules: ident, $ir: ident, $env: ident, $arg: ident, (float $float: ident)) => {
+        let $crate::Argument::Float($float) = $arg else {
+            unreachable!("invalid argument type, expected Float");
+        };
+    };
     ($modules: ident, $ir: ident, $env: ident, $arg: ident, (@ $block: ident $args: ident)) => {
         let $crate::Argument::BlockTarget($crate::BlockTarget($block, $args)) = $arg else {
             unreachable!("invalid argument type, expected BlockTarget");
@@ -185,8 +190,10 @@ macro_rules! visitor {
                                 return ::core::option::Option::None;
                             }
                         )*
+                        let result = $result;
+                        #[allow(unreachable_code)]
                         ::core::option::Option::Some(
-                            $crate::rewrite::IntoVisit::into_visit($result, $ir, $env, $block)
+                            $crate::rewrite::IntoVisit::into_visit(result, $ir, $env, $block)
                         )
                     })();
                     if let Some(value) = result {

@@ -41,7 +41,8 @@ pub trait Register: 'static + Copy {
     type RegisterBits: Copy
         + BitAnd<Output = Self::RegisterBits>
         + Not<Output = Self::RegisterBits>
-        + BitOr<Output = Self::RegisterBits>;
+        + BitOr<Output = Self::RegisterBits>
+        + Eq;
     const NO_BITS: Self::RegisterBits;
     const ALL_BITS: Self::RegisterBits;
 
@@ -244,6 +245,10 @@ impl<'a, I: McInst> IselCtx<'a, I> {
         self.use_counts[r] == 1
     }
 
+    pub fn unused(&self, r: Ref) -> bool {
+        self.use_counts[r] == 0
+    }
+
     pub fn create_args_copy(
         &mut self,
         env: &Environment,
@@ -252,6 +257,7 @@ impl<'a, I: McInst> IselCtx<'a, I> {
         ir: &mut IrModify,
         target: BlockId,
         args: &[Ref],
+        set_bool: impl Fn(&mut IrModify, &Environment, MCReg, bool),
     ) {
         let arg_refs = ir.get_block_args(target);
         debug_assert_eq!(args.len(), arg_refs.count() as usize);
@@ -259,21 +265,29 @@ impl<'a, I: McInst> IselCtx<'a, I> {
             .iter()
             .zip(args)
             .flat_map(|(to, &from)| {
-                let to = self.regs.get(to);
                 let from = if from.is_ref() {
                     self.regs.get(from)
                 } else {
                     match from {
                         Ref::UNIT => &[],
-                        Ref::TRUE | Ref::FALSE => todo!("bools in copyargs"),
+                        Ref::TRUE | Ref::FALSE => {
+                            let to = self.regs.get_one(to);
+                            set_bool(ir, env, to, from == Ref::TRUE);
+                            return None.into_iter().flatten();
+                        }
                         _ => unreachable!(),
                     }
                 };
+                let to = self.regs.get(to);
                 debug_assert_eq!(from.len(), to.len());
-                to.iter()
-                    .copied()
-                    .zip(from.iter().copied())
-                    .flat_map(|(a, b)| [a, b])
+                Some(
+                    to.iter()
+                        .copied()
+                        .zip(from.iter().copied())
+                        .flat_map(|(a, b)| [a, b]),
+                )
+                .into_iter()
+                .flatten()
             })
             .collect();
         if !copyargs.is_empty() {

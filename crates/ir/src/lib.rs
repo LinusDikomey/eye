@@ -1564,11 +1564,82 @@ macro_rules! filter_varargs_param {
 }
 
 #[macro_export]
+#[doc(hidden)]
+macro_rules! instructions_inner {
+    (
+        $table_name: ident, $module_name: ident,
+        ! $all_return: ident
+        $(
+            $(
+                #[doc = $doc: literal]
+            )*
+            $instruction: ident $(<$inst_life: lifetime>)?
+            $(
+                $arg_name: ident: $arg: ident
+                $(<$life: lifetime>)?
+                $(($arg_param: expr))?
+            )*
+            $(!$attr: ident $(= $attr_value: expr)?),*
+            $(=> $return: ident)?
+            ;
+        )*
+    ) => {
+        $(
+            $crate::instruction!{
+                $table_name, $module_name,
+                $(#[doc = $doc])*
+                $instruction $(<$inst_life>)?
+                $(
+                  $arg_name: $arg $(<$life>)?
+                  $(($arg_param))?
+                )*
+                $(!$attr $(= $attr_value)?),*
+                => $all_return
+                ;
+            }
+        )*
+    };
+    (
+        $table_name: ident, $module_name: ident,
+        $(
+            $(
+                #[doc = $doc: literal]
+            )*
+            $instruction: ident $(<$inst_life: lifetime>)?
+            $(
+                $arg_name: ident: $arg: ident
+                $(<$life: lifetime>)?
+                $(($arg_param: expr))?
+            )*
+            $(!$attr: ident $(= $attr_value: expr)?),*
+            $(=> $return: ident)?
+            ;
+        )*
+    ) => {
+        $(
+            $crate::instruction!{
+                $table_name, $module_name,
+                $(#[doc = $doc])*
+                $instruction $(<$inst_life>)?
+                $(
+                  $arg_name: $arg $(<$life>)?
+                  $(($arg_param))?
+                )*
+                $(!$attr $(= $attr_value)?),*
+                $(=> $return)?
+                ;
+            }
+        )*
+    };
+}
+
+#[macro_export]
 macro_rules! instructions {
     (
         $module_name: ident
         $name: literal
         $table_name: ident
+        $(!all_return $all_return: ident)?
         $(
             $(
                 #[doc = $doc: literal]
@@ -1594,20 +1665,33 @@ macro_rules! instructions {
         #[derive(Debug, Clone, Copy)]
         pub struct $table_name<T>(T);
 
-        $(
-            $crate::instruction!{
-                $table_name, $module_name,
-                $(#[doc = $doc])*
+        $crate::instructions_inner!{
+            $table_name, $module_name,
+            $(! $all_return)?
+            $(
+                $(
+                    #[doc = $doc]
+                )*
                 $instruction $(<$inst_life>)?
                 $(
-                  $arg_name: $arg $(<$life>)?
-                  $(($arg_param))?
+                    $arg_name : $arg
+                    $(<$life>)?
+                    $(($arg_param))?
                 )*
                 $(!$attr $(= $attr_value)?),*
                 $(=> $return)?
                 ;
+            )*
+        }
+        impl $module_name {
+            pub const fn name(self) -> &'static ::core::primitive::str {
+                match self {
+                    $(
+                        Self::$instruction => stringify!(Self::$instruction),
+                    )*
+                }
             }
-        )*
+        }
         impl $crate::Inst for $module_name {
             const MODULE_NAME: &'static ::core::primitive::str = $name;
 
@@ -1643,12 +1727,8 @@ macro_rules! instructions {
                 $crate::LocalFunctionId(self as u32)
             }
 
-            fn name(self) -> &'static ::std::primitive::str {
-                match self {
-                    $(
-                        Self::$instruction => stringify!(Self::$instruction),
-                    )*
-                }
+            fn name(self) -> &'static ::core::primitive::str {
+                self.name()
             }
 
             fn varargs(self) -> Option<$crate::Parameter> {

@@ -123,6 +123,11 @@ impl RegisterBits {
 ir::instructions! {
     X86 "x86" X86Insts
 
+    !all_return unit
+
+    or_rr8 a: MCReg(Usage::Use) b: MCReg(Usage::Use);
+    and_rr8 a: MCReg(Usage::Use) b: MCReg(Usage::Use);
+
     push_r64 reg: MCReg(Usage::Use);
     pop_r64 reg: MCReg(Usage::Def);
 
@@ -131,6 +136,8 @@ ir::instructions! {
     mov_ri32 to: MCReg(Usage::Def) i: Int32;
     mov_ri64 to: MCReg(Usage::Def) i: Int32;
 
+    mov_rr8  to: MCReg(Usage::Def) from: MCReg(Usage::Use);
+    mov_rr16 to: MCReg(Usage::Def) from: MCReg(Usage::Use);
     mov_rr32 to: MCReg(Usage::Def) from: MCReg(Usage::Use);
     mov_rr64 to: MCReg(Usage::Def) from: MCReg(Usage::Use);
 
@@ -150,14 +157,52 @@ ir::instructions! {
 
 
     jmp addr: BlockId !terminator;
-    je  addr: BlockId => unit;
-    jne addr: BlockId => unit;
-    jl  addr: BlockId => unit;
-    jge addr: BlockId => unit;
-    jle addr: BlockId => unit;
-    jg  addr: BlockId => unit;
+    je  addr: BlockId;
+    jne addr: BlockId;
+    jl  addr: BlockId;
+    jge addr: BlockId;
+    jle addr: BlockId;
+    jg  addr: BlockId;
 
+    /// overflow
+    seto   r: MCReg(Usage::Def);
+    /// not overflow
+    setno  r: MCReg(Usage::Def);
+    /// carry
+    setc   r: MCReg(Usage::Def);
+    /// not carry
+    setnc  r: MCReg(Usage::Def);
+    /// equal
+    sete   r: MCReg(Usage::Def);
+    /// not equal
+    setne  r: MCReg(Usage::Def);
+    /// below or equal
+    setbe  r: MCReg(Usage::Def);
+    /// above
+    seta   r: MCReg(Usage::Def);
+    /// signed
+    sets   r: MCReg(Usage::Def);
+    /// not signed
+    setns  r: MCReg(Usage::Def);
+    /// parity
+    setp   r: MCReg(Usage::Def);
+    /// not parity
+    setnp  r: MCReg(Usage::Def);
+    // less
+    setl   r: MCReg(Usage::Def);
+    /// greater or equal
+    setge  r: MCReg(Usage::Def);
+    /// less than or equal
+    setle  r: MCReg(Usage::Def);
+    /// greater
+    setg   r: MCReg(Usage::Def);
+
+    cmp_rr8  a: MCReg(Usage::Use) b: MCReg(Usage::Use);
+    cmp_rr16 a: MCReg(Usage::Use) b: MCReg(Usage::Use);
     cmp_rr32 a: MCReg(Usage::Use) b: MCReg(Usage::Use);
+    cmp_rr64 a: MCReg(Usage::Use) b: MCReg(Usage::Use);
+
+    test_rr8 a: MCReg(Usage::Use) b: MCReg(Usage::Use);
 
     add_rr8  a: MCReg(Usage::DefUse) b: MCReg(Usage::Use);
     add_rr16 a: MCReg(Usage::DefUse) b: MCReg(Usage::Use);
@@ -194,10 +239,119 @@ ir::instructions! {
     neg_r32 a: MCReg(Usage::DefUse);
     neg_r64 a: MCReg(Usage::DefUse);
 
+    xor_ri8  reg: MCReg(Usage::DefUse) imm: Int32;
+    xor_ri16 reg: MCReg(Usage::DefUse) imm: Int32;
+    xor_ri32 reg: MCReg(Usage::DefUse) imm: Int32;
+    xor_ri64 reg: MCReg(Usage::DefUse) imm: Int32;
+
     lea_rm32 to: MCReg(Usage::Def) addr: MCReg(Usage::Use) offset: Int32;
     lea_rm64 to: MCReg(Usage::Def) addr: MCReg(Usage::Use) offset: Int32;
 
     call_function function: FunctionId;
+}
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Size {
+    S8,
+    S16,
+    S32,
+    S64,
+    S128,
+}
+
+impl X86 {
+    pub const fn size(self) -> Size {
+        match self {
+            Self::or_rr8
+            | Self::and_rr8
+            | Self::mov_ri8
+            | Self::mov_rm8
+            | Self::mov_mr8
+            | Self::cmp_rr8
+            | Self::test_rr8
+            | Self::add_rr8
+            | Self::add_ri8
+            | Self::sub_rr8
+            | Self::sub_ri8
+            | Self::imul_r8
+            | Self::neg_r8
+            | Self::xor_ri8
+            | Self::mov_rr8 => Size::S8,
+
+            Self::mov_ri16
+            | Self::mov_rm16
+            | Self::mov_mr16
+            | Self::cmp_rr16
+            | Self::add_rr16
+            | Self::add_ri16
+            | Self::sub_rr16
+            | Self::sub_ri16
+            | Self::imul_rr16
+            | Self::imul_ri16
+            | Self::neg_r16
+            | Self::xor_ri16
+            | Self::mov_rr16 => Size::S16,
+
+            Self::mov_ri32
+            | Self::mov_rr32
+            | Self::mov_rm32
+            | Self::mov_mr32
+            | Self::cmp_rr32
+            | Self::add_rr32
+            | Self::add_ri32
+            | Self::sub_rr32
+            | Self::sub_ri32
+            | Self::imul_rr32
+            | Self::imul_ri32
+            | Self::neg_r32
+            | Self::xor_ri32
+            | Self::lea_rm32 => Size::S32,
+
+            Self::push_r64
+            | Self::pop_r64
+            | Self::mov_ri64
+            | Self::mov_rr64
+            | Self::mov_rm64
+            | Self::mov_mr64
+            | Self::cmp_rr64
+            | Self::add_rr64
+            | Self::add_ri64
+            | Self::sub_rr64
+            | Self::sub_ri64
+            | Self::imul_rr64
+            | Self::imul_ri64
+            | Self::neg_r64
+            | Self::xor_ri64
+            | Self::lea_rm64 => Size::S64,
+
+            Self::ret0
+            | Self::ret64
+            | Self::ret128
+            | Self::jmp
+            | Self::je
+            | Self::jne
+            | Self::jl
+            | Self::jge
+            | Self::jle
+            | Self::jg
+            | Self::seto
+            | Self::setno
+            | Self::setc
+            | Self::setnc
+            | Self::sete
+            | Self::setne
+            | Self::setbe
+            | Self::seta
+            | Self::sets
+            | Self::setns
+            | Self::setp
+            | Self::setnp
+            | Self::setl
+            | Self::setge
+            | Self::setle
+            | Self::setg
+            | Self::call_function => panic!("instruction doesn't have a size"),
+        }
+    }
 }
 impl McInst for X86 {
     type Reg = Reg;

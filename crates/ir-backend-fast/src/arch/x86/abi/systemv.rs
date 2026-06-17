@@ -13,7 +13,7 @@ use crate::arch::x86::{
 use super::Abi;
 
 const ABI_PARAM_REGISTERS: [[Reg; 4]; 6] = [
-    [Reg::rdi, Reg::edi, Reg::di, Reg::dl],
+    [Reg::rdi, Reg::edi, Reg::di, Reg::dil],
     [Reg::rsi, Reg::esi, Reg::si, Reg::sil],
     [Reg::rdx, Reg::edx, Reg::dx, Reg::dl],
     [Reg::rcx, Reg::ecx, Reg::cx, Reg::cl],
@@ -157,7 +157,9 @@ impl Abi<X86> for SystemV {
                 },
             );
         }
-        ir.add_before(env, call_inst, ir::mc::parallel_copy(mc, &copies, unit));
+        if !copies.is_empty() {
+            ir.add_before(env, call_inst, ir::mc::parallel_copy(mc, &copies, unit));
+        }
         let return_ty = types[ir.get_ref_ty(call_inst)];
         let mut copy = |args| ir.add_after(env, call_inst, ir::mc::parallel_copy(mc, args, unit));
         match return_ty {
@@ -188,7 +190,7 @@ impl Abi<X86> for SystemV {
             Type::Tuple(elems) if elems.count() == 0 => {}
             _ => todo!("abi: aggregate return types"),
         }
-        ir.replace(env, call_inst, x86.call_function(function_id, unit));
+        ir.replace(env, call_inst, x86.call_function(function_id));
     }
 
     fn implement_return(
@@ -204,7 +206,7 @@ impl Abi<X86> for SystemV {
         unit: TypeId,
     ) {
         if value == ir::Ref::UNIT {
-            ir.replace(env, r, x86.ret0(unit));
+            ir.replace(env, r, x86.ret0());
             return;
         };
         let ty = types[ir.get_ref_ty(value)];
@@ -213,19 +215,19 @@ impl Abi<X86> for SystemV {
             Type::Primitive(p) => match Primitive::try_from(p).unwrap() {
                 Primitive::I1 | Primitive::I8 | Primitive::U8 => {
                     copy(&[MCReg::from_phys(RETURN_REGS[0][3]), regs.get_one(value)]);
-                    ir.replace(env, r, x86.ret64(unit));
+                    ir.replace(env, r, x86.ret64());
                 }
                 Primitive::I16 | Primitive::U16 => {
                     copy(&[MCReg::from_phys(RETURN_REGS[0][2]), regs.get_one(value)]);
-                    ir.replace(env, r, x86.ret64(unit));
+                    ir.replace(env, r, x86.ret64());
                 }
                 Primitive::I32 | Primitive::U32 => {
                     copy(&[MCReg::from_phys(RETURN_REGS[0][1]), regs.get_one(value)]);
-                    ir.replace(env, r, x86.ret64(unit));
+                    ir.replace(env, r, x86.ret64());
                 }
                 Primitive::I64 | Primitive::U64 | Primitive::Ptr => {
                     copy(&[MCReg::from_phys(RETURN_REGS[0][0]), regs.get_one(value)]);
-                    ir.replace(env, r, x86.ret64(unit));
+                    ir.replace(env, r, x86.ret64());
                 }
                 Primitive::I128 | Primitive::U128 => {
                     let &[a, b] = regs.get(value) else {
@@ -237,12 +239,12 @@ impl Abi<X86> for SystemV {
                         MCReg::from_phys(RETURN_REGS[1][0]),
                         b,
                     ]);
-                    ir.replace(env, r, x86.ret128(unit));
+                    ir.replace(env, r, x86.ret128());
                 }
                 Primitive::F32 | Primitive::F64 => todo!("abi: float return values"),
             },
             Type::Array(_, _) => todo!("abi: array return values"),
-            Type::Tuple(elems) if elems.is_empty() => ir.replace(env, r, x86.ret0(unit)),
+            Type::Tuple(elems) if elems.is_empty() => ir.replace(env, r, x86.ret0()),
             Type::Tuple(_) => todo!("abi: tuple return values"),
         }
     }

@@ -76,6 +76,8 @@ impl Backend {
         pipeline.add_function_pass(Box::new(ir::mc::Regalloc::<arch::x86::X86> {
             mc: isel.mc,
             preoccupied: arch::x86::PREOCCUPIED_REGISTERS,
+            isa: x86,
+            abi,
         }));
         pipeline.add_function_pass(Box::new(arch::x86::PrologueEpilogueInsertion { x86, abi }));
 
@@ -92,6 +94,12 @@ impl Backend {
                 let name = func.name.clone();
                 let mir = pipeline
                     .process_function_with_regs::<arch::x86::Reg>(env, ir, &mut types, &name);
+
+                tracing::debug!(target: "backend-ir",
+                    function = name,
+                    "Final machine IR:\n{}",
+                    mir.display_with_phys_regs::<arch::x86::Reg>(env, &types)
+                );
                 arch::x86::write(env, mc, x86, &mir, &mut text_section, &mut relocations);
                 let size = text_section.len() as u64 - offset;
                 let name_index = writer.add_str(&env[module_id][id].name);

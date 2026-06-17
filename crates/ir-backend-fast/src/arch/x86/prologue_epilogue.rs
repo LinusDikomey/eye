@@ -1,7 +1,7 @@
 use std::fmt;
 
 use ir::{
-    BlockId, MCReg, ModuleOf, Type, TypeIds,
+    BlockId, MCReg, ModuleOf,
     mc::{Abi, BackendState},
     modify::IrModify,
     pipeline::FunctionPass,
@@ -22,7 +22,7 @@ impl FunctionPass<BackendState> for PrologueEpilogueInsertion {
     fn run(
         &self,
         env: &ir::Environment,
-        types: &ir::Types,
+        _types: &ir::Types,
         ir: ir::FunctionIr,
         _name: &str,
         state: &mut BackendState,
@@ -31,31 +31,27 @@ impl FunctionPass<BackendState> for PrologueEpilogueInsertion {
         let used_regs = ir::mc::used_physical_registers::<Reg>(&ir, env);
         let to_save = used_regs & self.abi.callee_saved() & !(Reg::rsp.bit() | Reg::rbp.bit());
 
-        // PERF: avoid cloning the entire types table after reworking ir types
-        let mut types = types.clone();
-        let unit = types.add(Type::Tuple(TypeIds::EMPTY));
-
         let start = ir.get_original_block_start(BlockId::ENTRY);
         let x86 = self.x86;
 
         if state.stack_size > 0 {
-            ir.add_before(env, start, x86.push_r64(MCReg::from_phys(Reg::rbp), unit));
+            ir.add_before(env, start, x86.push_r64(MCReg::from_phys(Reg::rbp)));
             ir.add_before(
                 env,
                 start,
-                x86.mov_rr64(MCReg::from_phys(Reg::rbp), MCReg::from_phys(Reg::rsp), unit),
+                x86.mov_rr64(MCReg::from_phys(Reg::rbp), MCReg::from_phys(Reg::rsp)),
             );
             state.stack_size = state.stack_size.next_multiple_of(16);
             ir.add_before(
                 env,
                 start,
-                x86.sub_ri64(MCReg::from_phys(Reg::rsp), state.stack_size, unit),
+                x86.sub_ri64(MCReg::from_phys(Reg::rsp), state.stack_size),
             );
         }
 
         for reg in Reg::UNIQUE_BITS {
             if to_save & reg.bit() != super::isa::RegisterBits::default() {
-                ir.add_before(env, start, x86.push_r64(MCReg::from_phys(reg), unit));
+                ir.add_before(env, start, x86.push_r64(MCReg::from_phys(reg)));
             }
         }
 
@@ -68,20 +64,20 @@ impl FunctionPass<BackendState> for PrologueEpilogueInsertion {
                 // insert epilogue before return
                 for reg in Reg::UNIQUE_BITS.into_iter().rev() {
                     if to_save & reg.bit() != super::isa::RegisterBits::default() {
-                        ir.add_before(env, r, x86.pop_r64(MCReg::from_phys(reg), unit));
+                        ir.add_before(env, r, x86.pop_r64(MCReg::from_phys(reg)));
                     }
                 }
                 if state.stack_size != 0 {
                     ir.add_before(
                         env,
                         r,
-                        x86.add_ri64(MCReg::from_phys(Reg::rsp), state.stack_size, unit),
+                        x86.add_ri64(MCReg::from_phys(Reg::rsp), state.stack_size),
                     );
-                    ir.add_before(env, r, x86.pop_r64(MCReg::from_phys(Reg::rbp), unit));
+                    ir.add_before(env, r, x86.pop_r64(MCReg::from_phys(Reg::rbp)));
                 }
             }
         }
 
-        (ir.finish_and_compress(env), Some(types))
+        (ir.finish_and_compress(env), None)
     }
 }
