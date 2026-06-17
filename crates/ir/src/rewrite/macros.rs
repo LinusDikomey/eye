@@ -190,6 +190,8 @@ macro_rules! visitor {
                                 return ::core::option::Option::None;
                             }
                         )*
+                        // needed to allow todo!() as () to fix ! erroring on the Visitor impl
+                        #[allow(clippy::diverging_sub_expression)]
                         let result = $result;
                         #[allow(unreachable_code)]
                         ::core::option::Option::Some(

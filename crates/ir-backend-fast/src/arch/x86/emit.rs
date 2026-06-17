@@ -140,15 +140,11 @@ pub fn write(
                 I::mov_rr8 | I::mov_rr16 | I::mov_rr32 | I::mov_rr64 => {
                     mov_rr(text, op.size(), ir.args(i, env));
                 }
-                I::mov_rm8 => inst_rm(text, &[0x8A], ir.args(i, env), false),
-                I::mov_rm16 => inst_rm(text, &[0x8B], ir.args(i, env), false),
-                I::mov_rm32 | I::mov_rm64 => {
-                    inst_rm(text, &[0x8B], ir.args(i, env), op == I::mov_rm64)
+                I::mov_rm8 | I::mov_rm16 | I::mov_rm32 | I::mov_rm64 => {
+                    inst_rm(text, op.size(), &[0x8A], &[0x8B], ir.args(i, env))
                 }
-                I::mov_mr8 => inst_mr(text, &[0x88], ir.args(i, env), false),
-                I::mov_mr16 => inst_mr(text, &[0x89], ir.args(i, env), false),
-                I::mov_mr32 | I::mov_mr64 => {
-                    inst_mr(text, &[0x89], ir.args(i, env), op == I::mov_mr64)
+                I::mov_mr8 | I::mov_mr16 | I::mov_mr32 | I::mov_mr64 => {
+                    inst_mr(text, op.size(), &[0x88], &[0x89], ir.args(i, env))
                 }
                 I::ret0 | I::ret64 | I::ret128 => {
                     text.push(0xc3);
@@ -156,7 +152,7 @@ pub fn write(
                 I::cmp_rr8 | I::cmp_rr16 | I::cmp_rr32 | I::cmp_rr64 => {
                     let (a, b) = ir.args(i, env);
                     // comparisons need to be emitted the other way around
-                    inst_rr_generic(text, op, &[0x3A], &[0x3B], (b, a))
+                    inst_rr(text, op, &[0x3A], &[0x3B], (b, a))
                 }
                 I::test_rr8 => inst_rr_legacy(text, &[0x84], ir.args(i, env), false),
                 I::jmp => {
@@ -265,7 +261,7 @@ pub fn write(
                 I::setg => inst_r(text, &[0x0F, 0x9F], ir.args(i, env), 0, false),
 
                 I::add_rr8 | I::add_rr16 | I::add_rr32 | I::add_rr64 => {
-                    inst_rr_generic(text, op, &[0x00], &[0x01], ir.args(i, env));
+                    inst_rr(text, op, &[0x00], &[0x01], ir.args(i, env));
                 }
                 I::add_ri8 | I::add_ri16 | I::add_ri32 | I::add_ri64 => {
                     inst_ri(text, op, &[0x80], &[0x81], ir.args(i, env), 0);
@@ -278,10 +274,8 @@ pub fn write(
                     }
                     inst_rr_legacy(text, &[0x29], ir.args(i, env), op == I::sub_rr64);
                 }
-                I::sub_ri8 => inst_ri8(text, &[0x80], ir.args(i, env), 5),
-                I::sub_ri16 => inst_ri16(text, &[0x81], ir.args(i, env), 5),
-                I::sub_ri32 | I::sub_ri64 => {
-                    inst_ri32(text, &[0x81], ir.args(i, env), op == I::sub_ri64, 5);
+                I::sub_ri8 | I::sub_ri16 | I::sub_ri32 | I::sub_ri64 => {
+                    inst_ri(text, op, &[0x80], &[0x81], ir.args(i, env), 5)
                 }
                 I::imul_r8 => inst_r(text, &[0xF6], ir.args(i, env), 5, false),
                 I::imul_rr16 | I::imul_rr32 | I::imul_rr64 => {
@@ -301,10 +295,11 @@ pub fn write(
                     }
                     inst_r(text, &[0xF7], ir.args(i, env), 3, op == I::neg_r64);
                 }
-                I::xor_ri8 => inst_ri8(text, &[0x80], ir.args(i, env), 6),
-                I::xor_ri16 => inst_ri16(text, &[0x81], ir.args(i, env), 6),
-                I::xor_ri32 | I::xor_ri64 => {
-                    inst_ri32(text, &[0x81], ir.args(i, env), op == I::xor_ri64, 6)
+                I::xor_ri8 | I::xor_ri16 | I::xor_ri32 | I::xor_ri64 => {
+                    inst_ri(text, op, &[0x80], &[0x81], ir.args(i, env), 6)
+                }
+                I::xor_rr8 | I::xor_rr16 | I::xor_rr32 | I::xor_rr64 => {
+                    inst_rr(text, op, &[0x30], &[0x31], ir.args(i, env))
                 }
                 I::lea_rm32 | I::lea_rm64 => {
                     let opcode: &[u8] = &[0x8D];
@@ -323,6 +318,36 @@ pub fn write(
                 I::call_function => {
                     relocations.push((ir.args(i, env), text.len() as u32 + 1));
                     text.extend([0xE8, 0, 0, 0, 0]);
+                }
+                I::movsx16_rr8 | I::movsx32_rr8 | I::movsx64_rr8 => {
+                    let size = match op {
+                        I::movsx16_rr8 => Size::S16,
+                        I::movsx32_rr8 => Size::S32,
+                        _ => Size::S64,
+                    };
+                    inst_rr_generic_inner(text, size, &[], &[0x0F, 0xBE], ir.args(i, env));
+                }
+                I::movsx32_rr16 | I::movsx64_rr16 => {
+                    let size = if op == I::movsx32_rr16 {
+                        Size::S32
+                    } else {
+                        Size::S64
+                    };
+                    inst_rr_generic_inner(text, size, &[], &[0x0F, 0xBF], ir.args(i, env));
+                }
+                I::movsx64_rr32 => {
+                    inst_rr_generic_inner(text, Size::S64, &[], &[0x63], ir.args(i, env));
+                }
+                I::movzx16_rr8 | I::movzx32_rr8 => {
+                    let size = if op == I::movzx16_rr8 {
+                        Size::S16
+                    } else {
+                        Size::S32
+                    };
+                    inst_rr_generic_inner(text, size, &[], &[0x0F, 0xB6], ir.args(i, env));
+                }
+                I::movzx32_rr16 => {
+                    inst_rr_generic_inner(text, Size::S32, &[], &[0x0F, 0xB7], ir.args(i, env));
                 }
             }
         }
@@ -372,13 +397,7 @@ fn inst_rr_legacy(text: &mut Vec<u8>, opcode: &[u8], (a, b): (Reg, Reg), wide: b
     text.push(modrm.modrm);
 }
 
-fn inst_rr_generic(
-    text: &mut Vec<u8>,
-    inst: X86,
-    opcode_8: &[u8],
-    opcode: &[u8],
-    (a, b): (Reg, Reg),
-) {
+fn inst_rr(text: &mut Vec<u8>, inst: X86, opcode_8: &[u8], opcode: &[u8], (a, b): (Reg, Reg)) {
     inst_rr_generic_inner(text, inst.size(), opcode_8, opcode, (a, b));
 }
 
@@ -402,30 +421,41 @@ fn inst_rr_generic_inner(
 
 fn inst_rm(
     text: &mut Vec<u8>,
+    size: Size,
+    opcode_8: &[u8],
     opcode: &[u8],
     (reg_val, reg_ptr, off): (Reg, Reg, Int32),
-    wide: bool,
 ) {
+    if size == Size::S16 {
+        text.push(P16);
+    }
     let off = OffsetClass::from_imm(off);
     let a = encode_reg(reg_val);
     let b = encode_reg(reg_ptr);
-    let rex = encode_rex(wide, a.ext(), false, b.ext(), a.force() || b.force());
+    let rex = encode_rex(
+        size == Size::S64,
+        a.ext(),
+        false,
+        b.ext(),
+        a.force() || b.force(),
+    );
     debug_assert!(!((a.prevents_rex() || b.prevents_rex()) && rex != 0));
     if rex != 0 {
         text.push(rex);
     }
-    text.extend(opcode);
+    text.extend(if size == Size::S8 { opcode_8 } else { opcode });
     modrm_rm(text, off, a, b);
 }
 
 fn inst_mr(
     text: &mut Vec<u8>,
+    size: Size,
+    opcode_8: &[u8],
     opcode: &[u8],
     (reg_ptr, off, reg_val): (Reg, Int32, Reg),
-    wide: bool,
 ) {
     // encoded exactly the same way, just swap the arguments around correctly
-    inst_rm(text, opcode, (reg_val, reg_ptr, off), wide);
+    inst_rm(text, size, opcode_8, opcode, (reg_val, reg_ptr, off));
 }
 
 fn inst_ri(
@@ -452,16 +482,6 @@ fn inst_ri(
         Size::S32 | Size::S64 => text.extend(imm.to_le_bytes()),
         Size::S128 => unreachable!(), // no 128-bit register instructions used
     }
-}
-
-fn inst_ri8(text: &mut Vec<u8>, opcode: &[u8], (r, imm): (Reg, u32), i: u8) {
-    let modrm = encode_modrm_ri(r, false, i);
-    if modrm.rex != 0 {
-        text.push(modrm.rex);
-    }
-    text.extend(opcode);
-    text.push(modrm.modrm);
-    text.push(imm as u8);
 }
 
 fn inst_ri16(text: &mut Vec<u8>, opcode: &[u8], (r, imm): (Reg, u32), i: u8) {

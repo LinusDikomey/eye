@@ -239,6 +239,11 @@ ir::instructions! {
     neg_r32 a: MCReg(Usage::DefUse);
     neg_r64 a: MCReg(Usage::DefUse);
 
+    xor_rr8  a: MCReg(Usage::DefUse) b: MCReg(Usage::Use);
+    xor_rr16 a: MCReg(Usage::DefUse) b: MCReg(Usage::Use);
+    xor_rr32 a: MCReg(Usage::DefUse) b: MCReg(Usage::Use);
+    xor_rr64 a: MCReg(Usage::DefUse) b: MCReg(Usage::Use);
+
     xor_ri8  reg: MCReg(Usage::DefUse) imm: Int32;
     xor_ri16 reg: MCReg(Usage::DefUse) imm: Int32;
     xor_ri32 reg: MCReg(Usage::DefUse) imm: Int32;
@@ -248,8 +253,19 @@ ir::instructions! {
     lea_rm64 to: MCReg(Usage::Def) addr: MCReg(Usage::Use) offset: Int32;
 
     call_function function: FunctionId;
+
+    movsx16_rr8 dst: MCReg(Usage::Def) src: MCReg(Usage::Use);
+    movsx32_rr8 dst: MCReg(Usage::Def) src: MCReg(Usage::Use);
+    movsx64_rr8 dst: MCReg(Usage::Def) src: MCReg(Usage::Use);
+    movsx32_rr16 dst: MCReg(Usage::Def) src: MCReg(Usage::Use);
+    movsx64_rr16 dst: MCReg(Usage::Def) src: MCReg(Usage::Use);
+    movsx64_rr32 dst: MCReg(Usage::Def) src: MCReg(Usage::Use);
+
+    movzx16_rr8 dst: MCReg(Usage::Def) src: MCReg(Usage::Use);
+    movzx32_rr8 dst: MCReg(Usage::Def) src: MCReg(Usage::Use);
+    movzx32_rr16 dst: MCReg(Usage::Def) src: MCReg(Usage::Use);
 }
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, PartialOrd, Ord)]
 pub enum Size {
     S8,
     S16,
@@ -275,7 +291,13 @@ impl X86 {
             | Self::imul_r8
             | Self::neg_r8
             | Self::xor_ri8
-            | Self::mov_rr8 => Size::S8,
+            | Self::mov_rr8
+            | Self::xor_rr8
+            | Self::movsx16_rr8
+            | Self::movsx32_rr8
+            | Self::movsx64_rr8
+            | Self::movzx16_rr8
+            | Self::movzx32_rr8 => Size::S8,
 
             Self::mov_ri16
             | Self::mov_rm16
@@ -289,7 +311,11 @@ impl X86 {
             | Self::imul_ri16
             | Self::neg_r16
             | Self::xor_ri16
-            | Self::mov_rr16 => Size::S16,
+            | Self::mov_rr16
+            | Self::xor_rr16
+            | Self::movsx32_rr16
+            | Self::movsx64_rr16
+            | Self::movzx32_rr16 => Size::S16,
 
             Self::mov_ri32
             | Self::mov_rr32
@@ -304,7 +330,9 @@ impl X86 {
             | Self::imul_ri32
             | Self::neg_r32
             | Self::xor_ri32
-            | Self::lea_rm32 => Size::S32,
+            | Self::lea_rm32
+            | Self::xor_rr32
+            | Self::movsx64_rr32 => Size::S32,
 
             Self::push_r64
             | Self::pop_r64
@@ -321,7 +349,8 @@ impl X86 {
             | Self::imul_ri64
             | Self::neg_r64
             | Self::xor_ri64
-            | Self::lea_rm64 => Size::S64,
+            | Self::lea_rm64
+            | Self::xor_rr64 => Size::S64,
 
             Self::ret0
             | Self::ret64

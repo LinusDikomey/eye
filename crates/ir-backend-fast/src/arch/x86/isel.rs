@@ -373,6 +373,47 @@ ir::visitor! {
         signed: X86::setge,
         unsigned: X86::setnc,
     });
+    (%r = arith.Xor a b) => int_bin_op(ctx, ir, types, env, dialects, r, a, b, IntBinOp {
+        i8: [X86::xor_rr8, X86::xor_ri8],
+        i16: [X86::xor_rr16, X86::xor_ri16],
+        i32: [X86::xor_rr32, X86::xor_ri32],
+        i64: [X86::xor_rr64, X86::xor_ri64],
+    });
+    (%r = arith.Shl a b) => todo!("shl") as ();
+    (%r = arith.Shr a b) => todo!("shr") as ();
+    (%r = arith.Rol a b) => todo!("rol") as ();
+    (%r = arith.Ror a b) => todo!("ror") as ();
+    (%r = arith.CastInt x) => {
+        // TODO: support large ints
+        let src = ctx.regs.get_one(x);
+        let dst = ctx.regs.get_one(r);
+        match (arith_class(x, ir, types), arith_class(r, ir, types)) {
+            ((ArithClass::Float, _), _) | (_, (ArithClass::Float, _)) => unreachable!(),
+
+            // truncate or keep the same size by just doing a mov in the larger size. Upper bits
+            // will be just be ignored by further operations.
+            ((_, Size::S8 | Size::S16 | Size::S32 | Size::S64), (_, Size::S8)) => ir.replace(env, r, x86.mov_rr8(dst, src)),
+            ((_, Size::S16 | Size::S32 | Size::S64), (_, Size::S16)) => ir.replace(env, r, x86.mov_rr16(dst, src)),
+            ((_, Size::S32 | Size::S64), (_, Size::S32)) => ir.replace(env, r, x86.mov_rr32(dst, src)),
+            ((_, Size::S64), (_, Size::S64)) => ir.replace(env, r, x86.mov_rr64(dst, src)),
+
+            // zero extension
+            ((ArithClass::Unsigned, Size::S8), (_, Size::S16 | Size::S32 | Size::S64)) => ir.replace(env, r, x86.movzx32_rr8(dst, src)),
+            ((ArithClass::Unsigned, Size::S16), (_, Size::S32 | Size::S64)) => ir.replace(env, r, x86.movzx32_rr16(dst, src)),
+            ((ArithClass::Unsigned, Size::S32), (_, Size::S64)) => ir.replace(env, r, x86.mov_rr32(dst, src)),
+
+            // sign extension
+            ((ArithClass::Signed, Size::S8 | Size::S16), (_, Size::S16 | Size::S32)) => ir.replace(env, r, x86.movsx32_rr8(dst, src)),
+            ((ArithClass::Signed, Size::S8), (_, Size::S64)) => ir.replace(env, r, x86.movsx64_rr8(dst, src)),
+            ((ArithClass::Signed, Size::S16), (_, Size::S64)) => ir.replace(env, r, x86.movsx64_rr16(dst, src)),
+            ((ArithClass::Signed, Size::S32), (_, Size::S64)) => ir.replace(env, r, x86.movsx64_rr32(dst, src)),
+
+            _ => unreachable!(),
+        }
+    };
+    (%r = arith.CastFloat x) => todo!("CastFloat") as ();
+    (%r = arith.CastIntToFloat x) => todo!("CastIntToFloat") as ();
+    (%r = arith.CastFloatToInt x) => todo!("CastFloatToInt") as ();
     (%r = cf.Ret value) => {
         ctx.abi.implement_return(value, ir, env, mc, x86, types, &ctx.regs, r, ctx.unit);
     };
