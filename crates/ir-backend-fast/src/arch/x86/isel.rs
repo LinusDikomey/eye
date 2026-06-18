@@ -4,7 +4,7 @@ use ir::{
     BlockGraph, BlockId, Environment, FunctionId, FunctionIr, IntoArgs, MCReg, ModuleId, ModuleOf,
     Primitive, Ref, Type, TypeId, Types,
     dialect::Arith,
-    mc::{Abi, BackendState, IselCtx, Mc},
+    mc::{Abi, BackendState, IselCtx, Mc, parallel_copy},
     modify::IrModify,
     rewrite::{ReverseRewriteOrder, Rewrite},
     slots::Slots,
@@ -388,8 +388,7 @@ ir::visitor! {
         match (arith_class(x, ir, types), arith_class(r, ir, types)) {
             ((ArithClass::Float, _), _) | (_, (ArithClass::Float, _)) => unreachable!(),
 
-            // truncate or keep the same size by just doing a mov in the larger size. Upper bits
-            // will be just be ignored by further operations.
+            // truncate or keep the same size by just doing a mov in the smaller size.
             ((_, Size::S8 | Size::S16 | Size::S32 | Size::S64), (_, Size::S8)) => ir.replace(env, r, x86.mov_rr8(dst, src)),
             ((_, Size::S16 | Size::S32 | Size::S64), (_, Size::S16)) => ir.replace(env, r, x86.mov_rr16(dst, src)),
             ((_, Size::S32 | Size::S64), (_, Size::S32)) => ir.replace(env, r, x86.mov_rr32(dst, src)),
@@ -546,9 +545,34 @@ ir::visitor! {
         let offset = ir::offset_in_tuple(elem_types, idx as u32, types, env.primitives());
         ptr_offset(ctx, ir, env, dialects, r, ptr, offset);
     };
-    (%r = mem.IntToPtr x) => todo!("IntToPtr") as ();
+    (%r = mem.IntToPtr x) => {
+        let src = ctx.regs.get_one(x);
+        let dst = ctx.regs.get_one(r);
+        match arith_class(x, ir, types) {
+            (ArithClass::Unsigned, Size::S8) => ir.replace(env, r, x86.movzx32_rr8(dst, src)),
+            (ArithClass::Unsigned, Size::S16) => ir.replace(env, r, x86.movzx32_rr16(dst, src)),
+            (ArithClass::Unsigned, Size::S32) => ir.replace(env, r, x86.mov_rr32(dst, src)),
+            (ArithClass::Signed, Size::S8) => ir.replace(env, r, x86.movsx64_rr8(dst, src)),
+            (ArithClass::Signed, Size::S16) => ir.replace(env, r, x86.movsx64_rr16(dst, src)),
+            (ArithClass::Signed, Size::S32) => ir.replace(env, r, x86.movsx64_rr32(dst, src)),
+            (_, Size::S64) => ir.replace(env, r, parallel_copy(mc, &[dst, src])),
+            (_, Size::S128) => todo!(),
+            (ArithClass::Float, _) => unreachable!(),
+        }
+    };
+    (%r = mem.PtrToInt x) => {
+        let src = ctx.regs.get_one(x);
+        let dst = ctx.regs.get_one(r);
+        match arith_class(r, ir, types).1 {
+            Size::S8 => ir.replace(env, r, x86.mov_rr8(dst, src)),
+            Size::S16 => ir.replace(env, r, x86.mov_rr16(dst, src)),
+            Size::S32 => ir.replace(env, r, x86.mov_rr32(dst, src)),
+            Size::S64 => ir.replace(env, r, parallel_copy(mc, &[dst, src])),
+            _ => todo!(),
+        }
+    };
     (%r = mem.PtrToInt x) => todo!("PtrToInt") as ();
-    (%r = mem.Global) => todo!("globals") as ();
+    (%r = mem.Global (global id)) => todo!("globals") as ();
     (%r = mem.ArrayIndex array_ptr (type elem_ty) idx) => {
         // CODEGEN: use more efficient addressing modes
         let stride = ir::type_layout(types[elem_ty], types, env.primitives()).stride();
