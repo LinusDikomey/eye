@@ -663,7 +663,8 @@ ir::visitor! {
             };
             ir.replace(env, r, x86.call_function(function_id));
         } else if inst.module() != dialects.x86.id() {
-            todo!("unhandled instruction at {r}: {}", env.get_inst_name(ir.get_inst(r)));
+            // all instructions should be handled
+            unreachable!("unhandled instruction at {r}: {}", env.get_inst_name(ir.get_inst(r)));
         }
     };
 }

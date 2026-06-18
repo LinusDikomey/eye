@@ -1,14 +1,18 @@
+use crate::exe::elf::SectionIdx;
+
 use super::SectionHeader;
 
 pub struct SymtabWriter {
     section: Vec<u8>,
     entry_count: u32,
+    first_non_local: Option<u32>,
 }
 impl SymtabWriter {
     pub fn new() -> Self {
         let mut writer = Self {
             section: Vec::new(),
             entry_count: 0,
+            first_non_local: None,
         };
         writer.entry(Entry {
             name_index: 0,
@@ -19,12 +23,19 @@ impl SymtabWriter {
             value: 0,
             size: 0,
         });
-        // the null entry isn't counted
-        writer.entry_count = 0;
         writer
     }
 
-    pub fn entry(&mut self, entry: Entry) {
+    pub fn entry(&mut self, entry: Entry) -> SymtabIdx {
+        let idx = self.entry_count;
+        if matches!(entry.bind, Bind::Local) {
+            assert!(
+                self.first_non_local.is_none(),
+                "ELF local symbols must precede non-local symbols"
+            );
+        } else if self.first_non_local.is_none() {
+            self.first_non_local = Some(idx);
+        }
         self.entry_count = self
             .entry_count
             .checked_add(1)
@@ -35,17 +46,19 @@ impl SymtabWriter {
         self.section.extend(entry.section_index.to_le_bytes());
         self.section.extend(entry.value.to_le_bytes());
         self.section.extend(entry.size.to_le_bytes());
+        SymtabIdx(idx)
     }
 
-    pub fn finish(self) -> (SectionHeader, Vec<u8>) {
+    pub fn finish(self, strtab: SectionIdx) -> (SectionHeader, Vec<u8>) {
+        let first_non_local = self.first_non_local.unwrap_or(self.entry_count);
         (
             SectionHeader {
                 name: ".symtab".to_owned(),
                 ty: super::SectionHeaderType::SymTab,
                 flags: super::SectionHeaderFlags::default(),
                 addr: 0,
-                link: 1,
-                info: self.entry_count,
+                link: strtab,
+                info: first_non_local,
                 addralign: 8,
                 entsize: 24,
             },
@@ -53,6 +66,9 @@ impl SymtabWriter {
         )
     }
 }
+
+#[derive(Clone, Copy, Debug)]
+pub struct SymtabIdx(pub u32);
 
 pub struct Entry {
     pub name_index: u32,

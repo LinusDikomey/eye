@@ -1,3 +1,4 @@
+pub mod relocation;
 pub mod symtab;
 
 use std::{
@@ -64,6 +65,10 @@ impl ElfObjectWriter {
         }
     }
 
+    pub fn strtab_idx(&self) -> SectionIdx {
+        SectionIdx(1) // always stored at idx 1
+    }
+
     pub fn write(mut self, path: &Path) -> io::Result<()> {
         let mut file = BufWriter::new(File::create(path)?);
         let format = Format::B64;
@@ -103,7 +108,7 @@ impl ElfObjectWriter {
         };
         let ehsize: u16 = 64;
         let section_header_count = self.sections.len() as u16 + 2; // null section, strtab section
-        let strtab_index = 1u16; // we always store the strtab section at the start
+        let strtab_index = self.strtab_idx().0 as u16;
 
         file.write_all(&[0, 0, 0, 0])?; // e_flags: target-specific flags
         file.write_all(&ehsize.to_le_bytes())?; // e_ehsize
@@ -119,7 +124,7 @@ impl ElfObjectWriter {
             ty: SectionHeaderType::Null,
             flags: SectionHeaderFlags::default(),
             addr: 0,
-            link: 0,
+            link: SectionIdx::NONE,
             info: 0,
             addralign: 0,
             entsize: 0,
@@ -144,7 +149,7 @@ impl ElfObjectWriter {
             ty: SectionHeaderType::StrTab,
             flags: SectionHeaderFlags::default(),
             addr: 0,
-            link: 0,
+            link: SectionIdx::NONE,
             info: 0,
             addralign: 1,
             entsize: 0,
@@ -173,8 +178,11 @@ impl ElfObjectWriter {
         Ok(())
     }
 
-    pub fn section(&mut self, header: SectionHeader, contents: Vec<u8>) {
+    pub fn section(&mut self, header: SectionHeader, contents: Vec<u8>) -> SectionIdx {
+        let idx = self.sections.len() as u32;
         self.sections.push((header, contents));
+        // null section and strtab section come before any other sections
+        SectionIdx(2 + idx)
     }
 
     pub fn add_str(&mut self, s: &str) -> u32 {
@@ -195,7 +203,7 @@ pub struct SectionHeader {
     pub ty: SectionHeaderType,
     pub flags: SectionHeaderFlags,
     pub addr: u64,
-    pub link: u32,
+    pub link: SectionIdx,
     pub info: u32,
     pub addralign: u64,
     pub entsize: u64,
@@ -226,13 +234,19 @@ impl SectionHeader {
         file.write_all(&self.addr.to_le_bytes())?;
         file.write_all(&offset.to_le_bytes())?;
         file.write_all(&size.to_le_bytes())?;
-        file.write_all(&self.link.to_le_bytes())?;
+        file.write_all(&self.link.0.to_le_bytes())?;
         file.write_all(&self.info.to_le_bytes())?;
         file.write_all(&self.addralign.to_le_bytes())?;
         file.write_all(&self.entsize.to_le_bytes())?;
 
         Ok(())
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct SectionIdx(pub u32);
+impl SectionIdx {
+    pub const NONE: Self = Self(0);
 }
 
 #[repr(u32)]
@@ -242,6 +256,7 @@ pub enum SectionHeaderType {
     Progbits = 1,
     SymTab = 2,
     StrTab = 3,
+    RelA = 4,
 }
 
 #[derive(Clone, Copy, Default, Debug)]
