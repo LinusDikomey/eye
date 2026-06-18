@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 
 use ir::{
-    Argument, Bitmap, BlockId, Environment, FunctionId, FunctionIr, MCReg, ModuleOf,
+    Argument, Bitmap, BlockId, Environment, FunctionId, FunctionIr, GlobalId, MCReg, ModuleOf,
     block_graph::Blocks,
     mc::{Mc, ParcopySolver, RegClass},
     parameter_types::Int32,
@@ -17,7 +17,8 @@ pub fn write(
     x86: ModuleOf<X86>,
     ir: &FunctionIr,
     text: &mut Vec<u8>,
-    relocations: &mut Vec<(FunctionId, u32)>,
+    relocations: &mut Vec<(FunctionId, u64)>,
+    global_relocations: &mut Vec<(GlobalId, u64)>,
 ) {
     let mut parcopy = ParcopySolver::new();
     let start = text.len();
@@ -320,8 +321,14 @@ pub fn write(
                     let relocation_offset = disp32(text, &[0x8D], dst);
                     relocations.push((function, relocation_offset));
                 }
+                I::lea_global => {
+                    let (dst, global) = ir.args(i, env);
+                    // lea dst [rip + offset]
+                    let relocation_offset = disp32(text, &[0x8D], dst);
+                    global_relocations.push((global, relocation_offset));
+                }
                 I::call_function => {
-                    relocations.push((ir.args(i, env), text.len() as u32 + 1));
+                    relocations.push((ir.args(i, env), text.len() as u64 + 1));
                     text.extend([0xE8, 0, 0, 0, 0]);
                 }
                 I::call_r64 => {
@@ -396,7 +403,7 @@ fn modrm_rm(text: &mut Vec<u8>, mut offset: OffsetClass, reg: EncodedReg, rm: En
 
 /// emits an instruction with a placeholder disp32 (rip-relative address) and returns the offset
 /// of that offset placeholder to be used for emitting a relocation
-fn disp32(text: &mut Vec<u8>, opcode: &[u8], reg: Reg) -> u32 {
+fn disp32(text: &mut Vec<u8>, opcode: &[u8], reg: Reg) -> u64 {
     let r = encode_reg(reg);
     let rex = encode_rex(true, r.ext(), false, false, r.force());
     if rex != 0 {

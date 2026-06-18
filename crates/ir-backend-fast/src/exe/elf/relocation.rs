@@ -28,7 +28,7 @@ impl RelaWriter {
                 flags: super::SectionHeaderFlags::default(),
                 addr: 0,
                 link: symtab,
-                info: text.0,
+                info: text.0.into(),
                 addralign: 8,
                 entsize: 24,
             },
@@ -40,6 +40,7 @@ impl RelaWriter {
 #[derive(Copy, Clone)]
 #[repr(u32)]
 pub enum RelaType {
+    X86_64PC32 = 2,
     X86_64Plt32 = 4,
 }
 

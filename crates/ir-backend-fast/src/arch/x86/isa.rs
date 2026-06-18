@@ -253,6 +253,7 @@ ir::instructions! {
     lea_rm32 to: MCReg(Usage::Def) addr: MCReg(Usage::Use) offset: Int32;
     lea_rm64 to: MCReg(Usage::Def) addr: MCReg(Usage::Use) offset: Int32;
     lea_function to: MCReg(Usage::Def) function: FunctionId;
+    lea_global to: MCReg(Usage::Def) global: GlobalId;
 
     call_function function: FunctionId;
     call_r64 ptr: MCReg(Usage::Use);
@@ -355,6 +356,7 @@ impl X86 {
             | Self::lea_rm64
             | Self::xor_rr64
             | Self::lea_function
+            | Self::lea_global
             | Self::call_r64 => Size::S64,
 
             Self::ret0

@@ -4,6 +4,7 @@ pub mod symtab;
 use std::{
     fs::File,
     io::{self, BufWriter, Write},
+    ops,
     path::Path,
 };
 
@@ -61,7 +62,36 @@ impl ElfObjectWriter {
     pub fn new() -> Self {
         Self {
             strtab: "\0".to_owned(),
-            sections: Vec::new(),
+            sections: vec![
+                // null section
+                (
+                    SectionHeader {
+                        name: String::new(),
+                        ty: SectionHeaderType::Null,
+                        flags: SectionHeaderFlags::default(),
+                        addr: 0,
+                        link: SectionIdx::NONE,
+                        info: 0,
+                        addralign: 0,
+                        entsize: 0,
+                    },
+                    Vec::new(),
+                ),
+                // strtab section
+                (
+                    SectionHeader {
+                        name: ".strtab".to_owned(),
+                        ty: SectionHeaderType::StrTab,
+                        flags: SectionHeaderFlags::default(),
+                        addr: 0,
+                        link: SectionIdx::NONE,
+                        info: 0,
+                        addralign: 1,
+                        entsize: 0,
+                    },
+                    Vec::new(),
+                ),
+            ],
         }
     }
 
@@ -107,8 +137,8 @@ impl ElfObjectWriter {
             }
         };
         let ehsize: u16 = 64;
-        let section_header_count = self.sections.len() as u16 + 2; // null section, strtab section
-        let strtab_index = self.strtab_idx().0 as u16;
+        let section_header_count = self.sections.len() as u16;
+        let strtab_index = self.strtab_idx();
 
         file.write_all(&[0, 0, 0, 0])?; // e_flags: target-specific flags
         file.write_all(&ehsize.to_le_bytes())?; // e_ehsize
@@ -116,61 +146,37 @@ impl ElfObjectWriter {
         file.write_all(&0u16.to_le_bytes())?; // e_phnum: program header table entry count
         file.write_all(&section_header_len.to_le_bytes())?; // e_shentsize
         file.write_all(&section_header_count.to_le_bytes())?; // e_shnum
-        file.write_all(&strtab_index.to_le_bytes())?; // e_shstrndx
+        file.write_all(&strtab_index.0.to_le_bytes())?; // e_shstrndx
 
-        // write null section first
-        SectionHeader {
-            name: String::new(),
-            ty: SectionHeaderType::Null,
-            flags: SectionHeaderFlags::default(),
-            addr: 0,
-            link: SectionIdx::NONE,
-            info: 0,
-            addralign: 0,
-            entsize: 0,
-        }
-        .write_with_name_index(&mut file, 0, 0, 0)?;
-
-        let strtab_name_index = self.add_str(".strtab");
         let section_header_names: Vec<u32> = self
             .sections
             .iter()
             .map(|(header, _)| {
-                let index = self.strtab.len().try_into().expect("strtab is too long");
-                self.strtab.push_str(&header.name);
-                self.strtab.push('\0');
-                index
+                if header.name.is_empty() {
+                    // null section doesn't have a name
+                    0 // there is a nul byte at the start of strtab for this
+                } else {
+                    let index = self.strtab.len().try_into().expect("strtab is too long");
+                    self.strtab.push_str(&header.name);
+                    self.strtab.push('\0');
+                    index
+                }
             })
             .collect();
 
-        // write strtab section header
-        let strtab_header = SectionHeader {
-            name: ".strtab".to_owned(),
-            ty: SectionHeaderType::StrTab,
-            flags: SectionHeaderFlags::default(),
-            addr: 0,
-            link: SectionIdx::NONE,
-            info: 0,
-            addralign: 1,
-            entsize: 0,
-        };
+        // Write section headers. Track final offset to give the section bodies the correct offset
         offset += section_header_count as u64 * section_header_len as u64;
-        strtab_header.write_with_name_index(
-            &mut file,
-            strtab_name_index,
-            offset,
-            self.strtab.len() as _,
-        )?;
 
-        offset += self.strtab.len() as u64;
+        // put in the final strtab
+        self.sections[1].1 = self.strtab.into_bytes();
 
         for ((header, content), name_index) in self.sections.iter().zip(section_header_names) {
             let len = content.len() as u64;
-            header.write(&mut file, name_index, offset, len)?;
+            let section_offset = if content.is_empty() { 0 } else { offset };
+            header.write(&mut file, name_index, section_offset, len)?;
             offset += len;
         }
 
-        file.write_all(self.strtab.as_bytes())?;
         for (_, content) in &self.sections {
             file.write_all(content)?;
         }
@@ -179,10 +185,10 @@ impl ElfObjectWriter {
     }
 
     pub fn section(&mut self, header: SectionHeader, contents: Vec<u8>) -> SectionIdx {
-        let idx = self.sections.len() as u32;
+        let idx = self.sections.len() as u16;
         self.sections.push((header, contents));
         // null section and strtab section come before any other sections
-        SectionIdx(2 + idx)
+        SectionIdx(idx)
     }
 
     pub fn add_str(&mut self, s: &str) -> u32 {
@@ -194,6 +200,18 @@ impl ElfObjectWriter {
         self.strtab.push_str(s);
         self.strtab.push('\0');
         index
+    }
+}
+impl ops::Index<SectionIdx> for ElfObjectWriter {
+    type Output = Vec<u8>;
+
+    fn index(&self, index: SectionIdx) -> &Self::Output {
+        &self.sections[index.0 as usize].1
+    }
+}
+impl ops::IndexMut<SectionIdx> for ElfObjectWriter {
+    fn index_mut(&mut self, index: SectionIdx) -> &mut Self::Output {
+        &mut self.sections[index.0 as usize].1
     }
 }
 
@@ -234,7 +252,7 @@ impl SectionHeader {
         file.write_all(&self.addr.to_le_bytes())?;
         file.write_all(&offset.to_le_bytes())?;
         file.write_all(&size.to_le_bytes())?;
-        file.write_all(&self.link.0.to_le_bytes())?;
+        file.write_all(&(self.link.0 as u32).to_le_bytes())?;
         file.write_all(&self.info.to_le_bytes())?;
         file.write_all(&self.addralign.to_le_bytes())?;
         file.write_all(&self.entsize.to_le_bytes())?;
@@ -244,9 +262,10 @@ impl SectionHeader {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct SectionIdx(pub u32);
+pub struct SectionIdx(pub u16);
 impl SectionIdx {
     pub const NONE: Self = Self(0);
+    pub const ABSENT: Self = Self(0xfff1);
 }
 
 #[repr(u32)]

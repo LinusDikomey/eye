@@ -573,7 +573,7 @@ ir::visitor! {
         }
     };
     (%r = mem.PtrToInt x) => todo!("PtrToInt") as ();
-    (%r = mem.Global (global id)) => todo!("globals") as ();
+    (%r = mem.Global (global id)) => x86.lea_global(ctx.regs.get_one(r), id);
     (%r = mem.ArrayIndex array_ptr (type elem_ty) idx) => {
         // CODEGEN: use more efficient addressing modes
         let stride = ir::type_layout(types[elem_ty], types, env.primitives()).stride();

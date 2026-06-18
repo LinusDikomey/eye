@@ -2,7 +2,7 @@ use core::fmt;
 use std::path::Path;
 
 use ir::{
-    MCReg, ModuleId,
+    GlobalId, MCReg, ModuleId,
     mc::{Abi, BackendState},
     pipeline::FunctionPass,
 };
@@ -37,9 +37,60 @@ impl Backend {
         assert!(target.is_none(), "todo: check target");
 
         let mut writer = exe::elf::ElfObjectWriter::new();
-        let mut text_section = Vec::new();
         let mut symtab = exe::elf::symtab::SymtabWriter::new();
-        let text_idx = 2;
+
+        let text = writer.section(
+            exe::elf::SectionHeader {
+                name: ".text".to_owned(),
+                ty: exe::elf::SectionHeaderType::Progbits,
+                flags: exe::elf::SectionHeaderFlags {
+                    alloc: true,
+                    execinstr: true,
+                    ..Default::default()
+                },
+                addr: 0,
+                link: SectionIdx::NONE,
+                info: 0,
+                addralign: 16,
+                entsize: 0,
+            },
+            Vec::new(),
+        );
+
+        let rodata = writer.section(
+            exe::elf::SectionHeader {
+                name: ".rodata".to_owned(),
+                ty: exe::elf::SectionHeaderType::Progbits,
+                flags: exe::elf::SectionHeaderFlags {
+                    alloc: true,
+                    ..Default::default()
+                },
+                addr: 0,
+                link: SectionIdx::NONE,
+                info: 0,
+                addralign: 8,
+                entsize: 0,
+            },
+            Vec::new(),
+        );
+
+        let data = writer.section(
+            exe::elf::SectionHeader {
+                name: ".data".to_owned(),
+                ty: exe::elf::SectionHeaderType::Progbits,
+                flags: exe::elf::SectionHeaderFlags {
+                    alloc: true,
+                    write: true,
+                    ..Default::default()
+                },
+                addr: 0,
+                link: SectionIdx::NONE,
+                info: 0,
+                addralign: 8,
+                entsize: 0,
+            },
+            Vec::new(),
+        );
 
         // file entry
         let file_name = writer.add_str(env[module_id].name());
@@ -48,7 +99,7 @@ impl Backend {
             bind: exe::elf::symtab::Bind::Local,
             ty: exe::elf::symtab::Type::File,
             visibility: exe::elf::symtab::Visibility::Default,
-            section_index: 0xfff1, // SHN_ABS
+            section_index: SectionIdx::ABSENT,
             value: 0,
             size: 0,
         });
@@ -58,7 +109,7 @@ impl Backend {
             bind: exe::elf::symtab::Bind::Local,
             ty: exe::elf::symtab::Type::Section,
             visibility: exe::elf::symtab::Visibility::Default,
-            section_index: text_idx,
+            section_index: text,
             value: 0,
             size: 0,
         });
@@ -68,8 +119,9 @@ impl Backend {
         let x86 = isel.x86;
         let abi = arch::x86::get_target_abi();
         let mut relocations = Vec::new();
+        let mut global_relocations: Vec<(GlobalId, u64)> = Vec::new();
 
-        let mut function_offsets = vec![0u32; env[module_id].function_ids().len()];
+        let mut function_offsets = vec![0u64; env[module_id].function_ids().len()];
 
         let mut pipeline = ir::pipeline::Pipeline::new("backend");
         pipeline.add_function_pass(Box::new(Isel {
@@ -85,13 +137,15 @@ impl Backend {
         }));
         pipeline.add_function_pass(Box::new(arch::x86::PrologueEpilogueInsertion { x86, abi }));
 
+        // emit functions
+
         let symtab_entries: Box<[SymtabIdx]> = (env[module_id].function_ids())
             .zip(function_offsets.iter_mut())
             .map(|(id, function_offset)| {
                 let func = &env[module_id][id];
                 let (section_index, offset_in_section, size) = if let Some(ir) = func.ir() {
-                    let offset = text_section.len() as u64;
-                    *function_offset = offset.try_into().unwrap();
+                    let offset = writer[text].len() as u64;
+                    *function_offset = offset;
                     // PERF: cloning ir, types, name
                     let ir = ir.clone();
                     let mut types = func.types().clone();
@@ -104,11 +158,19 @@ impl Backend {
                         "Final machine IR:\n{}",
                         mir.display_with_phys_regs::<arch::x86::Reg>(env, &types)
                     );
-                    arch::x86::write(env, mc, x86, &mir, &mut text_section, &mut relocations);
-                    let size = text_section.len() as u64 - offset;
-                    (text_idx, offset, size)
+                    arch::x86::write(
+                        env,
+                        mc,
+                        x86,
+                        &mir,
+                        &mut writer[text],
+                        &mut relocations,
+                        &mut global_relocations,
+                    );
+                    let size = writer[text].len() as u64 - offset;
+                    (text, offset, size)
                 } else {
-                    (0, 0, 0)
+                    (SectionIdx::NONE, 0, 0)
                 };
                 let name_index = writer.add_str(&env[module_id][id].name);
                 symtab.entry(exe::elf::symtab::Entry {
@@ -122,44 +184,65 @@ impl Backend {
                 })
             })
             .collect();
+
+        // emit globals
+
+        let global_symtab_entries: Box<[SymtabIdx]> = env[module_id]
+            .globals()
+            .map(|global| {
+                let name_index = writer.add_str(&global.name);
+                let section = if global.readonly { rodata } else { data };
+                let value = writer[section].len() as u64;
+                writer[section].extend_from_slice(&global.value);
+                symtab.entry(exe::elf::symtab::Entry {
+                    name_index,
+                    bind: exe::elf::symtab::Bind::Global,
+                    ty: exe::elf::symtab::Type::Object,
+                    visibility: exe::elf::symtab::Visibility::Default,
+                    section_index: section,
+                    value,
+                    size: global.value.len() as u64,
+                })
+            })
+            .collect();
+
+        // emit relocations to elf
+
         let mut rela = RelaWriter::new();
         for (function_id, i) in relocations {
             debug_assert_eq!(function_id.module, module_id);
             let is_extern = env[module_id][function_id.function].ir().is_none();
             if is_extern {
                 rela.entry(exe::elf::relocation::Rela {
-                    r_offset: i.into(),
+                    r_offset: i,
                     sym: symtab_entries[function_id.function.idx()],
                     ty: exe::elf::relocation::RelaType::X86_64Plt32,
                     r_addend: -4, // call rel32, therefore offset by -4 since RIP is behind the instruction
                 });
             } else {
-                let offset = (function_offsets[function_id.function.idx()] as i32) - (i as i32) - 4;
-                text_section[i as usize..i as usize + 4].copy_from_slice(&offset.to_le_bytes());
+                let offset = function_offsets[function_id.function.idx()]
+                    .checked_signed_diff(i)
+                    .and_then(|i| i.checked_sub(4))
+                    .and_then(|i| i32::try_from(i).ok())
+                    .expect("Function call is out of range for i32 offset");
+
+                writer[text][i as usize..i as usize + 4].copy_from_slice(&offset.to_le_bytes());
             }
         }
-        let actual_text_idx = writer.section(
-            exe::elf::SectionHeader {
-                name: ".text".to_owned(),
-                ty: exe::elf::SectionHeaderType::Progbits,
-                flags: exe::elf::SectionHeaderFlags {
-                    alloc: true,
-                    execinstr: true,
-                    ..Default::default()
-                },
-                addr: 0,
-                link: SectionIdx::NONE,
-                info: 0,
-                addralign: 16,
-                entsize: 0,
-            },
-            text_section,
-        );
-        assert_eq!(text_idx as u32, actual_text_idx.0);
+
+        for (global_id, offset) in global_relocations {
+            rela.entry(exe::elf::relocation::Rela {
+                r_offset: offset,
+                sym: global_symtab_entries[global_id.idx as usize],
+                ty: exe::elf::relocation::RelaType::X86_64PC32,
+                r_addend: -4,
+            });
+        }
+
         let (symtab_header, symtab_contents) = symtab.finish(writer.strtab_idx());
 
         let symtab_idx = writer.section(symtab_header, symtab_contents);
-        let (rela_header, rela_contents) = rela.finish(actual_text_idx, symtab_idx);
+        let (rela_header, rela_contents) = rela.finish(text, symtab_idx);
         writer.section(rela_header, rela_contents);
 
         writer.write(out_file).map_err(Error::IO)?;

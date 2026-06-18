@@ -19,7 +19,7 @@ impl SymtabWriter {
             bind: Bind::Local,
             ty: Type::None,
             visibility: Visibility::Default,
-            section_index: 0,
+            section_index: SectionIdx::NONE,
             value: 0,
             size: 0,
         });
@@ -43,7 +43,7 @@ impl SymtabWriter {
         self.section.extend(entry.name_index.to_le_bytes());
         let info = ((entry.bind as u8) << 4) | (entry.ty as u8);
         self.section.extend([info, entry.visibility as u8]);
-        self.section.extend(entry.section_index.to_le_bytes());
+        self.section.extend(entry.section_index.0.to_le_bytes());
         self.section.extend(entry.value.to_le_bytes());
         self.section.extend(entry.size.to_le_bytes());
         SymtabIdx(idx)
@@ -75,7 +75,7 @@ pub struct Entry {
     pub bind: Bind,
     pub ty: Type,
     pub visibility: Visibility,
-    pub section_index: u16,
+    pub section_index: SectionIdx,
     pub value: u64,
     pub size: u64,
 }
