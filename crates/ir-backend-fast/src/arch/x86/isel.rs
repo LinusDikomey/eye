@@ -59,7 +59,7 @@ pub fn codegen(
 
     let mut ir = IrModify::new(body);
     let args = ir.get_block_args(BlockId::ENTRY);
-    abi.implement_params(args, &mut ir, env, isel.mc, &types, &regs);
+    abi.implement_params(args, &mut ir, env, isel.mc, isel.x86, &types, &regs);
     let mut ctx = IselCtx::new(
         main_module,
         env,
@@ -348,9 +348,18 @@ ir::visitor! {
     };
     (%r = arith.Div a b) => todo!("div") as ();
     (%r = arith.Rem a b) => todo!("rem") as ();
-    (%r = arith.Or a b) => {
-        x86.or_rr8(ctx.regs.get_one(a), ctx.regs.get_one(b))
-    };
+    (%r = arith.Or a b) => int_bin_op(ctx, ir, types, env, dialects, r, a, b, IntBinOp {
+        i8: [X86::or_rr8, X86::or_ri8],
+        i16: [X86::or_rr16, X86::or_ri16],
+        i32: [X86::or_rr32, X86::or_ri32],
+        i64: [X86::or_rr64, X86::or_ri64],
+    });
+    (%r = arith.And a b) => int_bin_op(ctx, ir, types, env, dialects, r, a, b, IntBinOp {
+        i8: [X86::and_rr8, X86::and_ri8],
+        i16: [X86::and_rr16, X86::and_ri16],
+        i32: [X86::and_rr32, X86::and_ri32],
+        i64: [X86::and_rr64, X86::and_ri64],
+    });
     (%r = arith.And a b) => {
         x86.and_rr8(ctx.regs.get_one(a), ctx.regs.get_one(b))
     };

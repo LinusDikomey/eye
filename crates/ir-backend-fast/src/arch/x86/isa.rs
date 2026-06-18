@@ -53,7 +53,31 @@ impl Reg {
         RegisterBits(1 << bit_index)
     }
 
-    pub const UNIQUE_BITS: [Self; 17] = [
+    pub const fn to_64_bits(self) -> Self {
+        use Reg::*;
+        match self {
+            rax | eax | ax | al | ah => rax,
+            rbx | ebx | bx | bl | bh => rbx,
+            rcx | ecx | cx | cl | ch => rcx,
+            rdx | edx | dx | dl | dh => rdx,
+            rbp | ebp | bp | bpl => rbp,
+            rsi | esi | si | sil => rsi,
+            rdi | edi | di | dil => rdi,
+            rsp | esp | sp | spl => rsp,
+            rip => rip,
+            r8 | r8d | r8w | r8b => r8,
+            r9 | r9d | r9w | r9b => r9,
+            r10 | r10d | r10w | r10b => r10,
+            r11 | r11d | r11w | r11b => r11,
+            r12 | r12d | r12w | r12b => r12,
+            r13 | r13d | r13w | r13b => r13,
+            r14 | r14d | r14w | r14b => r14,
+            r15 | r15d | r15w | r15b => r15,
+            eflags => eflags,
+        }
+    }
+
+    pub const UNIQUE_BITS: [Self; 18] = [
         Self::rax,
         Self::rbx,
         Self::rcx,
@@ -71,6 +95,7 @@ impl Reg {
         Self::r14,
         Self::r15,
         Self::eflags,
+        Self::rip,
     ];
 }
 
@@ -126,8 +151,25 @@ ir::instructions! {
 
     !all_return unit
 
-    or_rr8 a: MCReg(Usage::Use) b: MCReg(Usage::Use);
-    and_rr8 a: MCReg(Usage::Use) b: MCReg(Usage::Use);
+    or_rr8  a: MCReg(Usage::Use) b: MCReg(Usage::Use);
+    or_rr16 a: MCReg(Usage::Use) b: MCReg(Usage::Use);
+    or_rr32 a: MCReg(Usage::Use) b: MCReg(Usage::Use);
+    or_rr64 a: MCReg(Usage::Use) b: MCReg(Usage::Use);
+
+    or_ri8  a: MCReg(Usage::Use) b: MCReg(Usage::Use);
+    or_ri16 a: MCReg(Usage::Use) b: MCReg(Usage::Use);
+    or_ri32 a: MCReg(Usage::Use) b: MCReg(Usage::Use);
+    or_ri64 a: MCReg(Usage::Use) b: MCReg(Usage::Use);
+
+    and_rr8  a: MCReg(Usage::Use) b: MCReg(Usage::Use);
+    and_rr16 a: MCReg(Usage::Use) b: MCReg(Usage::Use);
+    and_rr32 a: MCReg(Usage::Use) b: MCReg(Usage::Use);
+    and_rr64 a: MCReg(Usage::Use) b: MCReg(Usage::Use);
+
+    and_ri8  a: MCReg(Usage::Use) b: MCReg(Usage::Use);
+    and_ri16 a: MCReg(Usage::Use) b: MCReg(Usage::Use);
+    and_ri32 a: MCReg(Usage::Use) b: MCReg(Usage::Use);
+    and_ri64 a: MCReg(Usage::Use) b: MCReg(Usage::Use);
 
     push_r64 reg: MCReg(Usage::Use);
     pop_r64 reg: MCReg(Usage::Def);
@@ -235,6 +277,16 @@ ir::instructions! {
     imul_rri32 dst: MCReg(Usage::Def) reg: MCReg(Usage::Use) imm: Int32;
     imul_rri64 dst: MCReg(Usage::Def) reg: MCReg(Usage::Use) imm: Int32;
 
+    shl_ri8  reg: MCReg(Usage::DefUse) imm: Int32;
+    shl_ri16 reg: MCReg(Usage::DefUse) imm: Int32;
+    shl_ri32 reg: MCReg(Usage::DefUse) imm: Int32;
+    shl_ri64 reg: MCReg(Usage::DefUse) imm: Int32;
+
+    shr_ri8  reg: MCReg(Usage::DefUse) imm: Int32;
+    shr_ri16 reg: MCReg(Usage::DefUse) imm: Int32;
+    shr_ri32 reg: MCReg(Usage::DefUse) imm: Int32;
+    shr_ri64 reg: MCReg(Usage::DefUse) imm: Int32;
+
     neg_r8 a: MCReg(Usage::DefUse);
     neg_r16 a: MCReg(Usage::DefUse);
     neg_r32 a: MCReg(Usage::DefUse);
@@ -283,6 +335,8 @@ impl X86 {
         match self {
             Self::or_rr8
             | Self::and_rr8
+            | Self::or_ri8
+            | Self::and_ri8
             | Self::mov_ri8
             | Self::mov_rm8
             | Self::mov_mr8
@@ -293,6 +347,8 @@ impl X86 {
             | Self::sub_rr8
             | Self::sub_ri8
             | Self::imul_r8
+            | Self::shl_ri8
+            | Self::shr_ri8
             | Self::neg_r8
             | Self::xor_ri8
             | Self::mov_rr8
@@ -303,7 +359,11 @@ impl X86 {
             | Self::movzx16_rr8
             | Self::movzx32_rr8 => Size::S8,
 
-            Self::mov_ri16
+            Self::or_rr16
+            | Self::and_rr16
+            | Self::or_ri16
+            | Self::and_ri16
+            | Self::mov_ri16
             | Self::mov_rm16
             | Self::mov_mr16
             | Self::cmp_rr16
@@ -313,6 +373,8 @@ impl X86 {
             | Self::sub_ri16
             | Self::imul_rr16
             | Self::imul_rri16
+            | Self::shl_ri16
+            | Self::shr_ri16
             | Self::neg_r16
             | Self::xor_ri16
             | Self::mov_rr16
@@ -321,7 +383,11 @@ impl X86 {
             | Self::movsx64_rr16
             | Self::movzx32_rr16 => Size::S16,
 
-            Self::mov_ri32
+            Self::or_rr32
+            | Self::and_rr32
+            | Self::or_ri32
+            | Self::and_ri32
+            | Self::mov_ri32
             | Self::mov_rr32
             | Self::mov_rm32
             | Self::mov_mr32
@@ -332,13 +398,19 @@ impl X86 {
             | Self::sub_ri32
             | Self::imul_rr32
             | Self::imul_rri32
+            | Self::shl_ri32
+            | Self::shr_ri32
             | Self::neg_r32
             | Self::xor_ri32
             | Self::lea_rm32
             | Self::xor_rr32
             | Self::movsx64_rr32 => Size::S32,
 
-            Self::push_r64
+            Self::or_rr64
+            | Self::and_rr64
+            | Self::or_ri64
+            | Self::and_ri64
+            | Self::push_r64
             | Self::pop_r64
             | Self::mov_ri64
             | Self::mov_rr64
@@ -351,6 +423,8 @@ impl X86 {
             | Self::sub_ri64
             | Self::imul_rr64
             | Self::imul_rri64
+            | Self::shl_ri64
+            | Self::shr_ri64
             | Self::neg_r64
             | Self::xor_ri64
             | Self::lea_rm64

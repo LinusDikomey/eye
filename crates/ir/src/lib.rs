@@ -38,7 +38,7 @@ pub use block_graph::BlockGraph;
 pub use builtins::{BUILTIN, Builtin};
 pub use dialect::Primitive;
 pub use environment::Environment;
-pub use layout::{Layout, offset_in_tuple, type_layout};
+pub use layout::{Layout, offset_in_tuple, type_layout, visit_primitives};
 
 pub struct ModuleOf<I>(ModuleId, PhantomData<*const I>);
 impl<I> ModuleOf<I> {

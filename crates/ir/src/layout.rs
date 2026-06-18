@@ -1,6 +1,6 @@
 use std::num::NonZeroU64;
 
-use crate::{PrimitiveInfo, Type, TypeIds, Types};
+use crate::{PrimitiveId, PrimitiveInfo, Type, TypeIds, Types};
 
 #[derive(Debug, Clone, Copy)]
 pub struct Layout {
@@ -29,8 +29,9 @@ impl Layout {
     }
 
     pub fn accumulate(&mut self, other: Self) {
+        self.align_for(other.align);
         self.align = self.align.max(other.align);
-        self.size = self.size.div_ceil(other.align.get()) * other.align.get() + other.size;
+        self.size += other.size;
     }
 
     pub fn accumulate_variant(&mut self, variant: Layout) {
@@ -60,6 +61,50 @@ pub fn type_layout(ty: Type, types: &Types, primitives: &[PrimitiveInfo]) -> Lay
             layout
         }
     }
+}
+
+pub fn visit_primitives<F: FnMut(PrimitiveId, u64)>(
+    ty: Type,
+    types: &Types,
+    primitives: &[PrimitiveInfo],
+    visit: F,
+) {
+    pub fn visit_primitives_inner<F: FnMut(PrimitiveId, u64)>(
+        ty: Type,
+        types: &Types,
+        primitives: &[PrimitiveInfo],
+        visit: &mut F,
+        offset: u64,
+    ) {
+        match ty {
+            Type::Primitive(id) => visit(id, offset),
+            Type::Array(elem, len) => {
+                let elem = types[elem];
+                let elem_layout = type_layout(elem, types, &[]);
+                for i in 0..len.into() {
+                    visit_primitives_inner(
+                        elem,
+                        types,
+                        primitives,
+                        visit,
+                        offset + i * elem_layout.stride(),
+                    );
+                }
+            }
+            Type::Tuple(items) => {
+                let mut layout = Layout::EMPTY;
+                for item in items.iter() {
+                    let item = types[item];
+                    let item_layout = type_layout(item, types, primitives);
+                    layout.align_for(item_layout.align);
+                    let offset = offset + layout.size;
+                    layout.size += item_layout.size;
+                    visit_primitives_inner(item, types, primitives, visit, offset);
+                }
+            }
+        }
+    }
+    visit_primitives_inner(ty, types, primitives, &mut { visit }, 0)
 }
 
 pub fn offset_in_tuple(

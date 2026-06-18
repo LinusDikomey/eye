@@ -12,6 +12,7 @@ pub trait Abi<I: McInst> {
         ir: &mut IrModify,
         env: &Environment,
         mc: ModuleOf<Mc>,
+        i: ModuleOf<I>,
         types: &Types,
         regs: &Slots<MCReg>,
     );

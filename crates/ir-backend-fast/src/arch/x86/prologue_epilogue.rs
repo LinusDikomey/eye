@@ -34,6 +34,12 @@ impl FunctionPass<BackendState> for PrologueEpilogueInsertion {
         let start = ir.get_original_block_start(BlockId::ENTRY);
         let x86 = self.x86;
 
+        let callee_saved_size = Reg::UNIQUE_BITS
+            .iter()
+            .filter(|reg| to_save & reg.bit() != super::isa::RegisterBits::default())
+            .count() as u32
+            * 8;
+
         if state.stack_size > 0 {
             ir.add_before(env, start, x86.push_r64(MCReg::from_phys(Reg::rbp)));
             ir.add_before(
@@ -41,7 +47,8 @@ impl FunctionPass<BackendState> for PrologueEpilogueInsertion {
                 start,
                 x86.mov_rr64(MCReg::from_phys(Reg::rbp), MCReg::from_phys(Reg::rsp)),
             );
-            state.stack_size = state.stack_size.next_multiple_of(16);
+            let final_stack_size = (state.stack_size + callee_saved_size).next_multiple_of(16);
+            state.stack_size = final_stack_size - callee_saved_size;
             ir.add_before(
                 env,
                 start,
