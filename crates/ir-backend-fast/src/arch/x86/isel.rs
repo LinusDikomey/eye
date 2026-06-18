@@ -7,7 +7,7 @@ use ir::{
     mc::{Abi, BackendState, IselCtx, Mc, parallel_copy},
     modify::IrModify,
     rewrite::{ReverseRewriteOrder, Rewrite},
-    slots::Slots,
+    slots::{self, Slots},
 };
 
 use crate::arch::x86::{Reg, X86, isa::Size};
@@ -240,9 +240,9 @@ ir::visitor! {
 
     use builtin: ir::Builtin;
     use arith: ir::dialect::Arith;
-    // use tuple: ir::dialect::Tuple;
-    use mem: ir::dialect::Mem;
     use cf: ir::dialect::Cf;
+    use mem: ir::dialect::Mem;
+    use tuple: ir::dialect::Tuple;
 
     use x86: X86;
     use mc: ir::mc::Mc;
@@ -250,6 +250,7 @@ ir::visitor! {
     patterns:
     (builtin.Undef) => {
         // don't need to do anything, registers are already allocated
+        Rewrite::Rename(Ref::UNIT)
     };
     (%r = arith.Int (#x)) => {
         let regs = ctx.regs.get(r);
@@ -597,6 +598,62 @@ ir::visitor! {
         ctx.abi.implement_call(r, ir, env, mc, x86, types, &ctx.regs, true);
         x86.call_r64(ptr)
     };
+    (%r = tuple.MemberValue tuple (#element)) => {
+        let Type::Tuple(elem_types) = types[ir.get_ref_ty(tuple)] else {
+            unreachable!()
+        };
+        let mut src = ctx.regs.get(tuple);
+        let dst = ctx.regs.get(r);
+        for (elem_ty, i) in elem_types.iter().zip(0..) {
+            let slot_count = slots::slot_count(types[elem_ty], types);
+            if i == element {
+                debug_assert_eq!(dst.len(), slot_count as usize);
+                debug_assert!(src.len() >= slot_count as usize);
+                // PERF: couldn't avoid having to collect here for now because adding args
+                // requires ExactSizeIterator, which flatten doesn't implement. Could definitely
+                // have a custom FlattenExact adapter for arrays that multipiles the size to prevent
+                // this (or maybe lift the Exact requirement in the future if possible)
+                let copy: Box<[_]> = dst.iter()
+                    .zip(src)
+                    .flat_map(|(&a, &b)| [a, b])
+                    .collect();
+                ir.replace(env, r, parallel_copy(mc, &copy));
+                break;
+            }
+            src = &src[slot_count as usize..];
+        }
+    };
+    (%r = tuple.InsertMember tuple (#element) value) => {
+        let Type::Tuple(elem_types) = types[ir.get_ref_ty(tuple)] else {
+            unreachable!()
+        };
+        let mut src = ctx.regs.get(tuple);
+        let mut dst = ctx.regs.get(r);
+        debug_assert_eq!(src.len(), dst.len());
+        for (elem_ty, i) in elem_types.iter().zip(0..) {
+            let slot_count = slots::slot_count(types[elem_ty], types);
+            let elem_src = if i == element {
+                let value_slots = ctx.regs.get(value);
+                debug_assert_eq!(value_slots.len(), slot_count as usize);
+                value_slots
+            } else {
+                &src[..slot_count as usize]
+            };
+            // PERF: couldn't avoid having to collect here for now because adding args
+            // requires ExactSizeIterator, which flatten doesn't implement. Could definitely
+            // have a custom FlattenExact adapter for arrays that multipiles the size to prevent
+            // this (or maybe lift the Exact requirement in the future if possible)
+            let copy: Box<[_]> = dst.iter()
+                .zip(elem_src)
+                .flat_map(|(&a, &b)| [a, b])
+                .collect();
+            ir.add_before(env, r, parallel_copy(mc, &copy));
+            src = &src[slot_count as usize..];
+            dst = &dst[slot_count as usize..];
+        }
+        debug_assert!(src.is_empty());
+        Rewrite::Rename(Ref::UNIT)
+    };
     (%r = _) => {
         if inst.module() == ctx.main_module {
             ctx.abi.implement_call(r, ir, env, mc, x86, types, &ctx.regs, false);
@@ -758,5 +815,9 @@ fn ptr_offset(
     let dst = ctx.regs.get_one(r);
     ctx.copy(env, r, mc, ir, &[dst, src]);
     // CODEGEN: more efficient pointer arithmetic special-casing. Can also share code with add
-    ir.replace(env, r, x86.add_ri64(dst, offset));
+    if offset == 0 {
+        ir.delete(env, r);
+    } else {
+        ir.replace(env, r, x86.add_ri64(dst, offset));
+    }
 }
