@@ -6,7 +6,7 @@ use ir::{
 };
 
 ir::mc::registers! { Reg RegisterBits
-    GP64 => rax rbx rcx rdx rbp rsi rdi rsp;
+    GP64 => rax rbx rcx rdx rbp rsi rdi rsp rip;
     GP32 => eax ebx ecx edx ebp esi edi esp;
     GP16 => ax  bx  cx  dx  bp  si  di  sp;
     GP8 =>  al  bl  cl  dl  bpl sil dil spl;
@@ -48,6 +48,7 @@ impl Reg {
             r14 | r14d | r14w | r14b => 14,
             r15 | r15d | r15w | r15b => 15,
             eflags => 16,
+            rip => 17,
         };
         RegisterBits(1 << bit_index)
     }
@@ -251,8 +252,10 @@ ir::instructions! {
 
     lea_rm32 to: MCReg(Usage::Def) addr: MCReg(Usage::Use) offset: Int32;
     lea_rm64 to: MCReg(Usage::Def) addr: MCReg(Usage::Use) offset: Int32;
+    lea_function to: MCReg(Usage::Def) function: FunctionId;
 
     call_function function: FunctionId;
+    call_r64 ptr: MCReg(Usage::Use);
 
     movsx16_rr8 dst: MCReg(Usage::Def) src: MCReg(Usage::Use);
     movsx32_rr8 dst: MCReg(Usage::Def) src: MCReg(Usage::Use);
@@ -350,7 +353,9 @@ impl X86 {
             | Self::neg_r64
             | Self::xor_ri64
             | Self::lea_rm64
-            | Self::xor_rr64 => Size::S64,
+            | Self::xor_rr64
+            | Self::lea_function
+            | Self::call_r64 => Size::S64,
 
             Self::ret0
             | Self::ret64
@@ -390,7 +395,7 @@ impl McInst for X86 {
             Self::cmp_rr32 => Reg::eflags.bit(),
             Self::add_rr8 | Self::add_rr16 | Self::add_rr32 | Self::add_rr64 => Reg::eflags.bit(),
             Self::sub_rr8 | Self::sub_rr16 | Self::sub_rr32 | Self::sub_rr64 => Reg::eflags.bit(),
-            Self::call_function => abi.caller_saved(),
+            Self::call_function | Self::call_r64 => abi.caller_saved(),
             _ => Reg::NO_BITS,
         }
     }

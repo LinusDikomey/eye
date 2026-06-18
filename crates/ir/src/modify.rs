@@ -68,6 +68,13 @@ impl IrModify {
         self.ir.args_n(inst)
     }
 
+    pub fn args_n_ignore_extra<'a, I: Inst + 'static, const N: usize>(
+        &'a self,
+        inst: &'a TypedInstruction<I>,
+    ) -> [Argument<'a>; N] {
+        self.ir.args_n_ignore_extra(inst)
+    }
+
     pub(crate) fn try_get_inst(&self, r: Ref) -> Result<&Instruction, ()> {
         debug_assert!(
             r.is_ref(),

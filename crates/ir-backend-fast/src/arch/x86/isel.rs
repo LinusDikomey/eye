@@ -58,7 +58,7 @@ pub fn codegen(
 
     let mut ir = IrModify::new(body);
     let args = ir.get_block_args(BlockId::ENTRY);
-    abi.implement_params(args, &mut ir, env, isel.mc, &types, &regs, unit);
+    abi.implement_params(args, &mut ir, env, isel.mc, &types, &regs);
     let mut ctx = IselCtx::new(
         main_module,
         env,
@@ -414,9 +414,6 @@ ir::visitor! {
     (%r = arith.CastFloat x) => todo!("CastFloat") as ();
     (%r = arith.CastIntToFloat x) => todo!("CastIntToFloat") as ();
     (%r = arith.CastFloatToInt x) => todo!("CastFloatToInt") as ();
-    (%r = cf.Ret value) => {
-        ctx.abi.implement_return(value, ir, env, mc, x86, types, &ctx.regs, r, ctx.unit);
-    };
     (%r = cf.Goto (@b b_args)) => {
         let b_args = b_args.to_vec();
         create_args_copy(ctx, env, r, mc, x86, ir, b, &b_args);
@@ -479,6 +476,9 @@ ir::visitor! {
         ir.add_before(env, r, x86.test_rr8(cond, cond));
         branch(ctx, ir, env, dialects, block, r, b1, b1_args, b2, b2_args, |b| x86.jne(b), |b| x86.je(b))
     };
+    (%r = cf.Ret value) => {
+        ctx.abi.implement_return(value, ir, env, mc, x86, types, &ctx.regs, r);
+    };
     (%r = mem.Decl (type ty)) => {
         let layout = ir::type_layout(types[ty], types, env.primitives());
         let offset = ctx.alloc_stack(layout);
@@ -529,10 +529,37 @@ ir::visitor! {
             Type::Array(_, _) | Type::Tuple(_) => todo!("store aggregrates"),
         }
     };
+    (%r = mem.MemberPtr ptr (type tuple_ty) (#idx)) => {
+        let Type::Tuple(elem_types) = types[tuple_ty] else {
+            unreachable!()
+        };
+        let offset = ir::offset_in_tuple(elem_types, idx as u32, types, env.primitives());
+        ptr_offset(ctx, ir, env, dialects, r, ptr, offset);
+    };
+    (%r = mem.IntToPtr x) => todo!("IntToPtr") as ();
+    (%r = mem.PtrToInt x) => todo!("PtrToInt") as ();
+    (%r = mem.Global) => todo!("globals") as ();
+    (%r = mem.ArrayIndex) => todo!("ArrayIndex") as ();
+    (%r = mem.Offset ptr (#offset)) => {
+        ptr_offset(ctx, ir, env, dialects, r, ptr, offset)
+    };
+    (%r = mem.FunctionPtr (fn id)) => {
+        let dst = ctx.regs.get_one(r);
+        x86.lea_function(dst, id)
+    };
+    (%r = mem.CallPtr .. ptr) => {
+        let ptr = ctx.regs.get_one(ptr);
+        ctx.abi.implement_call(r, ir, env, mc, x86, types, &ctx.regs, true);
+        x86.call_r64(ptr)
+    };
     (%r = _) => {
         if inst.module() == ctx.main_module {
-            let abi = ctx.abi;
-            abi.implement_call(r, ir, env, mc, x86, types, &ctx.regs, ctx.unit);
+            ctx.abi.implement_call(r, ir, env, mc, x86, types, &ctx.regs, false);
+            let function_id = ir::FunctionId {
+                module: inst.module(),
+                function: inst.function(),
+            };
+            ir.replace(env, r, x86.call_function(function_id));
         } else if inst.module() != dialects.x86.id() {
             todo!("unhandled instruction at {r}: {}", env.get_inst_name(ir.get_inst(r)));
         }
@@ -669,4 +696,22 @@ fn cmp_op(
             TypeId::UNIT,
         ),
     );
+}
+
+fn ptr_offset(
+    ctx: &mut IselCtx<X86>,
+    ir: &mut IrModify,
+    env: &Environment,
+    dialects: &InstructionSelector,
+    r: Ref,
+    ptr: Ref,
+    offset: u64,
+) {
+    let InstructionSelector { x86, mc, .. } = *dialects;
+    let offset = offset.try_into().expect("TODO: handle 64-bit offsets");
+    let src = ctx.regs.get_one(ptr);
+    let dst = ctx.regs.get_one(r);
+    ctx.copy(env, r, mc, ir, &[dst, src]);
+    // CODEGEN: more efficient pointer arithmetic special-casing. Can also share code with add
+    ir.replace(env, r, x86.add_ri64(dst, offset));
 }

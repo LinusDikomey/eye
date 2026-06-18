@@ -178,17 +178,6 @@ fn analyze_inst_liveness<I: McInst>(
                 return;
             }
         }
-    } else if let Some(inst) = ir.get_inst(inst_r).as_module(isa) {
-        let defs = inst.inst.implicit_def(abi);
-        let uses = inst.inst.implicit_use(abi);
-        // all physical regs used here are now alive
-        *live_precolored = *live_precolored | uses;
-        let defs_and_uses = defs | uses;
-        if defs_and_uses != I::Reg::NO_BITS {
-            live.visit_set_bits(|vreg| {
-                intersecting_precolored[vreg] = intersecting_precolored[vreg] | defs_and_uses;
-            });
-        }
     }
 
     for arg in ir.args_mut(inst_r, env) {
@@ -211,6 +200,21 @@ fn analyze_inst_liveness<I: McInst>(
             } else if usage == Usage::Def {
                 live.set(i, false);
             }
+        }
+    }
+
+    // make implicit defs available again *after* handling all normal arg liveness so the registers
+    // don't ge reused too early
+    if let Some(inst) = ir.get_inst(inst_r).as_module(isa) {
+        let defs = inst.inst.implicit_def(abi);
+        let uses = inst.inst.implicit_use(abi);
+        // all physical regs used here are now alive
+        *live_precolored = *live_precolored | uses;
+        let defs_and_uses = defs | uses;
+        if defs_and_uses != I::Reg::NO_BITS {
+            live.visit_set_bits(|vreg| {
+                intersecting_precolored[vreg] = intersecting_precolored[vreg] | defs_and_uses;
+            });
         }
     }
 }

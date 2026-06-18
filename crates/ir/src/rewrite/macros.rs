@@ -39,6 +39,11 @@ macro_rules! arg {
             unreachable!("invalid argument type, expected GlobalId");
         };
     };
+    ($modules: ident, $ir: ident, $env: ident, $arg: ident, (fn $function: ident)) => {
+        let $crate::Argument::FunctionId($function) = $arg else {
+            unreachable!("invalid argument type, expected FunctionId");
+        };
+    };
     ($modules: ident, $ir: ident, $env: ident, $arg: ident, $($inner: tt)*) => {
         let $crate::Argument::Ref(r) = $arg else {
             unreachable!("invalid argument type, expected Ref");
@@ -104,6 +109,16 @@ macro_rules! pattern_ref {
         $(
             let $out_r = $r;
         )?
+    };
+    ($modules: ident, $ir: ident, $env: ident, $inst: expr, $r: ident, ($(% $out_r: ident =)? $module: ident. $matched_inst: ident .. $($arg: tt)*)) => {
+        let inst = $inst.as_module($modules.$module)?;
+        $(
+            let $out_r = $r;
+        )?
+        if inst.op() != $module::$matched_inst {
+            return ::core::option::Option::None;
+        }
+        $crate::args!($modules, $ir, $env, $ir.args_n_ignore_extra(&inst), $($arg)*);
     };
     ($modules: ident, $ir: ident, $env: ident, $inst: expr, $r: ident, ($(% $out_r: ident =)? $module: ident. $matched_inst: ident $($arg: tt)*)) => {
         let inst = $inst.as_module($modules.$module)?;

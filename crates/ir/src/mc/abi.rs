@@ -1,5 +1,5 @@
 use crate::{
-    Environment, MCReg, ModuleOf, Ref, Refs, TypeId, Types,
+    Environment, MCReg, ModuleOf, Ref, Refs, Types,
     mc::{Mc, McInst, Register},
     modify::IrModify,
     slots::Slots,
@@ -14,7 +14,6 @@ pub trait Abi<I: McInst> {
         mc: ModuleOf<Mc>,
         types: &Types,
         regs: &Slots<MCReg>,
-        unit: TypeId,
     );
     fn implement_call(
         &self,
@@ -25,7 +24,7 @@ pub trait Abi<I: McInst> {
         i: ModuleOf<I>,
         types: &Types,
         regs: &Slots<MCReg>,
-        unit: TypeId,
+        skip_first_arg: bool,
     );
     fn implement_return(
         &self,
@@ -37,7 +36,6 @@ pub trait Abi<I: McInst> {
         types: &Types,
         regs: &Slots<MCReg>,
         r: Ref,
-        unit: TypeId,
     );
     fn callee_saved(&self) -> <I::Reg as Register>::RegisterBits;
     fn caller_saved(&self) -> <I::Reg as Register>::RegisterBits;

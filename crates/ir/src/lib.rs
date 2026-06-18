@@ -778,12 +778,20 @@ impl FunctionIr {
         args_array
     }
 
+    pub fn args_n_ignore_extra<'a, I: Inst + 'static, const N: usize>(
+        &'a self,
+        inst: &'a TypedInstruction<I>,
+    ) -> [Argument<'a>; N] {
+        let mut args = self.typed_args_iter(inst);
+        std::array::from_fn(|_| args.next().expect("not enough args"))
+    }
+
     pub fn args_mut<'a>(&'a mut self, r: Ref, env: &'a Environment) -> ArgIterMut<'a> {
         let inst = &mut self.insts[r.idx()];
         let func = &env[inst.function];
         let params = func.params();
         let param_count = params.iter().map(|p| p.slot_count()).sum();
-        let (storage, vararg_count) = if params.len() <= INLINE_ARGS && func.varargs.is_none() {
+        let (storage, vararg_count) = if param_count <= INLINE_ARGS && func.varargs.is_none() {
             (&mut inst.args[..param_count], 0)
         } else {
             let vararg_count = if func.varargs.is_some() {

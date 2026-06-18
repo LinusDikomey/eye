@@ -315,9 +315,25 @@ pub fn write(
                     text.extend(opcode);
                     modrm_rm(text, off, a, b);
                 }
+                I::lea_function => {
+                    let (dst, function) = ir.args(i, env);
+                    // lea dst [rip + offset]
+                    let relocation_offset = disp32(text, &[0x8D], dst);
+                    relocations.push((function, relocation_offset));
+                }
                 I::call_function => {
                     relocations.push((ir.args(i, env), text.len() as u32 + 1));
                     text.extend([0xE8, 0, 0, 0, 0]);
+                }
+                I::call_r64 => {
+                    let r = ir.args(i, env);
+                    let ra = encode_reg(r);
+                    let rex = encode_rex(false, false, false, ra.ext(), ra.force());
+                    debug_assert!(!(ra.prevents_rex() && rex != 0));
+                    if rex != 0 {
+                        text.push(rex);
+                    }
+                    text.extend([0xFF, MODRM_RR | (2 << 3) | ra.bits]);
                 }
                 I::movsx16_rr8 | I::movsx32_rr8 | I::movsx64_rr8 => {
                     let size = match op {
@@ -377,6 +393,21 @@ fn modrm_rm(text: &mut Vec<u8>, mut offset: OffsetClass, reg: EncodedReg, rm: En
         text.push(0x24);
     }
     offset.write(text);
+}
+
+/// emits an instruction with a placeholder disp32 (rip-relative address) and returns the offset
+/// of that offset placeholder to be used for emitting a relocation
+fn disp32(text: &mut Vec<u8>, opcode: &[u8], reg: Reg) -> u32 {
+    let r = encode_reg(reg);
+    let rex = encode_rex(true, r.ext(), false, false, r.force());
+    if rex != 0 {
+        text.push(rex);
+    }
+    text.extend_from_slice(opcode);
+    text.push(r.bits << 3 | 0b101);
+    let relocation_offset = text.len().try_into().expect("text segment is too large");
+    text.extend([0; 4]);
+    relocation_offset
 }
 
 fn inst_r(text: &mut Vec<u8>, opcode: &[u8], a: Reg, extension: u8, wide: bool) {
@@ -642,7 +673,7 @@ fn encode_reg(r: Reg) -> EncodedReg {
         r14b | r14w | r14 | r14d => (6, RegKind::Extended),
         r15b | r15w | r15 | r15d => (7, RegKind::Extended),
 
-        eflags => unreachable!(),
+        eflags | rip => unreachable!(),
     };
     EncodedReg { bits, kind }
 }

@@ -123,13 +123,12 @@ pub struct StackSlot {
 pub fn parallel_copy(
     mc: ModuleOf<Mc>,
     args: &[MCReg],
-    unit: crate::TypeId,
-) -> (FunctionId, impl crate::IntoArgs<'_>, crate::TypeId) {
+) -> (FunctionId, impl crate::IntoArgs<'_>, TypeId) {
     let f = crate::FunctionId {
         module: mc.id(),
         function: Mc::Copy.id(),
     };
-    (f, ((), args), unit)
+    (f, ((), args), TypeId::UNIT)
 }
 
 pub fn parallel_copy_args(
@@ -303,7 +302,7 @@ impl<'a, I: McInst> IselCtx<'a, I> {
         ir: &mut IrModify,
         args: &[MCReg],
     ) {
-        ir.add_before(env, before, parallel_copy(mc, args, self.unit));
+        ir.add_before(env, before, parallel_copy(mc, args));
     }
 }
 
