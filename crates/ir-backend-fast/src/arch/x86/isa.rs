@@ -231,9 +231,9 @@ ir::instructions! {
     imul_rr32 a: MCReg(Usage::DefUse) b: MCReg(Usage::Use);
     imul_rr64 a: MCReg(Usage::DefUse) b: MCReg(Usage::Use);
 
-    imul_ri16 reg: MCReg(Usage::DefUse) imm: Int32;
-    imul_ri32 reg: MCReg(Usage::DefUse) imm: Int32;
-    imul_ri64 reg: MCReg(Usage::DefUse) imm: Int32;
+    imul_rri16 dst: MCReg(Usage::Def) reg: MCReg(Usage::Use) imm: Int32;
+    imul_rri32 dst: MCReg(Usage::Def) reg: MCReg(Usage::Use) imm: Int32;
+    imul_rri64 dst: MCReg(Usage::Def) reg: MCReg(Usage::Use) imm: Int32;
 
     neg_r8 a: MCReg(Usage::DefUse);
     neg_r16 a: MCReg(Usage::DefUse);
@@ -311,7 +311,7 @@ impl X86 {
             | Self::sub_rr16
             | Self::sub_ri16
             | Self::imul_rr16
-            | Self::imul_ri16
+            | Self::imul_rri16
             | Self::neg_r16
             | Self::xor_ri16
             | Self::mov_rr16
@@ -330,7 +330,7 @@ impl X86 {
             | Self::sub_rr32
             | Self::sub_ri32
             | Self::imul_rr32
-            | Self::imul_ri32
+            | Self::imul_rri32
             | Self::neg_r32
             | Self::xor_ri32
             | Self::lea_rm32
@@ -349,7 +349,7 @@ impl X86 {
             | Self::sub_rr64
             | Self::sub_ri64
             | Self::imul_rr64
-            | Self::imul_ri64
+            | Self::imul_rri64
             | Self::neg_r64
             | Self::xor_ri64
             | Self::lea_rm64

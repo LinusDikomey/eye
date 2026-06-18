@@ -1,4 +1,4 @@
-use crate::{FunctionIr, Primitive, Ref, Type, Types};
+use crate::{FunctionIr, Primitive, PrimitiveInfo, Ref, Type, Types};
 
 pub struct Slots<V> {
     pub slots: Vec<V>,
@@ -57,86 +57,144 @@ impl<V: Copy> Slots<V> {
         &self.slots[start..end]
     }
 
-    pub fn visit_primitive_slots<E, F: FnMut(&[V], Primitive) -> Result<(), E>>(
+    pub fn visit_primitive_slots<E, F: FnMut(&[V], Primitive, u64) -> Result<(), E>>(
         &self,
         r: Ref,
         ty: Type,
         types: &Types,
+        primitives: &[PrimitiveInfo],
         visit: F,
     ) -> Result<(), E> {
         self.visit_primitive_slots_inner(
             &mut { self.slot_map[r.into_ref().expect("Can't get slots for value Ref") as usize] },
             ty,
             types,
+            primitives,
             &mut { visit },
+            0,
         )
     }
 
-    pub fn visit_primitive_slots_inner<E, F: FnMut(&[V], Primitive) -> Result<(), E>>(
+    pub fn visit_primitive_slots_inner<E, F: FnMut(&[V], Primitive, u64) -> Result<(), E>>(
         &self,
         i: &mut u32,
         ty: Type,
         types: &Types,
+        primitives: &[PrimitiveInfo],
         visit: &mut F,
+        mut offset: u64,
     ) -> Result<(), E> {
         match ty {
             Type::Primitive(id) => {
                 let p = Primitive::try_from(id).unwrap();
                 let slot_count = primitive_slot_count(p);
-                visit(&self.slots[*i as usize..(*i + slot_count) as usize], p)?;
+                visit(
+                    &self.slots[*i as usize..(*i + slot_count) as usize],
+                    p,
+                    offset,
+                )?;
                 *i += slot_count;
             }
             Type::Array(elem, len) => {
+                let elem_layout = crate::type_layout(types[elem], types, primitives);
                 for _ in 0..len {
-                    self.visit_primitive_slots_inner(i, types[elem], types, visit)?;
+                    self.visit_primitive_slots_inner(
+                        i,
+                        types[elem],
+                        types,
+                        primitives,
+                        visit,
+                        offset,
+                    )?;
+                    offset += elem_layout.stride();
                 }
             }
             Type::Tuple(elems) => {
                 for elem in elems.iter() {
-                    self.visit_primitive_slots_inner(i, types[elem], types, visit)?;
+                    let elem_layout = crate::type_layout(types[elem], types, primitives);
+                    self.visit_primitive_slots_inner(
+                        i,
+                        types[elem],
+                        types,
+                        primitives,
+                        visit,
+                        offset,
+                    )?;
+                    offset += elem_layout.stride();
                 }
             }
         }
         Ok(())
     }
 
-    pub fn visit_primitive_slots_mut<E, F: FnMut(&mut [V], Primitive) -> Result<(), E>>(
+    pub fn visit_primitive_slots_mut<E, F: FnMut(&mut [V], Primitive, u64) -> Result<(), E>>(
         &mut self,
         r: Ref,
         ty: Type,
         types: &Types,
+        primitives: &[PrimitiveInfo],
         visit: F,
     ) -> Result<(), E> {
         self.visit_primitive_slots_mut_inner(
             &mut { self.slot_map[r.into_ref().expect("Can't get slots for value Ref") as usize] },
             ty,
             types,
+            primitives,
             &mut { visit },
+            0,
         )
     }
 
-    pub fn visit_primitive_slots_mut_inner<E, F: FnMut(&mut [V], Primitive) -> Result<(), E>>(
+    pub fn visit_primitive_slots_mut_inner<
+        E,
+        F: FnMut(&mut [V], Primitive, u64) -> Result<(), E>,
+    >(
         &mut self,
         i: &mut u32,
         ty: Type,
         types: &Types,
+        primitives: &[PrimitiveInfo],
         visit: &mut F,
+        mut offset: u64,
     ) -> Result<(), E> {
         match ty {
             Type::Primitive(id) => {
                 let p = Primitive::try_from(id).unwrap();
                 let slot_count = primitive_slot_count(p);
-                visit(&mut self.slots[*i as usize..(*i + slot_count) as usize], p)?;
+                visit(
+                    &mut self.slots[*i as usize..(*i + slot_count) as usize],
+                    p,
+                    offset,
+                )?;
                 *i += slot_count;
             }
             Type::Array(elem, len) => {
+                let elem_layout = crate::type_layout(types[elem], types, primitives);
                 for _ in 0..len {
-                    self.visit_primitive_slots_mut_inner(i, types[elem], types, visit)?;
+                    self.visit_primitive_slots_mut_inner(
+                        i,
+                        types[elem],
+                        types,
+                        primitives,
+                        visit,
+                        offset,
+                    )?;
+                    offset += elem_layout.stride();
                 }
             }
             Type::Tuple(elems) => {
                 for elem in elems.iter() {
-                    self.visit_primitive_slots_mut_inner(i, types[elem], types, visit)?;
+                    let elem_layout = crate::type_layout(types[elem], types, primitives);
+                    offset = offset.div_ceil(elem_layout.align.get()) * elem_layout.align.get();
+                    self.visit_primitive_slots_mut_inner(
+                        i,
+                        types[elem],
+                        types,
+                        primitives,
+                        visit,
+                        offset,
+                    )?;
+                    offset += elem_layout.size;
                 }
             }
         }

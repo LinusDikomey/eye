@@ -582,33 +582,25 @@ pub fn eval<E: EvalEnvironment>(
                     }
                     I::Store => {
                         let (var, val) = ir.args(inst, env.env());
-                        let mut ptr = get_ptr_ref(&values, var);
-                        values.visit_primitives(val, ir, types, |p| {
-                            match p {
-                                PrimitiveVal::I8(x) => {
-                                    let new_ptr = ptr.add_offset(1)?;
-                                    mem.store(ptr, &[x]);
-                                    ptr = new_ptr;
+                        let ptr = get_ptr_ref(&values, var);
+                        values.visit_primitives(
+                            val,
+                            ir,
+                            types,
+                            env.env().primitives(),
+                            |p, offset| {
+                                let offset = offset.try_into().expect("Support large offsets");
+                                let ptr = ptr.add_offset(offset)?;
+                                match p {
+                                    PrimitiveVal::I8(x) => mem.store(ptr, &[x]),
+                                    PrimitiveVal::I16(x) => mem.store(ptr, &x.to_le_bytes()),
+                                    PrimitiveVal::I32(x) => mem.store(ptr, &x.to_le_bytes()),
+                                    PrimitiveVal::I64(x) => mem.store(ptr, &x.to_le_bytes()),
+                                    PrimitiveVal::I128(_) => todo!(),
                                 }
-                                PrimitiveVal::I16(x) => {
-                                    let new_ptr = ptr.add_offset(2)?;
-                                    mem.store(ptr, &x.to_le_bytes());
-                                    ptr = new_ptr;
-                                }
-                                PrimitiveVal::I32(x) => {
-                                    let new_ptr = ptr.add_offset(4)?;
-                                    mem.store(ptr, &x.to_le_bytes());
-                                    ptr = new_ptr;
-                                }
-                                PrimitiveVal::I64(x) => {
-                                    let new_ptr = ptr.add_offset(8)?;
-                                    mem.store(ptr, &x.to_le_bytes());
-                                    ptr = new_ptr;
-                                }
-                                PrimitiveVal::I128(_) => todo!(),
-                            }
-                            Ok(())
-                        })?;
+                                Ok(())
+                            },
+                        )?;
                         Val::Invalid
                     }
                     I::MemberPtr => {
@@ -1144,12 +1136,13 @@ impl Values {
         r: Ref,
         ir: &FunctionIr,
         types: &Types,
-        mut visit: impl FnMut(PrimitiveVal) -> Result<(), Error>,
+        primitives: &[PrimitiveInfo],
+        mut visit: impl FnMut(PrimitiveVal, u64) -> Result<(), Error>,
     ) -> Result<(), Error> {
         match r {
             Ref::UNIT => Ok(()),
-            Ref::TRUE => visit(PrimitiveVal::I8(1)),
-            Ref::FALSE => visit(PrimitiveVal::I8(0)),
+            Ref::TRUE => visit(PrimitiveVal::I8(1), 0),
+            Ref::FALSE => visit(PrimitiveVal::I8(0), 0),
             _ => {
                 let ty = types[ir.get_inst(r).ty];
                 let slot_index = self.slot_map[r.0 as usize];
@@ -1157,24 +1150,26 @@ impl Values {
                     &mut { slot_index },
                     ty,
                     types,
-                    &mut move |slots, p| match p {
+                    primitives,
+                    &mut move |slots, p, offset| match p {
                         Primitive::I8 | Primitive::U8 | Primitive::I1 => {
-                            visit(PrimitiveVal::I8(slots[0] as u8))
+                            visit(PrimitiveVal::I8(slots[0] as u8), offset)
                         }
                         Primitive::I16 | Primitive::U16 => {
-                            visit(PrimitiveVal::I16(slots[0] as u16))
+                            visit(PrimitiveVal::I16(slots[0] as u16), offset)
                         }
                         Primitive::I32 | Primitive::U32 | Primitive::F32 => {
-                            visit(PrimitiveVal::I32(slots[0] as u32))
+                            visit(PrimitiveVal::I32(slots[0] as u32), offset)
                         }
                         Primitive::I64 | Primitive::U64 | Primitive::F64 | Primitive::Ptr => {
-                            visit(PrimitiveVal::I64(slots[0]))
+                            visit(PrimitiveVal::I64(slots[0]), offset)
                         }
                         Primitive::I128 | Primitive::U128 => {
                             let value = ((slots[0] as u128) << 64) | slots[1] as u128;
-                            visit(PrimitiveVal::I128(value))
+                            visit(PrimitiveVal::I128(value), offset)
                         }
                     },
+                    0,
                 )
             }
         }

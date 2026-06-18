@@ -37,7 +37,8 @@ pub fn codegen(
             r,
             types[body.get_ref_ty(r)],
             types,
-            |regs, p| {
+            env.primitives(),
+            |regs, p, _offset| {
                 use Primitive as P;
                 match p {
                     P::I1 | P::I8 | P::U8 => regs[0] = body.new_reg(ir::mc::RegClass::GP8),
@@ -316,23 +317,20 @@ ir::visitor! {
         i32: [X86::sub_rr32, X86::sub_ri32],
         i64: [X86::sub_rr64, X86::sub_ri64],
     });
-    (%r = arith.Mul a (arith.Int (#x))) => {
+    (%r = arith.Mul a (arith.Int (#i))) => {
         let primitive = primitive_of_ref(r, ir, types);
         match primitive {
             Primitive::I1 => todo!(),
             Primitive::I8 => {
                 let a = ctx.regs.get_one(a);
                 let out = ctx.regs.get_one(r);
-                ctx.copy(env, r, mc, ir, &[out, a]);
-                // TODO: figure out how to truncate
-                ir.add_before(env, r, x86.imul_ri16(out, x as _));
+                ir.add_before(env, r, x86.imul_rri16(out, a, i as _));
                 ir.replace_with(env, r, Ref::UNIT);
             }
             Primitive::I16 => {
                 let a = ctx.regs.get_one(a);
                 let out = ctx.regs.get_one(r);
-                ctx.copy(env, r, mc, ir, &[out, a]);
-                ir.replace(env, r, x86.imul_ri16(out, x as _));
+                ir.replace(env, r, x86.imul_rri16(out, a, i as _));
             }
             Primitive::I32 => todo!(),
             Primitive::I64 => todo!(),
@@ -487,47 +485,59 @@ ir::visitor! {
     };
     (%r = mem.Load ptr) => {
         let ptr = ctx.regs.get_one(ptr);
-        match types[ir.get_ref_ty(r)] {
-            Type::Primitive(primitive_id) => match Primitive::try_from(primitive_id).unwrap() {
-                Primitive::I1 | Primitive::I8 | Primitive::U8 => {
-                    ir.replace(env, r, x86.mov_rm8(ctx.regs.get_one(r), ptr, 0));
+        let ty = types[ir.get_ref_ty(r)];
+        ctx.regs.visit_primitive_slots::<Infallible, _>(
+            r, ty, types, env.primitives(),
+            |regs, primitive, offset| {
+                let offset = offset.try_into().expect("TODO: handle large offsets");
+                match primitive {
+                    Primitive::I1 | Primitive::I8 | Primitive::U8 => {
+                        ir.add_before(env, r, x86.mov_rm8(regs[0], ptr, offset));
+                    }
+                    Primitive::I16 | Primitive::U16 => {
+                        ir.add_before(env, r, x86.mov_rm16(regs[0], ptr, offset));
+                    }
+                    Primitive::I32 | Primitive::U32 => {
+                        ir.add_before(env, r, x86.mov_rm32(regs[0], ptr, offset));
+                    }
+                    Primitive::I64 | Primitive::U64 | Primitive::Ptr => {
+                        ir.add_before(env, r, x86.mov_rm64(regs[0], ptr, offset));
+                    }
+                    Primitive::F32 | Primitive::F64 => todo!("load floats"),
+                    Primitive::I128 | Primitive::U128 => todo!("load 128-bit integers"),
                 }
-                Primitive::I16 | Primitive::U16 => {
-                    ir.replace(env, r, x86.mov_rm16(ctx.regs.get_one(r), ptr, 0));
-                }
-                Primitive::I32 | Primitive::U32 => {
-                    ir.replace(env, r, x86.mov_rm32(ctx.regs.get_one(r), ptr, 0));
-                }
-                Primitive::I64 | Primitive::U64 | Primitive::Ptr => {
-                    ir.replace(env, r, x86.mov_rm64(ctx.regs.get_one(r), ptr, 0));
-                }
-                Primitive::F32 | Primitive::F64 => todo!("load floats"),
-                Primitive::I128 | Primitive::U128 => todo!("load 128-bit integers"),
+                Ok(())
             }
-            Type::Array(_, _) | Type::Tuple(_) => todo!("load aggregrates"),
-        }
+        );
+        Rewrite::Rename(Ref::UNIT)
     };
     (%r = mem.Store ptr value) => {
         let ptr = ctx.regs.get_one(ptr);
-        match types[ir.get_ref_ty(value)] {
-            Type::Primitive(primitive_id) => match Primitive::try_from(primitive_id).unwrap() {
-                Primitive::I1 | Primitive::I8 | Primitive::U8 => {
-                    ir.replace(env, r, x86.mov_mr8(ptr, 0, ctx.regs.get_one(value)));
+        let ty = types[ir.get_ref_ty(value)];
+        ctx.regs.visit_primitive_slots::<Infallible, _>(
+            value, ty, types, env.primitives(),
+            |regs, primitive, offset| {
+                let offset = offset.try_into().expect("TODO: handle large offsets");
+                match primitive {
+                        Primitive::I1 | Primitive::I8 | Primitive::U8 => {
+                            ir.add_before(env, r, x86.mov_mr8(ptr, offset, regs[0]));
+                        }
+                        Primitive::I16 | Primitive::U16 => {
+                            ir.add_before(env, r, x86.mov_mr16(ptr, offset, regs[0]));
+                        }
+                        Primitive::I32 | Primitive::U32 => {
+                            ir.add_before(env, r, x86.mov_mr32(ptr, offset, regs[0]));
+                        }
+                        Primitive::I64 | Primitive::U64 | Primitive::Ptr => {
+                            ir.add_before(env, r, x86.mov_mr64(ptr, offset, regs[0]));
+                        }
+                        Primitive::F32 | Primitive::F64 => todo!("store floats"),
+                        Primitive::I128 | Primitive::U128 => todo!("store 128-bit integers"),
                 }
-                Primitive::I16 | Primitive::U16 => {
-                    ir.replace(env, r, x86.mov_mr16(ptr, 0, ctx.regs.get_one(value)));
-                }
-                Primitive::I32 | Primitive::U32 => {
-                    ir.replace(env, r, x86.mov_mr32(ptr, 0, ctx.regs.get_one(value)));
-                }
-                Primitive::I64 | Primitive::U64 | Primitive::Ptr => {
-                    ir.replace(env, r, x86.mov_mr64(ptr, 0, ctx.regs.get_one(value)));
-                }
-                Primitive::F32 | Primitive::F64 => todo!("store floats"),
-                Primitive::I128 | Primitive::U128 => todo!("store 128-bit integers"),
+                Ok(())
             }
-            Type::Array(_, _) | Type::Tuple(_) => todo!("store aggregrates"),
-        }
+        );
+        Rewrite::Rename(Ref::UNIT)
     };
     (%r = mem.MemberPtr ptr (type tuple_ty) (#idx)) => {
         let Type::Tuple(elem_types) = types[tuple_ty] else {
@@ -539,7 +549,18 @@ ir::visitor! {
     (%r = mem.IntToPtr x) => todo!("IntToPtr") as ();
     (%r = mem.PtrToInt x) => todo!("PtrToInt") as ();
     (%r = mem.Global) => todo!("globals") as ();
-    (%r = mem.ArrayIndex) => todo!("ArrayIndex") as ();
+    (%r = mem.ArrayIndex array_ptr (type elem_ty) idx) => {
+        // CODEGEN: use more efficient addressing modes
+        let stride = ir::type_layout(types[elem_ty], types, env.primitives()).stride();
+        let array_ptr = ctx.regs.get_one(array_ptr);
+        let idx = ctx.regs.get_one(idx);
+        let dst = ctx.regs.get_one(r);
+        let stride = stride.try_into().expect("TODO: support large array stride");
+        // dst = idx * stride
+        ir.add_before(env, r, x86.imul_rri64(dst, idx, stride));
+        // dst += array_ptr
+        x86.add_rr64(dst, array_ptr)
+    };
     (%r = mem.Offset ptr (#offset)) => {
         ptr_offset(ctx, ir, env, dialects, r, ptr, offset)
     };

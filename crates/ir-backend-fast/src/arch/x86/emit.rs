@@ -284,9 +284,8 @@ pub fn write(
                     }
                     inst_rr_legacy(text, &[0x0F, 0xAF], ir.args(i, env), op == I::imul_rr64)
                 }
-                I::imul_ri16 => inst_ri16(text, &[0x69], ir.args(i, env), 0),
-                I::imul_ri32 | I::imul_ri64 => {
-                    inst_ri32(text, &[0x69], ir.args(i, env), op == I::imul_ri64, 0);
+                I::imul_rri16 | I::imul_rri32 | I::imul_rri64 => {
+                    inst_rri(text, op.size(), &[], &[0x69], ir.args(i, env));
                 }
                 I::neg_r8 => inst_r(text, &[0xF6], ir.args(i, env), 3, false),
                 I::neg_r16 | I::neg_r32 | I::neg_r64 => {
@@ -515,15 +514,28 @@ fn inst_ri(
     }
 }
 
-fn inst_ri16(text: &mut Vec<u8>, opcode: &[u8], (r, imm): (Reg, u32), i: u8) {
-    text.push(P16);
-    let modrm = encode_modrm_ri(r, false, i);
+fn inst_rri(
+    text: &mut Vec<u8>,
+    size: Size,
+    opcode_8: &[u8],
+    opcode: &[u8],
+    (a, b, imm): (Reg, Reg, u32),
+) {
+    if size == Size::S16 {
+        text.push(P16);
+    }
+    let modrm = encode_modrm_rr(a, b, size == Size::S64);
     if modrm.rex != 0 {
         text.push(modrm.rex);
     }
-    text.extend(opcode);
+    text.extend(if size == Size::S8 { opcode_8 } else { opcode });
     text.push(modrm.modrm);
-    text.extend((imm as u16).to_le_bytes());
+    match size {
+        Size::S8 => text.push(imm as u8),
+        Size::S16 => text.extend((imm as u16).to_le_bytes()),
+        Size::S32 | Size::S64 => text.extend(imm.to_le_bytes()),
+        Size::S128 => unreachable!(), // no 128-bit register instructions used
+    }
 }
 
 fn inst_ri32(text: &mut Vec<u8>, opcode: &[u8], (r, imm): (Reg, u32), wide: bool, i: u8) {

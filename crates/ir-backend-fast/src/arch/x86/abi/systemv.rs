@@ -66,7 +66,8 @@ impl Abi<X86> for SystemV {
                 arg,
                 types[ir.get_ref_ty(arg)],
                 types,
-                |regs, ty| {
+                env.primitives(),
+                |regs, ty, _offset| {
                     let mut copy = |args| {
                         ir.add_before(env, before, ir::mc::parallel_copy(mc, args));
                     };
@@ -127,7 +128,8 @@ impl Abi<X86> for SystemV {
                 arg,
                 types[ir.get_ref_ty(arg)],
                 types,
-                |regs, p| {
+                env.primitives(),
+                |regs, p, _offset| {
                     match p {
                         Primitive::I1 | Primitive::I8 | Primitive::U8 => {
                             copies.extend([MCReg::from_phys(abi_regs.next().unwrap()[3]), regs[0]]);
