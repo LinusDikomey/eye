@@ -31,6 +31,17 @@ impl<V: Copy> Slots<V> {
         &self.slots[start..end]
     }
 
+    pub fn get_mut(&mut self, r: Ref) -> &mut [V] {
+        let r = r.into_ref().expect("Can't get slots for value ref") as usize;
+        let start = self.slot_map[r] as usize;
+        let end = self
+            .slot_map
+            .get(r + 1)
+            .map(|i| *i as usize)
+            .unwrap_or(self.slots.len());
+        &mut self.slots[start..end]
+    }
+
     pub fn get_one(&self, r: Ref) -> V {
         let r = r.into_ref().expect("Can't get slot for value ref") as usize;
         let slot = self.slot_map[r] as usize;

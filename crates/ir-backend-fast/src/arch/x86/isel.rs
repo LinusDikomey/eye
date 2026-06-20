@@ -3,7 +3,7 @@ use std::convert::Infallible;
 use ir::{
     BlockGraph, BlockId, Environment, FunctionId, FunctionIr, IntoArgs, MCReg, ModuleId, ModuleOf,
     Primitive, Ref, Type, TypeId, Types,
-    dialect::Arith,
+    dialect::{Arith, Tuple},
     mc::{Abi, BackendState, IselCtx, Mc, parallel_copy},
     modify::IrModify,
     rewrite::{ReverseRewriteOrder, Rewrite},
@@ -33,6 +33,48 @@ pub fn codegen(
 
     let mut regs = Slots::with_default(&body, types, MCReg::from_virt(0));
     for r in body.refs() {
+        // special case some operations to reuse registers but allocate new slots for each primitive
+        // value by default.
+        if let Some(inst) = body.get_inst(r).as_module(isel.tuple) {
+            // tuple operations can always (partially) reuse registers
+            match inst.op() {
+                Tuple::MemberValue => {
+                    let (tuple, i): (Ref, u32) = body.typed_args(&inst);
+                    let Type::Tuple(elems) = types[body.get_ref_ty(tuple)] else {
+                        unreachable!()
+                    };
+                    let mut src = regs.slot_map[tuple.idx()];
+                    debug_assert!(elems.count() > i);
+                    for skipped_elem in elems.iter().take(i as usize) {
+                        src += ir::slots::slot_count(types[skipped_elem], types);
+                    }
+                    let dst = regs.slot_map[r.idx()] as usize;
+                    let n = ir::slots::slot_count(types[elems.nth(i)], types) as usize;
+                    regs.slots.copy_within(src as usize..src as usize + n, dst);
+                }
+                Tuple::InsertMember => {
+                    let (tuple, i, value): (Ref, u32, Ref) = body.typed_args(&inst);
+                    let mut dst = regs.slot_map[r.idx()] as usize;
+                    let mut src = regs.slot_map[tuple.idx()] as usize;
+                    let Type::Tuple(elems) = types[body.get_ref_ty(r)] else {
+                        unreachable!()
+                    };
+                    for (ty, j) in elems.iter().zip(0..) {
+                        let elem_slot_count = ir::slots::slot_count(types[ty], types) as usize;
+                        if i == j {
+                            let value_src = regs.slot_map[value.idx()] as usize;
+                            regs.slots
+                                .copy_within(value_src..value_src + elem_slot_count, dst);
+                        } else {
+                            regs.slots.copy_within(src..src + elem_slot_count, dst);
+                        }
+                        src += elem_slot_count;
+                        dst += elem_slot_count;
+                    }
+                }
+            }
+            continue;
+        }
         _ = regs.visit_primitive_slots_mut::<Infallible, _>(
             r,
             types[body.get_ref_ty(r)],
@@ -608,59 +650,11 @@ ir::visitor! {
         x86.call_r64(ptr)
     };
     (%r = tuple.MemberValue tuple (#element)) => {
-        let Type::Tuple(elem_types) = types[ir.get_ref_ty(tuple)] else {
-            unreachable!()
-        };
-        let mut src = ctx.regs.get(tuple);
-        let dst = ctx.regs.get(r);
-        for (elem_ty, i) in elem_types.iter().zip(0..) {
-            let slot_count = slots::slot_count(types[elem_ty], types);
-            if i == element {
-                debug_assert_eq!(dst.len(), slot_count as usize);
-                debug_assert!(src.len() >= slot_count as usize);
-                // PERF: couldn't avoid having to collect here for now because adding args
-                // requires ExactSizeIterator, which flatten doesn't implement. Could definitely
-                // have a custom FlattenExact adapter for arrays that multipiles the size to prevent
-                // this (or maybe lift the Exact requirement in the future if possible)
-                let copy: Box<[_]> = dst.iter()
-                    .zip(src)
-                    .flat_map(|(&a, &b)| [a, b])
-                    .collect();
-                ir.replace(env, r, parallel_copy(mc, &copy));
-                break;
-            }
-            src = &src[slot_count as usize..];
-        }
+        // handled by register creation before isel
+        Rewrite::Rename(Ref::UNIT)
     };
     (%r = tuple.InsertMember tuple (#element) value) => {
-        let Type::Tuple(elem_types) = types[ir.get_ref_ty(tuple)] else {
-            unreachable!()
-        };
-        let mut src = ctx.regs.get(tuple);
-        let mut dst = ctx.regs.get(r);
-        debug_assert_eq!(src.len(), dst.len());
-        for (elem_ty, i) in elem_types.iter().zip(0..) {
-            let slot_count = slots::slot_count(types[elem_ty], types);
-            let elem_src = if i == element {
-                let value_slots = ctx.regs.get(value);
-                debug_assert_eq!(value_slots.len(), slot_count as usize);
-                value_slots
-            } else {
-                &src[..slot_count as usize]
-            };
-            // PERF: couldn't avoid having to collect here for now because adding args
-            // requires ExactSizeIterator, which flatten doesn't implement. Could definitely
-            // have a custom FlattenExact adapter for arrays that multipiles the size to prevent
-            // this (or maybe lift the Exact requirement in the future if possible)
-            let copy: Box<[_]> = dst.iter()
-                .zip(elem_src)
-                .flat_map(|(&a, &b)| [a, b])
-                .collect();
-            ir.add_before(env, r, parallel_copy(mc, &copy));
-            src = &src[slot_count as usize..];
-            dst = &dst[slot_count as usize..];
-        }
-        debug_assert!(src.is_empty());
+        // handled by register creation before isel
         Rewrite::Rename(Ref::UNIT)
     };
     (%r = _) => {
