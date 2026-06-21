@@ -599,6 +599,19 @@ impl Type {
     pub fn is_unit(&self) -> bool {
         matches!(self, Self::Tuple(elems) if elems.is_empty())
     }
+
+    /// apply an offset to all Type id indices to account for the type being moved into a new Type
+    /// list (i.e. during inlining)
+    pub fn apply_offset(&self, offset: u32) -> Type {
+        match *self {
+            Self::Primitive(p) => Self::Primitive(p),
+            Self::Array(id, n) => Self::Array(TypeId(id.0 + offset), n),
+            Self::Tuple(ids) => Self::Tuple(TypeIds {
+                idx: ids.idx + offset,
+                count: ids.count,
+            }),
+        }
+    }
 }
 impl<T> PartialEq<T> for Type
 where

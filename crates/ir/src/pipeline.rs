@@ -75,7 +75,6 @@ impl<State: Default> Pipeline<State> {
             )
             .entered();
             module_pass.run(env, module);
-            drop(_enter);
             for id in env[module].function_ids() {
                 let Some(ir) = env[module][id].ir() else {
                     continue;
@@ -108,6 +107,12 @@ impl<State: Default> Pipeline<State> {
             let mut state = State::default();
 
             for pass in step {
+                let _enter = tracing::span!(
+                    target: "passes", tracing::Level::INFO, "Running function pass",
+                    function = env[module][id].name,
+                    pass = ?pass,
+                )
+                .entered();
                 let types;
                 let func = &env[module][id];
                 (ir, types) = pass.run(env, &func.types, ir, &func.name, &mut state);

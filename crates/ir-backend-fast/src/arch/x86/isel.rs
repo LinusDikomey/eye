@@ -3,18 +3,18 @@ use std::convert::Infallible;
 use ir::{
     BlockGraph, BlockId, Environment, FunctionId, FunctionIr, IntoArgs, MCReg, ModuleId, ModuleOf,
     Primitive, Ref, Type, TypeId, Types,
-    dialect::{Arith, Tuple},
+    dialect::{Arith, Mem, Tuple},
     mc::{Abi, BackendState, IselCtx, Mc, parallel_copy},
     modify::IrModify,
     rewrite::{ReverseRewriteOrder, Rewrite},
-    slots::{self, Slots},
+    slots::Slots,
 };
 
 use crate::arch::x86::{Reg, X86, isa::Size};
 
 pub fn codegen(
     env: &Environment,
-    body: &ir::FunctionIr,
+    body: &FunctionIr,
     types: &ir::Types,
     isel: &mut InstructionSelector,
     main_module: ModuleId,
@@ -407,7 +407,7 @@ ir::visitor! {
     };
     (%r = arith.Eq a b) => cmp_op(ctx, ir, types, env, dialects, r, a, b, X86::sete);
     (%r = arith.NE a b) => cmp_op(ctx, ir, types, env, dialects, r, a, b, X86::setne);
-    (%r = arith.LT a b) if ctx.use_count(r) > 0 => cmp_op(ctx, ir, types, env, dialects, r, a, b, CmpOp {
+    (%r = arith.LT a b) => cmp_op(ctx, ir, types, env, dialects, r, a, b, CmpOp {
         signed: X86::setl,
         unsigned: X86::setc,
     });
@@ -534,25 +534,34 @@ ir::visitor! {
         let out = ctx.regs.get_one(r);
         x86.lea_rm64(out, MCReg::from_phys(Reg::rbp), (-(offset as i32)) as u32)
     };
+    (%r = mem.Store dst (%load = mem.Load src)) if ctx.single_use(load) => {
+        ctx.remove_use(load, ir, env);
+        // Load -> Store gets lowered to a memcpy
+        implement_memcpy(ctx, ir, types, env, dialects, src, dst, r);
+        Rewrite::Rename(Ref::UNIT)
+    };
     (%r = mem.Load ptr) => {
-        let ptr = ctx.regs.get_one(ptr);
+        let ptr_reg = ctx.regs.get_one(ptr);
         let ty = types[ir.get_ref_ty(r)];
         ctx.regs.visit_primitive_slots::<Infallible, _>(
             r, ty, types, env.primitives(),
             |regs, primitive, offset| {
                 let offset = offset.try_into().expect("TODO: handle large offsets");
+                // TODO: use addr_mode to emit instructions
+                #[allow(unused)]
+                let addr_mode = AddrMode::from_ptr_ref_with_offset(&ctx.regs, ir, types, env, dialects, ptr, offset);
                 match primitive {
                     Primitive::I1 | Primitive::I8 | Primitive::U8 => {
-                        ir.add_before(env, r, x86.mov_rm8(regs[0], ptr, offset));
+                        ir.add_before(env, r, x86.mov_rm8(regs[0], ptr_reg, offset));
                     }
                     Primitive::I16 | Primitive::U16 => {
-                        ir.add_before(env, r, x86.mov_rm16(regs[0], ptr, offset));
+                        ir.add_before(env, r, x86.mov_rm16(regs[0], ptr_reg, offset));
                     }
                     Primitive::I32 | Primitive::U32 => {
-                        ir.add_before(env, r, x86.mov_rm32(regs[0], ptr, offset));
+                        ir.add_before(env, r, x86.mov_rm32(regs[0], ptr_reg, offset));
                     }
                     Primitive::I64 | Primitive::U64 | Primitive::Ptr => {
-                        ir.add_before(env, r, x86.mov_rm64(regs[0], ptr, offset));
+                        ir.add_before(env, r, x86.mov_rm64(regs[0], ptr_reg, offset));
                     }
                     Primitive::F32 | Primitive::F64 => todo!("load floats"),
                     Primitive::I128 | Primitive::U128 => todo!("load 128-bit integers"),
@@ -625,6 +634,11 @@ ir::visitor! {
     };
     (%r = mem.PtrToInt x) => todo!("PtrToInt") as ();
     (%r = mem.Global (global id)) => x86.lea_global(ctx.regs.get_one(r), id);
+    (%r = mem.ArrayIndex array_ptr (type elem_ty) (%int = arith.Int (#n))) => {
+        ctx.remove_use(int, ir, env);
+        let stride = ir::type_layout(types[elem_ty], types, env.primitives()).stride();
+        ptr_offset(ctx, ir, env, dialects, r, array_ptr, stride.saturating_mul(n));
+    };
     (%r = mem.ArrayIndex array_ptr (type elem_ty) idx) => {
         // CODEGEN: use more efficient addressing modes
         let stride = ir::type_layout(types[elem_ty], types, env.primitives()).stride();
@@ -670,6 +684,195 @@ ir::visitor! {
             unreachable!("unhandled instruction at {r}: {}", env.get_inst_name(ir.get_inst(r)));
         }
     };
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AddrScale {
+    One,
+    Two,
+    Four,
+    Eight,
+}
+impl TryFrom<u64> for AddrScale {
+    type Error = ();
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        Ok(match value {
+            1 => Self::One,
+            2 => Self::Two,
+            4 => Self::Four,
+            8 => Self::Eight,
+            _ => return Err(()),
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct AddrMode {
+    base: MCReg,
+    offset: u32,
+    scaled: Option<(MCReg, AddrScale)>,
+}
+impl AddrMode {
+    pub fn from_ptr_ref(
+        regs: &Slots<MCReg>,
+        ir: &mut IrModify,
+        types: &Types,
+        env: &Environment,
+        dialects: &InstructionSelector,
+        addr_ref: Ref,
+    ) -> Self {
+        let InstructionSelector { mem, arith, .. } = *dialects;
+        let inst = ir.get_inst(addr_ref);
+        if let Some(inst) = inst.as_module(mem) {
+            match inst.op() {
+                Mem::Offset => {
+                    let (ptr, offset): (Ref, u32) = ir.typed_args(&inst);
+                    return Self::from_ptr_ref_with_offset(
+                        regs, ir, types, env, dialects, ptr, offset,
+                    );
+                }
+                Mem::MemberPtr => {
+                    let (ptr, tuple_ty, idx): (Ref, TypeId, u32) = ir.typed_args(&inst);
+                    let Type::Tuple(elem_types) = types[tuple_ty] else {
+                        unreachable!()
+                    };
+                    let offset = ir::offset_in_tuple(elem_types, idx, types, env.primitives());
+                    if let Ok(offset) = offset.try_into() {
+                        return Self::from_ptr_ref_with_offset(
+                            regs, ir, types, env, dialects, ptr, offset,
+                        );
+                    }
+                }
+                Mem::ArrayIndex => {
+                    let (ptr, elem_ty, idx): (Ref, TypeId, Ref) = ir.typed_args(&inst);
+                    let stride = ir::type_layout(types[elem_ty], types, env.primitives()).stride();
+                    if let Some(idx_inst) = ir.get_inst(idx).as_module(arith) {
+                        // constant offset
+                        if idx_inst.op() == Arith::Int {
+                            let idx: u64 = ir.typed_args(&idx_inst);
+                            if let Some(offset) =
+                                idx.checked_mul(stride).and_then(|i| i.try_into().ok())
+                            {
+                                return Self {
+                                    base: regs.get_one(addr_ref),
+                                    offset,
+                                    scaled: None,
+                                };
+                            }
+                        }
+                    }
+                    if let Ok(scale) = AddrScale::try_from(stride) {
+                        return Self {
+                            base: regs.get_one(ptr),
+                            offset: 0,
+                            scaled: Some((regs.get_one(idx), scale)),
+                        };
+                    }
+                }
+                // TODO: pre-track stack offsets of Decls in the future to be able to address them directly
+                // Mem::Decl => {}
+                // Mem::FunctionPtr => {}
+                _ => {}
+            }
+        }
+        Self {
+            base: regs.get_one(addr_ref),
+            offset: 0,
+            scaled: None,
+        }
+    }
+
+    fn from_ptr_ref_offset_only(
+        regs: &Slots<MCReg>,
+        ir: &mut IrModify,
+        types: &Types,
+        env: &Environment,
+        dialects: &InstructionSelector,
+        ptr: Ref,
+    ) -> (MCReg, u32) {
+        let InstructionSelector { mem, arith, .. } = *dialects;
+        let inst = ir.get_inst(ptr);
+        let handle_inner = |regs: &Slots<MCReg>, ir, ptr: Ref, offset: u32| {
+            let (inner_ptr, inner_offset) =
+                Self::from_ptr_ref_offset_only(regs, ir, types, env, dialects, ptr);
+            let Some(offset) = offset.checked_add(inner_offset) else {
+                return (regs.get_one(ptr), offset);
+            };
+            (inner_ptr, offset)
+        };
+        if let Some(inst) = inst.as_module(mem) {
+            match inst.op() {
+                Mem::Offset => {
+                    let (ptr, offset): (Ref, u32) = ir.typed_args(&inst);
+                    return handle_inner(regs, ir, ptr, offset);
+                }
+                Mem::MemberPtr => {
+                    let (ptr, tuple_ty, idx): (Ref, TypeId, u32) = ir.typed_args(&inst);
+                    let Type::Tuple(elem_types) = types[tuple_ty] else {
+                        unreachable!()
+                    };
+                    let offset = ir::offset_in_tuple(elem_types, idx, types, env.primitives());
+                    if let Ok(offset) = offset.try_into() {
+                        return handle_inner(regs, ir, ptr, offset);
+                    }
+                }
+                Mem::ArrayIndex => {
+                    let (ptr, elem_ty, idx): (Ref, TypeId, Ref) = ir.typed_args(&inst);
+                    let stride = ir::type_layout(types[elem_ty], types, env.primitives()).stride();
+                    if let Some(idx_inst) = ir.get_inst(idx).as_module(arith) {
+                        match idx_inst.op() {
+                            // constant offset
+                            Arith::Int => {
+                                let idx: u64 = ir.typed_args(&idx_inst);
+                                if let Some(offset) =
+                                    idx.checked_mul(stride).and_then(|i| i.try_into().ok())
+                                {
+                                    return handle_inner(regs, ir, ptr, offset);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                // TODO: pre-track stack offsets of Decls in the future to be able to address them directly
+                // Mem::Decl => {}
+                // Mem::FunctionPtr => {}
+                _ => {}
+            }
+        }
+        (regs.get_one(ptr), 0)
+    }
+
+    fn from_ptr_ref_with_offset(
+        regs: &Slots<MCReg>,
+        ir: &mut IrModify,
+        types: &Types,
+        env: &Environment,
+        dialects: &InstructionSelector,
+        ptr: Ref,
+        offset: u32,
+    ) -> Self {
+        let inner = Self::from_ptr_ref(regs, ir, types, env, dialects, ptr);
+        inner.add_offset(offset).unwrap_or_else(|| Self {
+            base: regs.get_one(ptr),
+            offset,
+            scaled: None,
+        })
+    }
+
+    #[must_use]
+    pub fn add_offset(self, offset: u32) -> Option<Self> {
+        Some(Self {
+            offset: self.offset.checked_add(offset)?,
+            ..self
+        })
+    }
+}
+
+enum Operand {
+    Reg(MCReg),
+    Imm(u32),
+    Mem(AddrMode),
 }
 
 struct IntBinOp {
@@ -823,5 +1026,48 @@ fn ptr_offset(
         ir.delete(env, r);
     } else {
         ir.replace(env, r, x86.add_ri64(dst, offset));
+    }
+}
+
+fn implement_memcpy(
+    ctx: &mut IselCtx<X86>,
+    ir: &mut IrModify,
+    types: &ir::Types,
+    env: &Environment,
+    dialects: &InstructionSelector,
+    src: Ref,
+    dst: Ref,
+    before: Ref,
+) {
+    let InstructionSelector { x86, .. } = *dialects;
+    let layout = ir::type_layout(types[ir.get_ref_ty(src)], types, env.primitives());
+    // TODO: this should just call memcpy beyond a certain size
+    let mut offset = 0;
+    let src = ctx.regs.get_one(src);
+    let dst = ctx.regs.get_one(dst);
+    let mut tmp = None;
+    let size: u32 = layout.size.try_into().expect("TODO: large memcpy");
+    while size - offset >= 8 {
+        let tmp = *tmp.get_or_insert_with(|| ir.new_reg(ir::mc::RegClass::GP64));
+        ir.add_before(env, before, x86.mov_rm64(tmp, src, offset));
+        ir.add_before(env, before, x86.mov_mr64(dst, offset, tmp));
+        offset += 8;
+    }
+    if size - offset >= 4 {
+        let tmp = *tmp.get_or_insert_with(|| ir.new_reg(ir::mc::RegClass::GP32));
+        ir.add_before(env, before, x86.mov_rm32(tmp, src, offset));
+        ir.add_before(env, before, x86.mov_mr32(dst, offset, tmp));
+        offset += 4;
+    }
+    if size - offset >= 2 {
+        let tmp = *tmp.get_or_insert_with(|| ir.new_reg(ir::mc::RegClass::GP16));
+        ir.add_before(env, before, x86.mov_rm16(tmp, src, offset));
+        ir.add_before(env, before, x86.mov_mr16(dst, offset, tmp));
+        offset += 2;
+    }
+    if size - offset >= 1 {
+        let tmp = *tmp.get_or_insert_with(|| ir.new_reg(ir::mc::RegClass::GP8));
+        ir.add_before(env, before, x86.mov_rm8(tmp, src, offset));
+        ir.add_before(env, before, x86.mov_mr8(dst, offset, tmp));
     }
 }

@@ -329,7 +329,6 @@ impl IrModify {
 
             let mut current_block = current_block;
 
-            #[allow(unused)] // FIXME: remove after return false is also removed
             let mut compress_goto = |inst: &Instruction,
                                      cf: Option<crate::ModuleOf<Cf>>,
                                      extra: &[u32],
@@ -341,7 +340,6 @@ impl IrModify {
                                      renames: &mut RenameTable,
                                      goto_ref: Ref|
              -> bool {
-                return false;
                 let Some(cf) = cf else {
                     return false;
                 };

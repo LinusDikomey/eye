@@ -56,7 +56,12 @@ impl Inline {
                 tracing::debug!(target: "pass::inline", "Inlining {inlined_name} into {name}");
 
                 let old_types_offset = types.types.len() as u32;
-                types.types.extend_from_slice(&callee_types.types);
+                types.types.extend(
+                    callee_types
+                        .types
+                        .iter()
+                        .map(|ty| ty.apply_offset(old_types_offset)),
+                );
                 let mut renames = RenameTable::new(callee_ir, old_types_offset);
                 let graph = BlockGraph::calculate(callee_ir, env);
 

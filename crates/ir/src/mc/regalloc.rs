@@ -274,11 +274,6 @@ fn perform_regalloc<R: Register>(
         liveins[block.idx()].visit_set_bits(|livein| {
             chosen[livein].set_bit(&mut free, false);
         });
-        /*
-        for arg in mir.block_args(block).iter() {
-            chosen[arg.0 as usize].set_bit(&mut free, false);
-        }
-        */
         for block_ref in ir.block_refs(block).iter() {
             if let Some(inst) = ir.get_inst(block_ref).as_module(mc) {
                 match inst.op() {
