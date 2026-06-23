@@ -370,19 +370,26 @@ impl<'a, H: Hooks> Ctx<'a, H> {
             }),
             expected.into(),
         ]);
-        assert_eq!(
-            call.named_args.len(),
-            0,
-            "TODO: support named args in trait calls or error properly"
-        );
-
         let fn_trait = builtins::get_fn_trait(self.compiler);
         let fn_bound = Bound {
             trait_id: fn_trait,
             generics: fn_instance,
             span: call_span,
         };
-        self.specify_bound(called_ty, fn_bound, self.span(call.called_expr));
+        let fn_bound_valid = self.specify_bound(called_ty, fn_bound, self.span(call.called_expr));
+
+        for &(name_span, named_value) in call.named_args.iter() {
+            // trait calls are not allowed to have named args, still check them and error on each
+            // one (unless the fn bound is already invalid, just don't error in that case since
+            // there already is an error for an invalid call)
+            if fn_bound_valid {
+                self.compiler
+                    .errors
+                    .emit(self.module, Error::NonexistantNamedArg.at_span(name_span));
+            }
+            let arg_ty = self.hir.types.add_unknown();
+            self.check(named_value, scope, arg_ty, return_ty, noreturn);
+        }
 
         let arg_nodes = self.hir.add_invalid_nodes(arg_types.count);
         for ((arg, ty), node_id) in call

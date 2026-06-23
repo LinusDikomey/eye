@@ -1359,7 +1359,7 @@ impl TypeTable {
 
                 let generics = Generics::new(
                     (0..type_generics.count)
-                        .map(|_| (String::new(), vec![]))
+                        .map(|_| (String::new(), crate::compiler::Bounds::empty()))
                         .collect(),
                 );
                 let base = compiler.types.add_base(
@@ -1710,7 +1710,7 @@ impl TypeTable {
                 TypeFull::Instance(base, _) => Some(base),
                 TypeFull::Generic(i) => {
                     return Ok(function_generics
-                        .check_bound_satisfied(i, bound, self, compiler)
+                        .check_bound_satisfied(i, bound, self, compiler)?
                         .then_some(ty.into()));
                 }
                 _ => None,

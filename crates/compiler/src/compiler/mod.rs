@@ -646,23 +646,24 @@ impl Compiler {
                                     }
                                     .at_span(bound.generics_span),
                                 );
-                                todo!("handle invalid bounds")
+                                return Err(InvalidTypeError);
                             }
                             let generics = bound
                                 .generics
                                 .iter()
                                 .map(|ty| self.resolve_type(ty, module, scope))
                                 .collect();
-                            TraitBound { trait_id, generics }
+                            Ok(TraitBound { trait_id, generics })
                         }
-                        Def::Invalid => todo!("handle invalid bounds"),
+                        Def::Invalid => Err(InvalidTypeError),
                         _ => {
                             self.errors
                                 .emit(module, Error::TraitExpected.at_span(bound.path.span()));
-                            todo!("handle invalid bounds")
+                            Err(InvalidTypeError)
                         }
                     })
-                    .collect();
+                    .collect::<Result<_, _>>()
+                    .map_or(Bounds::Invalid, Bounds::Bounds);
                 (def.name(ast.src()).to_owned(), requirements)
             })
             .collect();
@@ -1822,14 +1823,14 @@ impl<'a> ExactSizeIterator for AllParamsIter<'a> {
 
 #[derive(Debug, Clone)]
 pub struct Generics {
-    generics: Vec<(String, Vec<TraitBound>)>,
+    generics: Vec<(String, Bounds)>,
 }
 impl Generics {
     pub const EMPTY: Self = Self {
         generics: Vec::new(),
     };
 
-    pub fn new(generics: Vec<(String, Vec<TraitBound>)>) -> Self {
+    pub fn new(generics: Vec<(String, Bounds)>) -> Self {
         Self { generics }
     }
 
@@ -1843,18 +1844,24 @@ impl Generics {
         bound: Bound,
         types: &mut TypeTable,
         compiler: &Compiler,
-    ) -> bool {
+    ) -> Result<bool, InvalidTypeError> {
         let mut found = None;
-        for generic_bound in self.generics[generic as usize].1.iter() {
-            if bound.trait_id == generic_bound.trait_id {
-                assert!(
-                    found.is_none(),
-                    "TODO: handle multiple potential generic bounds"
-                );
-                found = Some(generic_bound);
+        let bounds = &self.generics[generic as usize].1;
+        match bounds {
+            Bounds::Bounds(bounds) => {
+                for generic_bound in bounds.iter() {
+                    if bound.trait_id == generic_bound.trait_id {
+                        assert!(
+                            found.is_none(),
+                            "TODO: handle multiple potential generic bounds"
+                        );
+                        found = Some(generic_bound);
+                    }
+                }
             }
+            Bounds::Invalid => return Err(InvalidTypeError),
         }
-        found.is_some_and(|found| {
+        Ok(found.is_some_and(|found| {
             debug_assert_eq!(found.generics.len() as u8, bound.generics.count as u8);
             for (id, &ty) in bound.generics.iter().zip(found.generics.iter()) {
                 if types
@@ -1865,12 +1872,19 @@ impl Generics {
                 }
             }
             true
-        })
+        }))
     }
 
     pub fn instantiate(&self, table: &mut TypeTable, types: &Types, span: TSpan) -> LocalTypeIds {
         let generics = table.add_multiple_unknown(self.generics.len() as _);
         for ((_, bounds), r) in self.generics.iter().zip(generics.iter()) {
+            let bounds = match bounds {
+                Bounds::Bounds(bounds) => bounds,
+                Bounds::Invalid => {
+                    table.replace(r, TypeInfo::INVALID);
+                    continue;
+                }
+            };
             let bound_ids = table.add_missing_bounds(bounds.len() as _);
             for (bound, r) in bounds.iter().zip(bound_ids.iter()) {
                 // TODO: generic trait bounds, assuming no generics for now
@@ -1910,6 +1924,10 @@ impl Generics {
             .skip(offset.into())
             .zip(base.generics.iter().skip(base_offset.into()))
         {
+            let (Bounds::Bounds(bounds), Bounds::Bounds(base_bounds)) = (bounds, base_bounds)
+            else {
+                return Err(InvalidTypeError);
+            };
             'bounds: for bound in bounds {
                 'base_bounds: for base_bound in base_bounds {
                     if base_bound.trait_id != bound.trait_id {
@@ -1933,9 +1951,16 @@ impl Generics {
     pub fn get_name(&self, i: u8) -> &str {
         &self.generics[usize::from(i)].0
     }
+}
 
-    pub fn get_bounds(&self, i: u8) -> &[TraitBound] {
-        &self.generics[usize::from(i)].1
+#[derive(Debug, Clone)]
+pub enum Bounds {
+    Bounds(Box<[TraitBound]>),
+    Invalid,
+}
+impl Bounds {
+    pub fn empty() -> Self {
+        Self::Bounds(Box::new([]))
     }
 }
 

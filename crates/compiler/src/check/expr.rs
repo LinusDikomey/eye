@@ -247,8 +247,23 @@ impl<'a, H: Hooks> Ctx<'a, H> {
                     .set(base)
                     .expect("Type defined multiple times");
                 let span = self.ast[expr].span(ast);
-                self.specify(expected, TypeInfo::BaseTypeItem(base), |_| span);
-                Node::Invalid
+                let (info, node) = if generic_count > 0 {
+                    (TypeInfo::BaseTypeItem(base), Node::Unit)
+                } else {
+                    (
+                        TypeInfo::TypeItem(
+                            self.hir
+                                .types
+                                .add(TypeInfo::Instance(base, LocalTypeIds::EMPTY)),
+                        ),
+                        Node::Type {
+                            value: self.compiler.types.intern(TypeFull::Instance(base, &[])),
+                            value_ty: expected,
+                        },
+                    )
+                };
+                self.specify(expected, info, |_| span);
+                node
             }
             &Expr::Trait { id } => {
                 self.specify(

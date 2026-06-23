@@ -4,7 +4,7 @@ pub use intern::Types;
 
 use parser::ast::{FloatType, FunctionId, IntType, ModuleId, Primitive};
 
-use crate::compiler::Generics;
+use crate::compiler::{Bounds, Generics};
 
 id::id!(Type);
 impl Type {
@@ -145,13 +145,13 @@ builtin_types! {
 
     @generic:
     Array = vec![
-        ("element".into(), vec![]),
-        ("count".into(), vec![]), // TODO: specify type of generic parameters
+        ("element".into(), Bounds::empty()),
+        ("count".into(), Bounds::empty()), // TODO: specify type of generic parameters
     ],
-    Pointer = vec![("pointee".into(), vec![])],
+    Pointer = vec![("pointee".into(), Bounds::empty())],
     Function = vec![
-        ("return_type".into(), vec![]),
-        ("args".into(), vec![]), // TODO: vararg generics or handle function separately
+        ("return_type".into(), Bounds::empty()),
+        ("args".into(), Bounds::empty()), // TODO: vararg generics or handle function separately
     ],
 }
 
