@@ -1,8 +1,8 @@
 use std::fmt::Write;
 
 use compiler::{
-    Def,
-    compiler::{BodyOrTypes, LocalItem, VarId},
+    ConstValue, Def, ModuleSpan, Type,
+    compiler::{BodyOrTypes, Generics, LocalItem, VarId},
 };
 
 use crate::{
@@ -42,6 +42,13 @@ impl Lsp {
         match found.ty {
             FoundType::None => Hover::default(),
             FoundType::Error => hover("syntax error".into()),
+            FoundType::Definition => {
+                let name = &ast[found.span];
+                let def =
+                    self.compiler
+                        .resolve_in_scope(module, found.scope, name, ModuleSpan::MISSING);
+                hover(self.hover_def(def, name))
+            }
             FoundType::Ident | FoundType::Literal | FoundType::EnumLiteral | FoundType::Member => {
                 match context {
                     ScopeContext::TopLevel => Hover::default(),
@@ -75,69 +82,20 @@ impl Lsp {
                                 range: Some(Range::from_span(found.span, ast.src())),
                             }
                         };
-                        let val = &ast.src()[found.span.range()];
+                        let name_or_literal = &ast.src()[found.span.range()];
                         let Some(item) = hooks.local_item else {
                             let Some(ty) = hooks.ty else {
                                 return hover("expr not found".into());
                             };
                             let ty = self.compiler.types.display(hir[ty], &signature.generics);
-                            return hover(format!("{val} : {ty}").into());
+                            return hover(format!("{name_or_literal} : {ty}").into());
                         };
                         match item {
                             LocalItem::Var(var_id) => hover_var(var_id),
                             LocalItem::Invalid | LocalItem::Def(Def::Invalid) => {
                                 hover("<invalid value>".into())
                             }
-                            LocalItem::Def(Def::Function(function_module, function)) => {
-                                let signature =
-                                    self.compiler.get_signature(function_module, function);
-                                let mut text = format!("```eye\n{val} :: fn");
-                                if signature.generics.count() > 0 {
-                                    text.push('[');
-                                    for i in 0..signature.generics.count() {
-                                        if i != 0 {
-                                            text.push_str(", ");
-                                        }
-                                        // TODO: not displaying bounds here for now, should be
-                                        // displayed here or in where clause when it is supported
-                                        text.push_str(signature.generics.get_name(i));
-                                    }
-                                    text.push(']');
-                                }
-                                if signature.params.len() + signature.named_params.len() > 0 {
-                                    let mut first = true;
-                                    let mut param_delimiter = |text: &mut String| {
-                                        if first {
-                                            first = false;
-                                        } else {
-                                            text.push_str(", ");
-                                        }
-                                    };
-                                    text.push('(');
-                                    for (name, ty) in &signature.params {
-                                        param_delimiter(&mut text);
-                                        write!(
-                                            text,
-                                            "{name} {}",
-                                            self.compiler.types.display(*ty, &signature.generics),
-                                        )
-                                        .unwrap();
-                                    }
-                                    for (name, ty, _default) in &signature.named_params {
-                                        param_delimiter(&mut text);
-                                        write!(
-                                            text,
-                                            "{name} {} = <TODO: display default>",
-                                            self.compiler.types.display(*ty, &signature.generics)
-                                        )
-                                        .unwrap();
-                                    }
-                                    text.push(')');
-                                }
-                                hover(text.into())
-                            }
-                            // TODO: handle each case separately and produce proper hover text
-                            LocalItem::Def(def) => hover(format!("Definition {def:?}").into()),
+                            LocalItem::Def(def) => hover(self.hover_def(def, name_or_literal)),
                         }
                     }
                 }
@@ -169,6 +127,85 @@ impl Lsp {
             ])),
             // FoundType::Generic => todo!(),
             _ => hover(format!("TODO: implement hover type {found:?}").into()),
+        }
+    }
+
+    fn hover_def(&self, def: Def, name: &str) -> HoverContents {
+        let hover_const_value = |value: &ConstValue, ty: Type, kind_text: &str, assign: &str| {
+            let generics = Generics::EMPTY;
+            let ty = self.compiler.types.display(ty, &generics);
+            let value = match value {
+                ConstValue::Undefined => "undefined".to_owned(),
+                ConstValue::Unit => "()".to_owned(),
+                ConstValue::Int(i) => i.to_string(),
+                ConstValue::Float(f) => f.to_string(),
+                ConstValue::Aggregate(_) => "TODO: display aggregate const values".to_owned(),
+            };
+            format!("{kind_text}\n```eye\n{name}: {ty} {assign} {value}\n```").into()
+        };
+
+        match def {
+            Def::ConstValue(id) => {
+                let (value, ty) = &self.compiler.const_values[id.idx()];
+                hover_const_value(value, *ty, "constant", ":")
+            }
+            Def::Global(module, id) => {
+                let (value, ty) = self.compiler.get_checked_global(module, id);
+                hover_const_value(value, *ty, "global", "=")
+            }
+            Def::Module(module) => {
+                let path = self.compiler.module_path(module);
+                format!("module {path}").into()
+            }
+            Def::Function(function_module, function) => {
+                let signature = self.compiler.get_signature(function_module, function);
+                let mut text = format!("```eye\n{name} :: fn");
+                if signature.generics.count() > 0 {
+                    text.push('[');
+                    for i in 0..signature.generics.count() {
+                        if i != 0 {
+                            text.push_str(", ");
+                        }
+                        // TODO: not displaying bounds here for now, should be
+                        // displayed here or in where clause when it is supported
+                        text.push_str(signature.generics.get_name(i));
+                    }
+                    text.push(']');
+                }
+                if signature.params.len() + signature.named_params.len() > 0 {
+                    let mut first = true;
+                    let mut param_delimiter = |text: &mut String| {
+                        if first {
+                            first = false;
+                        } else {
+                            text.push_str(", ");
+                        }
+                    };
+                    text.push('(');
+                    for (name, ty) in &signature.params {
+                        param_delimiter(&mut text);
+                        write!(
+                            text,
+                            "{name} {}",
+                            self.compiler.types.display(*ty, &signature.generics),
+                        )
+                        .unwrap();
+                    }
+                    for (name, ty, _default) in &signature.named_params {
+                        param_delimiter(&mut text);
+                        write!(
+                            text,
+                            "{name} {} = <TODO: display default>",
+                            self.compiler.types.display(*ty, &signature.generics)
+                        )
+                        .unwrap();
+                    }
+                    text.push(')');
+                }
+                text.into()
+            }
+            // TODO: handle each case separately and produce proper hover text
+            def => format!("Definition {def:?}").into(),
         }
     }
 }

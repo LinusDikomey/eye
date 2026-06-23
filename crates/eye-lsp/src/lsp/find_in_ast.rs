@@ -33,6 +33,7 @@ pub enum FoundType {
     ParameterName,
     Keyword,
     Generic,
+    Definition,
 }
 
 pub fn find(ast: &Ast, offset: u32) -> Found {
@@ -51,13 +52,27 @@ fn find_at_offset_scope(ast: &Ast, offset: u32, scope_id: ScopeId) -> Option<Fou
         return None;
     }
     scope.definitions.values().find_map(|def| match def {
-        &Definition::Expr { id, .. } => {
+        &Definition::Expr { id, name_span, .. } => {
+            if name_span.contains(offset) {
+                return Some(Found {
+                    ty: FoundType::Definition,
+                    span: name_span,
+                    scope: scope_id,
+                });
+            }
             let expr = ast[id].0;
             find_at_offset_expr(ast, offset, scope_id, expr)
         }
         &Definition::Use { path: p, .. } => path(offset, scope_id, p),
         &Definition::Global(global_id) => {
             let global = &ast[global_id];
+            if global.name_span.contains(offset) {
+                return Some(Found {
+                    ty: FoundType::Definition,
+                    span: global.name_span,
+                    scope: scope_id,
+                });
+            }
             find_at_offset_ty(offset, scope_id, &global.ty)
                 .or_else(|| find_at_offset_expr(ast, offset, scope_id, global.val))
         }
