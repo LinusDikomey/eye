@@ -32,3 +32,6 @@ diff = "0.1.13"
 # backends
 ir-backend-llvm = { path = "../ir-backend-llvm", optional = true }
 ir-backend-fast = { path = "../ir-backend-fast", optional = true }
+
+[dev-dependencies]
+test_each_file = "0.3.7"

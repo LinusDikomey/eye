@@ -216,6 +216,7 @@ dependencies = [
  "ir-backend-fast",
  "ir-backend-llvm",
  "pathdiff",
+ "test_each_file",
  "tracing",
  "tracing-error",
  "tracing-subscriber",
@@ -649,6 +650,18 @@ checksum = "17b6f705963418cdb9927482fa304bc562ece2fdd4f616084c50b7023b435a40"
 dependencies = [
  "proc-macro2",
  "quote",
+ "unicode-ident",
+]
+
+[[package]]
+name = "test_each_file"
+version = "0.3.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "44619e49a1f62888c271dc50533f036363a7936f99c7cb467ca9d45224cf83b3"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.104",
  "unicode-ident",
 ]
 

@@ -7,7 +7,7 @@ print_vec3 :: fn(v *Vec3) {
 }
 
 main :: fn {
-    v := c.malloc(12) as *Vec3
+    v := c.malloc(Vec3.size) as *Vec3
     v^ = Vec3(x: 1.0, y: 2.0, z: 3.0)
     print_vec3(v)
 }

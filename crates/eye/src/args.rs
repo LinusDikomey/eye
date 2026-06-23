@@ -1,8 +1,9 @@
 use std::fmt;
 
-#[derive(clap::Subcommand)]
+#[derive(clap::Subcommand, Default)]
 pub enum Cmd {
     /// Check a file or project for errors and warnings.
+    #[default]
     Check,
     /// Build an executable and run it immediately.
     Run,
@@ -66,7 +67,7 @@ impl Default for Backend {
     }
 }
 
-#[derive(clap::Parser)]
+#[derive(clap::Parser, Default)]
 #[clap(
     version,
     about,

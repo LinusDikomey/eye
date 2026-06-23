@@ -43,5 +43,7 @@ u8 :: @packed struct {
 u16 :: @align(2) struct {
     byte0 u8
     byte1 u8
+
+    to_bytes_le :: fn(self) -> [u8; 2]: if TARGET.endianness == .Little: self.bytes else self.bytes.reverse()
 }
 -#
