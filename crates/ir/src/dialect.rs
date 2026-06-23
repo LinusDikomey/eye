@@ -119,7 +119,7 @@ impl Arith {
             })
             .rhs_identity(1),
             Self::Rem => ArithIntBinOp::new(|a, b| a.wrapping_rem(b)).rhs_identity(1),
-            Self::Or => ArithIntBinOp::new(|a, b| a & b)
+            Self::Or => ArithIntBinOp::new(|a, b| a | b)
                 .commutative()
                 .associative()
                 .identity(0),
