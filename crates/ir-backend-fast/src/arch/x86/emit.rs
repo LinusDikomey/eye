@@ -3,11 +3,11 @@ use std::collections::VecDeque;
 use ir::{
     Argument, Bitmap, BlockId, Environment, FunctionId, FunctionIr, GlobalId, MCReg, ModuleOf,
     block_graph::Blocks,
-    mc::{Mc, ParcopySolver, RegClass},
+    mc::{Mc, ParcopySolver},
     parameter_types::Int32,
 };
 
-use crate::arch::x86::isa::Size;
+use crate::arch::x86::isa::{RegClass, Size};
 
 use super::isa::{Reg, X86};
 
@@ -62,13 +62,15 @@ pub fn write(
                                 let to: Reg = to.phys().unwrap();
                                 let from: Reg = from.phys().unwrap();
                                 let size = match to.class() {
-                                    RegClass::GP8 => Size::S8,
-                                    RegClass::GP16 => Size::S16,
-                                    RegClass::GP32 => Size::S32,
-                                    RegClass::GP64 => Size::S64,
+                                    RegClass::GP8 | RegClass::GP8I => Size::S8,
+                                    RegClass::GP16 | RegClass::GP16I => Size::S16,
+                                    RegClass::GP32 | RegClass::GP32I => Size::S32,
+                                    RegClass::GP64 | RegClass::GP64I => Size::S64,
                                     RegClass::F32 => todo!(),
                                     RegClass::F64 => todo!(),
-                                    RegClass::Flags => todo!(),
+                                    RegClass::Flags => {
+                                        unreachable!("flags register should not be allocated")
+                                    }
                                 };
                                 let ra = encode_reg(to);
                                 let rb = encode_reg(from);
@@ -265,22 +267,22 @@ pub fn write(
                         &mut missing_block_addrs,
                     );
                 }
-                I::seto => inst_r(text, &[0x0F, 0x90], ir.args(i, env), 0, false),
-                I::setno => inst_r(text, &[0x0F, 0x91], ir.args(i, env), 0, false),
-                I::setc => inst_r(text, &[0x0F, 0x92], ir.args(i, env), 0, false),
-                I::setnc => inst_r(text, &[0x0F, 0x93], ir.args(i, env), 0, false),
-                I::sete => inst_r(text, &[0x0F, 0x94], ir.args(i, env), 0, false),
-                I::setne => inst_r(text, &[0x0F, 0x95], ir.args(i, env), 0, false),
-                I::setbe => inst_r(text, &[0x0F, 0x96], ir.args(i, env), 0, false),
-                I::seta => inst_r(text, &[0x0F, 0x97], ir.args(i, env), 0, false),
-                I::sets => inst_r(text, &[0x0F, 0x98], ir.args(i, env), 0, false),
-                I::setns => inst_r(text, &[0x0F, 0x99], ir.args(i, env), 0, false),
-                I::setp => inst_r(text, &[0x0F, 0x9A], ir.args(i, env), 0, false),
-                I::setnp => inst_r(text, &[0x0F, 0x9B], ir.args(i, env), 0, false),
-                I::setl => inst_r(text, &[0x0F, 0x9C], ir.args(i, env), 0, false),
-                I::setge => inst_r(text, &[0x0F, 0x9D], ir.args(i, env), 0, false),
-                I::setle => inst_r(text, &[0x0F, 0x9E], ir.args(i, env), 0, false),
-                I::setg => inst_r(text, &[0x0F, 0x9F], ir.args(i, env), 0, false),
+                I::seto => inst_r_legacy(text, &[0x0F, 0x90], ir.args(i, env), 0, false),
+                I::setno => inst_r_legacy(text, &[0x0F, 0x91], ir.args(i, env), 0, false),
+                I::setc => inst_r_legacy(text, &[0x0F, 0x92], ir.args(i, env), 0, false),
+                I::setnc => inst_r_legacy(text, &[0x0F, 0x93], ir.args(i, env), 0, false),
+                I::sete => inst_r_legacy(text, &[0x0F, 0x94], ir.args(i, env), 0, false),
+                I::setne => inst_r_legacy(text, &[0x0F, 0x95], ir.args(i, env), 0, false),
+                I::setbe => inst_r_legacy(text, &[0x0F, 0x96], ir.args(i, env), 0, false),
+                I::seta => inst_r_legacy(text, &[0x0F, 0x97], ir.args(i, env), 0, false),
+                I::sets => inst_r_legacy(text, &[0x0F, 0x98], ir.args(i, env), 0, false),
+                I::setns => inst_r_legacy(text, &[0x0F, 0x99], ir.args(i, env), 0, false),
+                I::setp => inst_r_legacy(text, &[0x0F, 0x9A], ir.args(i, env), 0, false),
+                I::setnp => inst_r_legacy(text, &[0x0F, 0x9B], ir.args(i, env), 0, false),
+                I::setl => inst_r_legacy(text, &[0x0F, 0x9C], ir.args(i, env), 0, false),
+                I::setge => inst_r_legacy(text, &[0x0F, 0x9D], ir.args(i, env), 0, false),
+                I::setle => inst_r_legacy(text, &[0x0F, 0x9E], ir.args(i, env), 0, false),
+                I::setg => inst_r_legacy(text, &[0x0F, 0x9F], ir.args(i, env), 0, false),
 
                 I::add_rr8 | I::add_rr16 | I::add_rr32 | I::add_rr64 => {
                     inst_rr(text, op, &[0x00], &[0x01], ir.args(i, env));
@@ -299,7 +301,7 @@ pub fn write(
                 I::sub_ri8 | I::sub_ri16 | I::sub_ri32 | I::sub_ri64 => {
                     inst_ri(text, op, &[0x80], &[0x81], ir.args(i, env), 5)
                 }
-                I::imul_r8 => inst_r(text, &[0xF6], ir.args(i, env), 5, false),
+                I::imul_r8 => inst_r_legacy(text, &[0xF6], ir.args(i, env), 5, false),
                 I::imul_rr16 | I::imul_rr32 | I::imul_rr64 => {
                     if op == I::imul_rr16 {
                         text.push(P16);
@@ -308,6 +310,16 @@ pub fn write(
                 }
                 I::imul_rri16 | I::imul_rri32 | I::imul_rri64 => {
                     inst_rri(text, op.size(), &[], &[0x69], ir.args(i, env));
+                }
+                I::cbw => text.push(0x98),
+                I::cwd => text.extend([P16, 0x99]),
+                I::cdq => text.push(0x99),
+                I::cqo => text.extend([encode_rex(true, false, false, false, false), 0x99]),
+                I::div_r8 | I::div_r16 | I::div_r32 | I::div_r64 => {
+                    inst_r(text, op.size(), &[0xF6], &[0xF7], ir.args(i, env), 6)
+                }
+                I::idiv_r8 | I::idiv_r16 | I::idiv_r32 | I::idiv_r64 => {
+                    inst_r(text, op.size(), &[0xF6], &[0xF7], ir.args(i, env), 7)
                 }
                 I::shl_ri8
                 | I::shl_ri16
@@ -332,12 +344,12 @@ pub fn write(
                     }
                     text.extend([if size == Size::S8 { 0xC0 } else { 0xC1 }, modrm.modrm, imm]);
                 }
-                I::neg_r8 => inst_r(text, &[0xF6], ir.args(i, env), 3, false),
+                I::neg_r8 => inst_r_legacy(text, &[0xF6], ir.args(i, env), 3, false),
                 I::neg_r16 | I::neg_r32 | I::neg_r64 => {
                     if op == I::neg_r16 {
                         text.push(P16);
                     }
-                    inst_r(text, &[0xF7], ir.args(i, env), 3, op == I::neg_r64);
+                    inst_r_legacy(text, &[0xF7], ir.args(i, env), 3, op == I::neg_r64);
                 }
                 I::xor_ri8 | I::xor_ri16 | I::xor_ri32 | I::xor_ri64 => {
                     inst_ri(text, op, &[0x80], &[0x81], ir.args(i, env), 6)
@@ -346,18 +358,7 @@ pub fn write(
                     inst_rr(text, op, &[0x30], &[0x31], ir.args(i, env))
                 }
                 I::lea_rm32 | I::lea_rm64 => {
-                    let opcode: &[u8] = &[0x8D];
-                    let (reg_val, reg_ptr, off) = ir.args(i, env);
-                    let wide = op == I::lea_rm64;
-                    let off = OffsetClass::from_imm(off);
-                    let a = encode_reg(reg_val);
-                    let b = encode_reg(reg_ptr);
-                    let rex = encode_rex(wide, a.ext(), false, b.ext(), a.force() || b.force());
-                    if rex != 0 {
-                        text.push(rex);
-                    }
-                    text.extend(opcode);
-                    modrm_rm(text, off, a, b);
+                    inst_rm(text, op.size(), &[], &[0x8D], ir.args(i, env));
                 }
                 I::lea_function => {
                     let (dst, function) = ir.args(i, env);
@@ -432,19 +433,6 @@ fn mov_rr(text: &mut Vec<u8>, size: Size, (a, b): (Reg, Reg)) {
     inst_rr_generic_inner(text, size, &[0x88], &[0x89], (a, b))
 }
 
-fn modrm_rm(text: &mut Vec<u8>, mut offset: OffsetClass, reg: EncodedReg, rm: EncodedReg) {
-    if rm.bits == 0b101 && matches!(offset, OffsetClass::Zero) {
-        // becomes [disp32] otherwise
-        offset = OffsetClass::Byte(0);
-    }
-    text.push(offset.modrm_bits() | (reg.bits << 3) | rm.bits);
-    if rm.bits == 0b100 {
-        // sib byte
-        text.push(0x24);
-    }
-    offset.write(text);
-}
-
 /// emits an instruction with a placeholder disp32 (rip-relative address) and returns the offset
 /// of that offset placeholder to be used for emitting a relocation
 fn disp32(text: &mut Vec<u8>, opcode: &[u8], reg: Reg) -> u64 {
@@ -460,7 +448,19 @@ fn disp32(text: &mut Vec<u8>, opcode: &[u8], reg: Reg) -> u64 {
     relocation_offset
 }
 
-fn inst_r(text: &mut Vec<u8>, opcode: &[u8], a: Reg, extension: u8, wide: bool) {
+fn inst_r(text: &mut Vec<u8>, size: Size, opcode_8: &[u8], opcode: &[u8], a: Reg, extension: u8) {
+    if size == Size::S16 {
+        text.push(P16);
+    }
+    let modrm = encode_modrm_r(a, size == Size::S64, extension);
+    if modrm.rex != 0 {
+        text.push(modrm.rex);
+    }
+    text.extend(if size == Size::S8 { opcode_8 } else { opcode });
+    text.push(modrm.modrm);
+}
+
+fn inst_r_legacy(text: &mut Vec<u8>, opcode: &[u8], a: Reg, extension: u8, wide: bool) {
     let modrm = encode_modrm_r(a, wide, extension);
     if modrm.rex != 0 {
         text.push(modrm.rex);
@@ -505,38 +505,71 @@ fn inst_rm(
     size: Size,
     opcode_8: &[u8],
     opcode: &[u8],
-    (reg_val, reg_ptr, off): (Reg, Reg, Int32),
+    (reg_val, reg_ptr, off, index_reg, scale): (Reg, Reg, Int32, Reg, Int32),
 ) {
     if size == Size::S16 {
         text.push(P16);
     }
-    let off = OffsetClass::from_imm(off);
+    let mut off = OffsetClass::from_imm(off);
     let a = encode_reg(reg_val);
     let b = encode_reg(reg_ptr);
+    let index = encode_reg(index_reg);
+    debug_assert!(index.bits != 0b100);
     let rex = encode_rex(
         size == Size::S64,
         a.ext(),
-        false,
+        index.ext(),
         b.ext(),
-        a.force() || b.force(),
+        a.force() || b.force() || index.force(),
     );
-    debug_assert!(!((a.prevents_rex() || b.prevents_rex()) && rex != 0));
+    debug_assert!(!((a.prevents_rex() || b.prevents_rex() || index.prevents_rex()) && rex != 0));
     if rex != 0 {
         text.push(rex);
     }
     text.extend(if size == Size::S8 { opcode_8 } else { opcode });
-    modrm_rm(text, off, a, b);
+    if b.bits == 0b101 && matches!(off, OffsetClass::Zero) {
+        // becomes [disp32] otherwise
+        off = OffsetClass::Byte(0);
+    }
+    let need_sib = index_reg != Reg::none || b.bits == 0b100 || reg_ptr == Reg::none;
+
+    if need_sib {
+        text.extend([
+            off.modrm_bits() | (a.bits << 3) | 0b100,
+            sib(scale, (index_reg != Reg::none).then_some(index), b),
+        ]);
+    } else {
+        text.push(off.modrm_bits() | (a.bits << 3) | b.bits);
+    }
+    off.write(text);
 }
 
+fn sib(scale: u32, index: Option<EncodedReg>, base: EncodedReg) -> u8 {
+    let scale_bits = match scale {
+        1 => 0b00,
+        2 => 0b01,
+        4 => 0b10,
+        8 => 0b11,
+        _ => unreachable!("invalid scale for memory operand: {scale}"),
+    };
+    let index_bits = index.map_or(0b100, |index| index.bits);
+    (scale_bits << 6) | (index_bits << 3) | base.bits
+}
 fn inst_mr(
     text: &mut Vec<u8>,
     size: Size,
     opcode_8: &[u8],
     opcode: &[u8],
-    (reg_ptr, off, reg_val): (Reg, Int32, Reg),
+    (reg_ptr, off, index, scale, reg_val): (Reg, Int32, Reg, Int32, Reg),
 ) {
     // encoded exactly the same way, just swap the arguments around correctly
-    inst_rm(text, size, opcode_8, opcode, (reg_val, reg_ptr, off));
+    inst_rm(
+        text,
+        size,
+        opcode_8,
+        opcode,
+        (reg_val, reg_ptr, off, index, scale),
+    );
 }
 
 fn inst_ri(
@@ -669,6 +702,7 @@ impl OffsetClass {
     }
 }
 
+#[derive(Debug)]
 struct Modrm {
     rex: u8,
     modrm: u8,
@@ -707,6 +741,7 @@ fn encode_reg(r: Reg) -> EncodedReg {
     use Reg::*;
 
     let (bits, kind) = match r {
+        none => (0, RegKind::Normal),
         al | ax | rax | eax => (0, RegKind::Normal),
         cl | cx | rcx | ecx => (1, RegKind::Normal),
         dl | dx | rdx | edx => (2, RegKind::Normal),
@@ -771,12 +806,12 @@ fn encode_modrm_rr(reg: Reg, rm: Reg, wide: bool) -> Modrm {
     }
 }
 
-fn encode_modrm_ri(reg: Reg, wide: bool, i: u8) -> Modrm {
+fn encode_modrm_ri(rm: Reg, wide: bool, i: u8) -> Modrm {
     debug_assert!(i < 8);
-    let r = encode_reg(reg);
-    debug_assert!(!(r.prevents_rex() && wide));
+    let rm = encode_reg(rm);
+    debug_assert!(!(rm.prevents_rex() && wide));
     Modrm {
-        rex: encode_rex(wide, r.ext(), false, false, r.force()),
-        modrm: MODRM_RR | i << 3 | r.bits,
+        rex: encode_rex(wide, false, false, rm.ext(), rm.force()),
+        modrm: MODRM_RR | i << 3 | rm.bits,
     }
 }

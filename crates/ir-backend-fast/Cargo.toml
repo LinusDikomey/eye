@@ -4,5 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-ir = { path = "../ir" }
+ir.workspace = true
+dmap.workspace = true
 tracing.workspace = true

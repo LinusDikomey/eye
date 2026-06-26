@@ -564,23 +564,31 @@ fn lower_expr(ctx: &mut Ctx, node: NodeId) -> Result<ValueOrPlace> {
         }
 
         &Node::Const { id, ty } => {
-            // TODO: don't create a new global constant on each usage
             // PERF: cloning const value
             let (const_val, global_ty) = ctx.compiler.const_values[id.idx()].clone();
             debug_assert_eq!(ctx.hir[ty], global_ty, "Global used as wrong type");
             let ir_ty = ctx.get_hir_type(ty)?;
-            let layout = ir::type_layout(ir_ty, &ctx.builder.types, ctx.builder.env.primitives());
-            let mut storage = vec![0; layout.size as usize].into_boxed_slice();
-            if const_value::translate(&const_val, global_ty, ctx.compiler, &mut storage).is_err() {
+            let global = ctx.instances.get_or_create_const_value(id, || {
+                let layout =
+                    ir::type_layout(ir_ty, &ctx.builder.types, ctx.builder.env.primitives());
+                let mut storage = vec![0; layout.size as usize].into_boxed_slice();
+                if const_value::translate(&const_val, global_ty, ctx.compiler, &mut storage)
+                    .is_err()
+                {
+                    return None;
+                }
+                let global = ctx.builder.env.add_global(
+                    *main,
+                    format!("const_{}", id.0),
+                    layout.align,
+                    storage,
+                    true,
+                );
+                Some(global)
+            });
+            let Some(global) = global else {
                 crash_point!(ctx);
-            }
-            let global = ctx.builder.env.add_global(
-                *main,
-                format!("const_{}", id.0),
-                layout.align,
-                storage,
-                true,
-            );
+            };
             let ir_ty = ctx.builder.types.add(ir_ty);
             let global = ctx.builder.append(mem.Global(global, ctx.ptr_ty));
             ctx.builder.append(mem.Load(global, ir_ty))

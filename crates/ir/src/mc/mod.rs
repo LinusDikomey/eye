@@ -8,6 +8,7 @@ pub mod macros;
 
 pub use abi::Abi;
 pub use dialect::{Mc, McInsts};
+use dmap::DHashMap;
 pub use macros::registers;
 pub use parcopy::ParcopySolver;
 pub use regalloc::{Regalloc, regalloc};
@@ -43,6 +44,7 @@ pub trait Register: 'static + Copy {
         + Not<Output = Self::RegisterBits>
         + BitOr<Output = Self::RegisterBits>
         + Eq;
+    type Class: Copy + Eq + Into<u8> + TryFrom<u8>;
     const NO_BITS: Self::RegisterBits;
     const ALL_BITS: Self::RegisterBits;
 
@@ -52,7 +54,7 @@ pub trait Register: 'static + Copy {
 
     fn get_bit(self, bits: &Self::RegisterBits) -> bool;
     fn set_bit(self, bits: &mut Self::RegisterBits, bit: bool);
-    fn allocate_reg(free_bits: Self::RegisterBits, class: RegClass) -> Option<Self>;
+    fn allocate_reg(free_bits: Self::RegisterBits, class: Self::Class) -> Option<Self>;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -61,6 +63,7 @@ impl Register for UnknownRegister {
     const DEFAULT: Self = Self(0);
 
     type RegisterBits = u8;
+    type Class = u8;
     const NO_BITS: Self::RegisterBits = 0;
     const ALL_BITS: Self::RegisterBits = 0;
 
@@ -82,7 +85,7 @@ impl Register for UnknownRegister {
 
     fn set_bit(self, _bits: &mut Self::RegisterBits, _bit: bool) {}
 
-    fn allocate_reg(_free_bits: Self::RegisterBits, _class: RegClass) -> Option<Self> {
+    fn allocate_reg(_free_bits: Self::RegisterBits, _class: Self::Class) -> Option<Self> {
         None
     }
 }
@@ -102,17 +105,6 @@ pub enum OpUsage {
     Def = 0b01,
     Use = 0b10,
     DefUse = 0b11,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RegClass {
-    GP8,
-    GP16,
-    GP32,
-    GP64,
-    F32,
-    F64,
-    Flags,
 }
 
 pub struct StackSlot {
@@ -147,6 +139,17 @@ pub fn parallel_copy_args(
 pub struct BackendState {
     pub stack_size: u32,
 }
+impl BackendState {
+    /// creates a properly aligned stack index assuming the stack frame's total alignment is at least
+    /// as large as the one from the Layout.
+    /// Assumes a stack growing down, subtract layout.size if the stack should grow up.
+    pub fn alloc_stack(&mut self, layout: Layout) -> u32 {
+        let align = layout.align.get() as u32;
+        self.stack_size = self.stack_size.next_multiple_of(align);
+        self.stack_size += layout.size as u32;
+        self.stack_size
+    }
+}
 
 pub struct IselCtx<'a, I: McInst> {
     pub main_module: ModuleId,
@@ -157,6 +160,7 @@ pub struct IselCtx<'a, I: McInst> {
     use_counts: UseCounts,
     pub state: &'a mut BackendState,
     next_blocks: Box<[Option<BlockId>]>,
+    pub stack_slots: &'a DHashMap<Ref, u32>,
 }
 impl<'a, I: McInst> IselCtx<'a, I> {
     pub fn new(
@@ -169,6 +173,7 @@ impl<'a, I: McInst> IselCtx<'a, I> {
         abi: &'static dyn Abi<I>,
         state: &'a mut BackendState,
         block_graph: &BlockGraph<FunctionIr>,
+        stack_slots: &'a DHashMap<Ref, u32>,
     ) -> Self {
         let use_counts = UseCounts::compute(ir, env);
         let mut next_blocks: Box<[Option<BlockId>]> = vec![None; ir.block_ids().len()].into();
@@ -187,25 +192,37 @@ impl<'a, I: McInst> IselCtx<'a, I> {
             abi,
             state,
             next_blocks,
+            stack_slots,
         }
     }
 
     pub fn remove_use(&mut self, r: Ref, ir: &mut IrModify, env: &Environment) {
-        self.use_counts[r] -= 1;
-        if self.use_counts[r] == 0 && env[ir.get_inst(r).function].flags.pure() {
-            // last use of pure instruction was remove, delete it
+        let count = self.use_counts[r].get() - 1;
+        self.use_counts[r].set(count);
+        let inst = ir.get_inst(r);
+        if count == 0 && env[inst.function].flags.pure() {
+            // last use of pure instruction was removed, remove uses from it's inputs and delete it
+
+            // PERF: use small vec here
+            let args: Box<[Ref]> = ir
+                .args_iter(inst, env)
+                .filter_map(|arg| {
+                    if let Argument::Ref(r) = arg {
+                        Some(r)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            for arg in args {
+                self.remove_use(arg, ir, env);
+            }
             ir.replace_with(env, r, Ref::UNIT);
         }
     }
 
-    /// creates a properly aligned stack index assuming the stack frame's total alignment is at least
-    /// as large as the one from the Layout.
-    /// Assumes a stack growing down, subtract layout.size if the stack should grow up.
-    pub fn alloc_stack(&mut self, layout: Layout) -> u32 {
-        let align = layout.align.get() as u32;
-        self.state.stack_size = self.state.stack_size.next_multiple_of(align);
-        self.state.stack_size += layout.size as u32;
-        self.state.stack_size
+    pub fn add_use(&self, r: Ref) {
+        self.use_counts[r].set(self.use_counts[r].get() + 1);
     }
 
     pub fn next_block(&self, block: BlockId) -> Option<BlockId> {
@@ -234,18 +251,18 @@ impl<'a, I: McInst> crate::rewrite::RewriteCtx for IselCtx<'a, I> {
 impl<'a, I: McInst> IselCtx<'a, I> {
     pub fn use_count(&self, r: Ref) -> u32 {
         if r.into_ref().is_some() {
-            self.use_counts[r]
+            self.use_counts[r].get()
         } else {
             0
         }
     }
 
     pub fn single_use(&self, r: Ref) -> bool {
-        self.use_counts[r] == 1
+        self.use_counts[r].get() == 1
     }
 
     pub fn unused(&self, r: Ref) -> bool {
-        self.use_counts[r] == 0
+        self.use_counts[r].get() == 0
     }
 
     pub fn create_args_copy(

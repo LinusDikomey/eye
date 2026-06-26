@@ -5,22 +5,42 @@ use ir::{
     mc::{Abi, McInst, Register},
 };
 
-ir::mc::registers! { Reg RegisterBits
-    GP64 => rax rbx rcx rdx rbp rsi rdi rsp rip;
-    GP32 => eax ebx ecx edx ebp esi edi esp;
-    GP16 => ax  bx  cx  dx  bp  si  di  sp;
-    GP8 =>  al  bl  cl  dl  bpl sil dil spl;
-    GP8 =>  ah  bh  ch  dh;
-    GP64 => r8  r9  r10  r11  r12  r13  r14  r15;
-    GP32 => r8d r9d r10d r11d r12d r13d r14d r15d;
-    GP16 => r8w r9w r10w r11w r12w r13w r14w r15w;
-    GP8 => r8b r9b r10b r11b r12b r13b r14b r15b;
+ir::mc::registers! { RegBits
+    GP64 => rax rbx rcx rdx rbp rsi rdi rsp rip r8  r9  r10  r11  r12  r13  r14  r15 none;
+    GP32 => eax ebx ecx edx ebp esi edi esp     r8d r9d r10d r11d r12d r13d r14d r15d;
+    GP16 => ax  bx  cx  dx  bp  si  di  sp      r8w r9w r10w r11w r12w r13w r14w r15w;
+    GP8  => al  bl  cl  dl  bpl sil dil spl     r8b r9b r10b r11b r12b r13b r14b r15b
+            ah  bh  ch  dh;
     Flags => eflags;
+    F32  =>;
+    F64  =>;
+    !secondary:
+
+    // these are variants of the generic registers but usable in index position
+    // (they exclude rsp and r12 since they aren't allowed in SiB index encodings)
+    GP64I => rax rbx rcx rdx rbp rsi rdi rip r8  r9  r10  r11  r13  r14  r15 none;
+    GP32I => eax ebx ecx edx ebp esi edi     r8d r9d r10d r11d r13d r14d r15d;
+    GP16I => ax  bx  cx  dx  bp  si  di      r8w r9w r10w r11w r13w r14w r15w;
+    GP8I  => al  bl  cl  dl  bpl sil dil     r8b r9b r10b r11b r13b r14b r15b
+             ah  bh  ch  dh;
+}
+impl RegClass {
+    pub fn into_index(self) -> RegClass {
+        match self {
+            Self::GP64 | Self::GP64I => Self::GP64I,
+            Self::GP32 | Self::GP32I => Self::GP32I,
+            Self::GP16 | Self::GP16I => Self::GP16I,
+            Self::GP8 | Self::GP8I => Self::GP8I,
+            Self::Flags | Self::F32 | Self::F64 => {
+                panic!("cannot convert reg class {self:?} into index class")
+            }
+        }
+    }
 }
 
 pub const TMP_REGISTER: Reg = Reg::r15;
-pub const PREOCCUPIED_REGISTERS: RegisterBits =
-    RegisterBits(Reg::rbp.bit().0 | Reg::rsp.bit().0 | TMP_REGISTER.bit().0);
+pub const PREOCCUPIED_REGISTERS: RegBits =
+    RegBits(Reg::rbp.bit().0 | Reg::rsp.bit().0 | TMP_REGISTER.bit().0);
 
 impl fmt::Display for Reg {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -28,7 +48,7 @@ impl fmt::Display for Reg {
     }
 }
 impl Reg {
-    pub const fn bit(self) -> RegisterBits {
+    pub const fn bit(self) -> RegBits {
         use Reg::*;
         let bit_index = match self {
             rax | eax | ax | ah | al => 0,
@@ -49,13 +69,15 @@ impl Reg {
             r15 | r15d | r15w | r15b => 15,
             eflags => 16,
             rip => 17,
+            none => 31,
         };
-        RegisterBits(1 << bit_index)
+        RegBits(1 << bit_index)
     }
 
     pub const fn to_64_bits(self) -> Self {
         use Reg::*;
         match self {
+            none => none,
             rax | eax | ax | al | ah => rax,
             rbx | ebx | bx | bl | bh => rbx,
             rcx | ecx | cx | cl | ch => rcx,
@@ -101,29 +123,29 @@ impl Reg {
 
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct RegisterBits(u32);
-impl ops::Not for RegisterBits {
+pub struct RegBits(u32);
+impl ops::Not for RegBits {
     type Output = Self;
 
     fn not(self) -> Self::Output {
         Self(!self.0)
     }
 }
-impl ops::BitAnd for RegisterBits {
+impl ops::BitAnd for RegBits {
     type Output = Self;
 
     fn bitand(self, rhs: Self) -> Self::Output {
         Self(self.0 & rhs.0)
     }
 }
-impl ops::BitOr for RegisterBits {
+impl ops::BitOr for RegBits {
     type Output = Self;
 
     fn bitor(self, rhs: Self) -> Self::Output {
         Self(self.0 | rhs.0)
     }
 }
-impl RegisterBits {
+impl RegBits {
     pub const fn new() -> Self {
         Self(0)
     }
@@ -184,15 +206,15 @@ ir::instructions! {
     mov_rr32 to: MCReg(Usage::Def) from: MCReg(Usage::Use);
     mov_rr64 to: MCReg(Usage::Def) from: MCReg(Usage::Use);
 
-    mov_rm8  to: MCReg(Usage::Def) from: MCReg(Usage::Use) offset: Int32;
-    mov_rm16 to: MCReg(Usage::Def) from: MCReg(Usage::Use) offset: Int32;
-    mov_rm32 to: MCReg(Usage::Def) from: MCReg(Usage::Use) offset: Int32;
-    mov_rm64 to: MCReg(Usage::Def) from: MCReg(Usage::Use) offset: Int32;
+    mov_rm8  to: MCReg(Usage::Def) from: MCReg(Usage::Use) offset: Int32 index: MCReg(Usage::Use) scale: Int32;
+    mov_rm16 to: MCReg(Usage::Def) from: MCReg(Usage::Use) offset: Int32 index: MCReg(Usage::Use) scale: Int32;
+    mov_rm32 to: MCReg(Usage::Def) from: MCReg(Usage::Use) offset: Int32 index: MCReg(Usage::Use) scale: Int32;
+    mov_rm64 to: MCReg(Usage::Def) from: MCReg(Usage::Use) offset: Int32 index: MCReg(Usage::Use) scale: Int32;
 
-    mov_mr8  to: MCReg(Usage::Use) offset: Int32 from: MCReg(Usage::Use);
-    mov_mr16 to: MCReg(Usage::Use) offset: Int32 from: MCReg(Usage::Use);
-    mov_mr32 to: MCReg(Usage::Use) offset: Int32 from: MCReg(Usage::Use);
-    mov_mr64 to: MCReg(Usage::Use) offset: Int32 from: MCReg(Usage::Use);
+    mov_mr8  to: MCReg(Usage::Use) offset: Int32 index: MCReg(Usage::Use) scale: Int32 from: MCReg(Usage::Use);
+    mov_mr16 to: MCReg(Usage::Use) offset: Int32 index: MCReg(Usage::Use) scale: Int32 from: MCReg(Usage::Use);
+    mov_mr32 to: MCReg(Usage::Use) offset: Int32 index: MCReg(Usage::Use) scale: Int32 from: MCReg(Usage::Use);
+    mov_mr64 to: MCReg(Usage::Use) offset: Int32 index: MCReg(Usage::Use) scale: Int32 from: MCReg(Usage::Use);
 
     ret0 !terminator;
     ret64 !terminator;
@@ -277,6 +299,21 @@ ir::instructions! {
     imul_rri32 dst: MCReg(Usage::Def) reg: MCReg(Usage::Use) imm: Int32;
     imul_rri64 dst: MCReg(Usage::Def) reg: MCReg(Usage::Use) imm: Int32;
 
+    cbw;
+    cwd;
+    cdq;
+    cqo;
+
+    div_r8  reg: MCReg(Usage::Use);
+    div_r16 reg: MCReg(Usage::Use);
+    div_r32 reg: MCReg(Usage::Use);
+    div_r64 reg: MCReg(Usage::Use);
+
+    idiv_r8  reg: MCReg(Usage::Use);
+    idiv_r16 reg: MCReg(Usage::Use);
+    idiv_r32 reg: MCReg(Usage::Use);
+    idiv_r64 reg: MCReg(Usage::Use);
+
     shl_ri8  reg: MCReg(Usage::DefUse) imm: Int32;
     shl_ri16 reg: MCReg(Usage::DefUse) imm: Int32;
     shl_ri32 reg: MCReg(Usage::DefUse) imm: Int32;
@@ -302,8 +339,8 @@ ir::instructions! {
     xor_ri32 reg: MCReg(Usage::DefUse) imm: Int32;
     xor_ri64 reg: MCReg(Usage::DefUse) imm: Int32;
 
-    lea_rm32 to: MCReg(Usage::Def) addr: MCReg(Usage::Use) offset: Int32;
-    lea_rm64 to: MCReg(Usage::Def) addr: MCReg(Usage::Use) offset: Int32;
+    lea_rm32 to: MCReg(Usage::Def) addr: MCReg(Usage::Use) offset: Int32 index: MCReg(Usage::Use) scale: Int32;
+    lea_rm64 to: MCReg(Usage::Def) addr: MCReg(Usage::Use) offset: Int32 index: MCReg(Usage::Use) scale: Int32;
     lea_function to: MCReg(Usage::Def) function: FunctionId;
     lea_global to: MCReg(Usage::Def) global: GlobalId;
 
@@ -357,7 +394,10 @@ impl X86 {
             | Self::movsx32_rr8
             | Self::movsx64_rr8
             | Self::movzx16_rr8
-            | Self::movzx32_rr8 => Size::S8,
+            | Self::movzx32_rr8
+            | Self::cbw
+            | Self::div_r8
+            | Self::idiv_r8 => Size::S8,
 
             Self::or_rr16
             | Self::and_rr16
@@ -381,7 +421,10 @@ impl X86 {
             | Self::xor_rr16
             | Self::movsx32_rr16
             | Self::movsx64_rr16
-            | Self::movzx32_rr16 => Size::S16,
+            | Self::movzx32_rr16
+            | Self::cwd
+            | Self::div_r16
+            | Self::idiv_r16 => Size::S16,
 
             Self::or_rr32
             | Self::and_rr32
@@ -404,7 +447,10 @@ impl X86 {
             | Self::xor_ri32
             | Self::lea_rm32
             | Self::xor_rr32
-            | Self::movsx64_rr32 => Size::S32,
+            | Self::movsx64_rr32
+            | Self::cdq
+            | Self::div_r32
+            | Self::idiv_r32 => Size::S32,
 
             Self::or_rr64
             | Self::and_rr64
@@ -431,7 +477,10 @@ impl X86 {
             | Self::xor_rr64
             | Self::lea_function
             | Self::lea_global
-            | Self::call_r64 => Size::S64,
+            | Self::call_r64
+            | Self::cqo
+            | Self::div_r64
+            | Self::idiv_r64 => Size::S64,
 
             Self::ret0
             | Self::ret64
@@ -465,23 +514,48 @@ impl X86 {
 }
 impl McInst for X86 {
     type Reg = Reg;
-    fn implicit_def(&self, abi: &'static dyn Abi<Self>) -> RegisterBits {
+    fn implicit_def(&self, abi: &'static dyn Abi<Self>) -> RegBits {
         match self {
             Self::push_r64 | Self::pop_r64 => Reg::rsp.bit(),
             Self::cmp_rr32 => Reg::eflags.bit(),
-            Self::add_rr8 | Self::add_rr16 | Self::add_rr32 | Self::add_rr64 => Reg::eflags.bit(),
-            Self::sub_rr8 | Self::sub_rr16 | Self::sub_rr32 | Self::sub_rr64 => Reg::eflags.bit(),
+            #[rustfmt::skip]
+            Self::add_rr8 | Self::add_rr16 | Self::add_rr32 | Self::add_rr64
+            | Self::add_ri8 | Self::add_ri16 | Self::add_ri32 | Self::add_ri64
+            | Self::sub_rr8 | Self::sub_rr16 | Self::sub_rr32 | Self::sub_rr64
+            | Self::sub_ri8 | Self::sub_ri16 | Self::sub_ri32 | Self::sub_ri64
+            | Self::imul_r8 | Self::imul_rr16 | Self::imul_rr32 | Self::imul_rr64
+            | Self::imul_rri16 | Self::imul_rri64 => Reg::eflags.bit(),
+            Self::div_r8 | Self::idiv_r8 => Reg::ax.bit() | Reg::eflags.bit(),
+            Self::div_r16
+            | Self::div_r32
+            | Self::div_r64
+            | Self::idiv_r16
+            | Self::idiv_r32
+            | Self::idiv_r64 => Reg::rax.bit() | Reg::rdx.bit() | Reg::eflags.bit(),
+            Self::cbw => Reg::al.bit(),
+            Self::cwd => Reg::dx.bit() | Reg::ax.bit(),
+            Self::cdq | Self::cqo => Reg::rdx.bit() | Reg::rax.bit(),
             Self::call_function | Self::call_r64 => abi.caller_saved(),
             _ => Reg::NO_BITS,
         }
     }
 
-    fn implicit_use(&self, abi: &'static dyn Abi<Self>) -> RegisterBits {
+    fn implicit_use(&self, abi: &'static dyn Abi<Self>) -> RegBits {
         match self {
             Self::push_r64 | Self::pop_r64 => Reg::rsp.bit(),
             Self::jl => Reg::eflags.bit(),
             Self::ret64 => abi.return_regs(1),
             Self::ret128 => abi.return_regs(2),
+            Self::div_r8 | Self::idiv_r8 => Reg::ax.bit() | Reg::eflags.bit(),
+            Self::div_r16
+            | Self::div_r32
+            | Self::div_r64
+            | Self::idiv_r16
+            | Self::idiv_r32
+            | Self::idiv_r64 => Reg::rax.bit() | Reg::rdx.bit() | Reg::eflags.bit(),
+            Self::cbw => Reg::al.bit(),
+            Self::cwd => Reg::ax.bit(),
+            Self::cdq | Self::cqo => Reg::rax.bit(),
             _ => Reg::NO_BITS,
         }
     }

@@ -275,6 +275,28 @@ impl<
         [self.0.into(), self.1.into(), self.2.into(), self.3.into()].into_iter()
     }
 }
+impl<
+    'a,
+    A0: Into<Argument<'a>>,
+    A1: Into<Argument<'a>>,
+    A2: Into<Argument<'a>>,
+    A3: Into<Argument<'a>>,
+    A4: Into<Argument<'a>>,
+> IntoArgs<'a> for (A0, A1, A2, A3, A4)
+{
+    type Args = std::array::IntoIter<Argument<'a>, 5>;
+
+    fn into_args(self) -> Self::Args {
+        [
+            self.0.into(),
+            self.1.into(),
+            self.2.into(),
+            self.3.into(),
+            self.4.into(),
+        ]
+        .into_iter()
+    }
+}
 impl<'a, A: IntoArgs<'a>, V: Copy + Into<Argument<'a>>> IntoArgs<'a> for (A, &'a [V]) {
     type Args = VarargsIntoArgs<'a, A, V>;
 

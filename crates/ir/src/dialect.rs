@@ -219,7 +219,8 @@ instructions! {
     PtrToInt value: Ref !pure;
     Global global: GlobalId !pure;
     ArrayIndex array_ptr: Ref elem_ty: TypeId a: Ref !pure;
-    Offset ptr: Ref offset: Int32 !pure;
+    /// interprets the offset as i64
+    Offset ptr: Ref offset: Int !pure;
     FunctionPtr function: FunctionId !pure;
     CallPtr ptr: Ref !varargs = Some(Parameter::Ref);
 }

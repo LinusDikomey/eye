@@ -17,12 +17,12 @@ pub use traits::trait_def;
 pub use type_def::type_def;
 
 use crate::{
-    Compiler, InvalidTypeError, Type,
+    Compiler, Def, InvalidTypeError, Type,
     callconv::CallConv,
     check::closure::CheckedClosure,
     compiler::{
-        BodyOrTypes, CheckedFunction, Generics, LocalScope, LocalScopeParent, ModuleSpan,
-        Signature, VarId, builtins,
+        BodyOrTypes, CheckedFunction, FunctionContext, Generics, LocalScope, LocalScopeParent,
+        ModuleSpan, Signature, VarId, builtins,
     },
     eval::ConstValueId,
     hir::{CastId, HIRBuilder, Hir, LValue, Node},
@@ -71,7 +71,8 @@ pub fn function<H: Hooks>(
     id: parser::ast::FunctionId,
     hooks: &mut H,
 ) -> crate::compiler::CheckedFunction {
-    let ast = &compiler.modules[module.idx()].parsed.get().unwrap().ast;
+    let parsed = compiler.modules[module.idx()].parsed.get().unwrap();
+    let ast = &parsed.ast;
 
     let function = &ast[id];
     let name = crate::compiler::function_name(ast, function, module, id);
@@ -126,6 +127,27 @@ pub fn function<H: Hooks>(
         BodyOrTypes::Types(types)
     };
 
+    let context = match &function.context {
+        ast::FunctionContext::None => FunctionContext::None,
+        ast::FunctionContext::Method(type_id) => {
+            FunctionContext::Method(*parsed.symbols.types[type_id.idx()].get().unwrap())
+        }
+        ast::FunctionContext::Impl(trait_id, ty) => FunctionContext::Impl(
+            (module, *trait_id),
+            compiler.resolve_type(ty, module, function.scope),
+        ),
+        ast::FunctionContext::InherentImpl(type_id, trait_path) => {
+            match compiler.resolve_path(module, function.scope, *trait_path) {
+                Def::Trait(trait_module, trait_id) => FunctionContext::InherentImpl(
+                    *parsed.symbols.types[type_id.idx()].get().unwrap(),
+                    (trait_module, trait_id),
+                ),
+                // since the trait is invalid anyways, this method hopefully won't need the correct context
+                _ => FunctionContext::None,
+            }
+        }
+    };
+
     CheckedFunction {
         name,
         params: param_types,
@@ -133,6 +155,7 @@ pub fn function<H: Hooks>(
         return_type,
         generic_count,
         body_or_types,
+        context,
     }
 }
 
@@ -416,6 +439,7 @@ impl<H: Hooks> Ctx<'_, H> {
                 return_type: closure.return_type,
                 generic_count,
                 body_or_types: BodyOrTypes::Body(hir),
+                context: FunctionContext::None, // TODO: could encode closure context here in the future
             });
         }
         for (exhaustion, ty, pat) in self.deferred_exhaustions {

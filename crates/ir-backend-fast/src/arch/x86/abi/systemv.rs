@@ -9,7 +9,7 @@ use ir::{
 
 use crate::arch::x86::{
     X86,
-    isa::{Reg, RegisterBits},
+    isa::{Reg, RegBits},
 };
 
 use super::Abi;
@@ -284,15 +284,11 @@ impl Abi<X86> for SystemV {
     }
 
     fn caller_saved(&self) -> <<X86 as ir::mc::McInst>::Reg as ir::mc::Register>::RegisterBits {
-        CALLER_SAVED
-            .iter()
-            .fold(RegisterBits::new(), |a, b| a | b.bit())
+        CALLER_SAVED.iter().fold(RegBits::new(), |a, b| a | b.bit())
     }
 
     fn callee_saved(&self) -> <<X86 as ir::mc::McInst>::Reg as ir::mc::Register>::RegisterBits {
-        CALLEE_SAVED
-            .iter()
-            .fold(RegisterBits::new(), |a, b| a | b.bit())
+        CALLEE_SAVED.iter().fold(RegBits::new(), |a, b| a | b.bit())
     }
 
     fn return_regs(
@@ -301,7 +297,7 @@ impl Abi<X86> for SystemV {
     ) -> <<X86 as ir::mc::McInst>::Reg as ir::mc::Register>::RegisterBits {
         RETURN_REGS[0..value_count as usize]
             .iter()
-            .fold(RegisterBits::new(), |a, b| a | b[0].bit())
+            .fold(RegBits::new(), |a, b| a | b[0].bit())
     }
 }
 
@@ -459,7 +455,7 @@ fn insert(
     } else {
         let shifted = if byte_offset != 0 {
             // we need to copy to a tmp variable, shift it to the right place and then or it in
-            let tmp = ir.new_reg(to_class);
+            let tmp = ir.new_reg::<Reg>(to_class);
             ir.add_before(env, before, parallel_copy(mc, &[tmp, from]));
             ir.add_before(env, before, x86.shl_ri64(tmp, byte_offset as u32 * 8));
             tmp

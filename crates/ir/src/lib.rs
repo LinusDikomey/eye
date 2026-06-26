@@ -273,6 +273,10 @@ impl MCReg {
     const VIRT_BIT: u32 = 1 << 31;
     const DEAD_BIT: u32 = 1 << 30;
 
+    pub const fn from_inner(inner: u32) -> Self {
+        Self(inner)
+    }
+
     pub fn from_phys<R: Register>(phys: R) -> Self {
         let v = phys.encode();
         debug_assert!(
@@ -627,7 +631,8 @@ pub struct FunctionIr {
     blocks: Vec<BlockInfo>,
     insts: Vec<Instruction>,
     extra: Vec<u32>,
-    mc_regs: Vec<RegClass>,
+    // isa-specific register class encoded as u8
+    mc_regs: Vec<u8>,
 }
 impl FunctionIr {
     pub fn block_ids(&self) -> impl ExactSizeIterator<Item = BlockId> + use<> {
@@ -767,7 +772,7 @@ impl FunctionIr {
             Err(err) => {
                 panic!(
                     "Invalid arguments for {}.{}: {err:?}",
-                    std::any::type_name::<I>(),
+                    I::MODULE_NAME,
                     inst.op().name()
                 );
             }
@@ -848,10 +853,26 @@ impl FunctionIr {
         }
     }
 
-    pub fn new_reg(&mut self, class: RegClass) -> MCReg {
+    pub fn new_reg<R: Register>(&mut self, class: R::Class) -> MCReg {
         let r = self.mc_regs.len() as u32;
-        self.mc_regs.push(class);
+        self.mc_regs.push(class.into());
         MCReg::from_virt(r)
+    }
+
+    pub fn update_reg_class<R: Register>(
+        &mut self,
+        reg: MCReg,
+        update: impl FnOnce(R::Class) -> R::Class,
+    ) {
+        let i = reg
+            .virt()
+            .expect("Can't update class of a physical register") as usize;
+        self.mc_regs[i] = update(
+            self.mc_regs[i]
+                .try_into()
+                .unwrap_or_else(|_| panic!("invalid reg class")),
+        )
+        .into();
     }
 
     pub fn display<'a>(
@@ -884,11 +905,12 @@ impl FunctionIr {
         self.mc_regs.len() as u32
     }
 
-    pub fn virtual_reg_class(&self, r: MCReg) -> RegClass {
-        self.mc_regs[r.virt().unwrap() as usize]
+    pub fn virtual_reg_class<R: Register>(&self, r: MCReg) -> R::Class {
+        R::Class::try_from(self.mc_regs[r.virt().unwrap() as usize])
+            .unwrap_or_else(|_| panic!("Invalid class"))
     }
 
-    pub fn mc_reg_classes(&self) -> &[RegClass] {
+    pub fn mc_reg_classes(&self) -> &[u8] {
         &self.mc_regs
     }
 
@@ -1460,7 +1482,7 @@ use segment_list::SegmentList;
 #[doc(hidden)]
 pub use strum::FromRepr as __FromRepr;
 
-use crate::{flags::InstFlags, mc::RegClass};
+use crate::flags::InstFlags;
 
 #[macro_export]
 macro_rules! lifetime_or_static {
@@ -1708,7 +1730,7 @@ macro_rules! instructions {
             pub const fn name(self) -> &'static ::core::primitive::str {
                 match self {
                     $(
-                        Self::$instruction => stringify!(Self::$instruction),
+                        Self::$instruction => stringify!($instruction),
                     )*
                 }
             }

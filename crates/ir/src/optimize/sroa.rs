@@ -276,7 +276,8 @@ impl FunctionPass for SROA {
                     ir.add_before(
                         env,
                         access.location,
-                        self.mem.Offset(subdecl, access_offset, ptr_ty),
+                        self.mem
+                            .Offset(subdecl, i64::from(access_offset) as u64, ptr_ty),
                     )
                 };
                 match access.access {

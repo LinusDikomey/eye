@@ -1,8 +1,9 @@
 use std::convert::Infallible;
 
+use dmap::DHashMap;
 use ir::{
-    BlockGraph, BlockId, Environment, FunctionId, FunctionIr, IntoArgs, MCReg, ModuleId, ModuleOf,
-    Primitive, Ref, Type, TypeId, Types,
+    BlockGraph, BlockId, Environment, FunctionId, FunctionIr, IntoArgs, Layout, MCReg, ModuleId,
+    ModuleOf, Primitive, Ref, Type, TypeId, Types,
     dialect::{Arith, Mem, Tuple},
     mc::{Abi, BackendState, IselCtx, Mc, parallel_copy},
     modify::IrModify,
@@ -10,7 +11,13 @@ use ir::{
     slots::Slots,
 };
 
-use crate::arch::x86::{Reg, X86, isa::Size};
+use crate::arch::x86::{
+    Reg, X86,
+    isa::{RegClass, Size},
+};
+
+// not using proper from_virt function since it can't be const due to trait functions
+const NOREG: MCReg = MCReg::from_inner(Reg::none as u32);
 
 pub fn codegen(
     env: &Environment,
@@ -32,7 +39,16 @@ pub fn codegen(
     let mut body = body.clone();
 
     let mut regs = Slots::with_default(&body, types, MCReg::from_virt(0));
+    let mut stack_slots = DHashMap::default();
     for r in body.refs() {
+        // allocate stack for Decls
+        if let Some(inst) = body.get_inst(r).as_module(isel.mem)
+            && inst.op() == Mem::Decl
+        {
+            let decl_ty: TypeId = body.typed_args(&inst);
+            let layout = ir::type_layout(types[decl_ty], types, env.primitives());
+            stack_slots.insert(r, state.alloc_stack(layout));
+        }
         // special case some operations to reuse registers but allocate new slots for each primitive
         // value by default.
         if let Some(inst) = body.get_inst(r).as_module(isel.tuple) {
@@ -83,12 +99,12 @@ pub fn codegen(
             |regs, p, _offset| {
                 use Primitive as P;
                 match p {
-                    P::I1 | P::I8 | P::U8 => regs[0] = body.new_reg(ir::mc::RegClass::GP8),
-                    P::I16 | P::U16 => regs[0] = body.new_reg(ir::mc::RegClass::GP16),
-                    P::I32 | P::U32 => regs[0] = body.new_reg(ir::mc::RegClass::GP32),
-                    P::I64 | P::U64 | P::Ptr => regs[0] = body.new_reg(ir::mc::RegClass::GP64),
-                    P::F32 => regs[0] = body.new_reg(ir::mc::RegClass::F32),
-                    P::F64 => regs[0] = body.new_reg(ir::mc::RegClass::F64),
+                    P::I1 | P::I8 | P::U8 => regs[0] = body.new_reg::<Reg>(RegClass::GP8),
+                    P::I16 | P::U16 => regs[0] = body.new_reg::<Reg>(RegClass::GP16),
+                    P::I32 | P::U32 => regs[0] = body.new_reg::<Reg>(RegClass::GP32),
+                    P::I64 | P::U64 | P::Ptr => regs[0] = body.new_reg::<Reg>(RegClass::GP64),
+                    P::F32 => regs[0] = body.new_reg::<Reg>(RegClass::F32),
+                    P::F64 => regs[0] = body.new_reg::<Reg>(RegClass::F64),
                     _ => todo!(),
                 };
                 Ok(())
@@ -112,6 +128,7 @@ pub fn codegen(
         abi,
         state,
         &block_graph,
+        &stack_slots,
     );
 
     ir::rewrite::rewrite_in_place(
@@ -192,6 +209,9 @@ fn cmp_branch<
     impl use<A1, F1, A2, F2> + IntoArgs<'static>,
     TypeId,
 ) {
+    ctx.add_use(a);
+    ctx.add_use(b);
+    ctx.remove_use(cmp_r, ir, env);
     cmp(ctx, ir, types, env, dialects, cmp_r, a, b);
     branch(
         ctx,
@@ -388,8 +408,12 @@ ir::visitor! {
             Primitive::Ptr => todo!(),
         }
     };
-    (%r = arith.Div a b) => todo!("div") as ();
-    (%r = arith.Rem a b) => todo!("rem") as ();
+    (%r = arith.Div a b) => {
+        div_mod(ctx, ir, types, env, dialects, r, a, b, true);
+    };
+    (%r = arith.Rem a b) => {
+        div_mod(ctx, ir, types, env, dialects, r, a, b, false);
+    };
     (%r = arith.Or a b) => int_bin_op(ctx, ir, types, env, dialects, r, a, b, IntBinOp {
         i8: [X86::or_rr8, X86::or_ri8],
         i16: [X86::or_rr16, X86::or_ri16],
@@ -472,7 +496,6 @@ ir::visitor! {
         // PERF: cloning the args here
         let b1_args = b1_args.to_vec();
         let b2_args = b2_args.to_vec();
-        ctx.remove_use(cmp, ir, env);
         cmp_branch(ctx, ir, types, env, dialects, block, cmp, r, a, b, b1, b1_args, b2, b2_args,
             |b| x86.je(b),
             |b| x86.jne(b),
@@ -482,7 +505,6 @@ ir::visitor! {
         // PERF: cloning the args here
         let b1_args = b1_args.to_vec();
         let b2_args = b2_args.to_vec();
-        ctx.remove_use(cmp, ir, env);
         cmp_branch(ctx, ir, types, env, dialects, block, cmp, r, a, b, b1, b1_args, b2, b2_args,
             |b| x86.jl(b),
             |b| x86.jge(b),
@@ -492,7 +514,6 @@ ir::visitor! {
         // PERF: cloning the args here
         let b1_args = b1_args.to_vec();
         let b2_args = b2_args.to_vec();
-        ctx.remove_use(cmp, ir, env);
         cmp_branch(ctx, ir, types, env, dialects, block, cmp, r, a, b, b1, b1_args, b2, b2_args,
             |b| x86.jg(b),
             |b| x86.jle(b),
@@ -502,7 +523,6 @@ ir::visitor! {
         // PERF: cloning the args here
         let b1_args = b1_args.to_vec();
         let b2_args = b2_args.to_vec();
-        ctx.remove_use(cmp, ir, env);
         cmp_branch(ctx, ir, types, env, dialects, block, cmp, r, a, b, b1, b1_args, b2, b2_args,
             |b| x86.jle(b),
             |b| x86.jg(b),
@@ -512,7 +532,6 @@ ir::visitor! {
         // PERF: cloning the args here
         let b1_args = b1_args.to_vec();
         let b2_args = b2_args.to_vec();
-        ctx.remove_use(cmp, ir, env);
         cmp_branch(ctx, ir, types, env, dialects, block, cmp, r, a, b, b1, b1_args, b2, b2_args,
             |b| x86.jge(b),
             |b| x86.jl(b),
@@ -529,39 +548,51 @@ ir::visitor! {
         ctx.abi.implement_return(value, ir, env, mc, x86, types, &ctx.regs, r);
     };
     (%r = mem.Decl (type ty)) => {
-        let layout = ir::type_layout(types[ty], types, env.primitives());
-        let offset = ctx.alloc_stack(layout);
+        let offset = ctx.stack_slots[&r];
         let out = ctx.regs.get_one(r);
-        x86.lea_rm64(out, MCReg::from_phys(Reg::rbp), (-(offset as i32)) as u32)
+        let offset = i32::try_from(offset).expect("TODO: large stack offsets");
+        x86.lea_rm64(out, MCReg::from_phys(Reg::rbp), (-offset) as u32, NOREG, 1)
     };
-    (%r = mem.Store dst (%load = mem.Load src)) if ctx.single_use(load) => {
-        ctx.remove_use(load, ir, env);
+    (%r = mem.Store dst (%load = mem.Load src))
+        if ctx.single_use(load) && can_fold_memory_op(ir, env, load, (block, r)) =>
+    {
         // Load -> Store gets lowered to a memcpy
-        implement_memcpy(ctx, ir, types, env, dialects, src, dst, r);
+
+        // FIXME: this is technically broken since the addresses might overlap. In the future,
+        // this should probably be taken care of by an optimization pass that uses aliasing info.
+        // Right now, since spilling is unimplemented, this is important to make some functions
+        // work at all.
+        let layout = ir::type_layout(types[ir.get_ref_ty(load)], types, env.primitives());
+        implement_memcpy(ctx, ir, env, dialects, src, dst, r, layout);
+        ctx.remove_use(load, ir, env);
         Rewrite::Rename(Ref::UNIT)
     };
     (%r = mem.Load ptr) => {
-        let ptr_reg = ctx.regs.get_one(ptr);
         let ty = types[ir.get_ref_ty(r)];
+        let addr_mode = AddrMode::from_ptr_ref(ctx, ir, types, env, dialects, ptr);
         ctx.regs.visit_primitive_slots::<Infallible, _>(
             r, ty, types, env.primitives(),
             |regs, primitive, offset| {
                 let offset = offset.try_into().expect("TODO: handle large offsets");
-                // TODO: use addr_mode to emit instructions
-                #[allow(unused)]
-                let addr_mode = AddrMode::from_ptr_ref_with_offset(&ctx.regs, ir, types, env, dialects, ptr, offset);
+                let a = addr_mode.add_offset(offset).unwrap_or_else(|| {
+                    ctx.add_use(ptr);
+                    AddrMode::trivial(ctx.regs.get_one(ptr))
+                });
                 match primitive {
                     Primitive::I1 | Primitive::I8 | Primitive::U8 => {
-                        ir.add_before(env, r, x86.mov_rm8(regs[0], ptr_reg, offset));
+                        if r.idx() == 105 {
+                            eprintln!("105 8-bit load to {}", regs[0]);
+                        }
+                        ir.add_before(env, r, x86.mov_rm8(regs[0], a.base, a.offset(), a.index, a.scale()));
                     }
                     Primitive::I16 | Primitive::U16 => {
-                        ir.add_before(env, r, x86.mov_rm16(regs[0], ptr_reg, offset));
+                        ir.add_before(env, r, x86.mov_rm16(regs[0], a.base, a.offset(), a.index, a.scale()));
                     }
                     Primitive::I32 | Primitive::U32 => {
-                        ir.add_before(env, r, x86.mov_rm32(regs[0], ptr_reg, offset));
+                        ir.add_before(env, r, x86.mov_rm32(regs[0], a.base, a.offset(), a.index, a.scale()));
                     }
                     Primitive::I64 | Primitive::U64 | Primitive::Ptr => {
-                        ir.add_before(env, r, x86.mov_rm64(regs[0], ptr_reg, offset));
+                        ir.add_before(env, r, x86.mov_rm64(regs[0], a.base, a.offset(), a.index, a.scale()));
                     }
                     Primitive::F32 | Primitive::F64 => todo!("load floats"),
                     Primitive::I128 | Primitive::U128 => todo!("load 128-bit integers"),
@@ -569,27 +600,32 @@ ir::visitor! {
                 Ok(())
             }
         );
+        ctx.remove_use(ptr, ir, env);
         Rewrite::Rename(Ref::UNIT)
     };
     (%r = mem.Store ptr value) => {
-        let ptr = ctx.regs.get_one(ptr);
         let ty = types[ir.get_ref_ty(value)];
+        let addr_mode = AddrMode::from_ptr_ref(ctx, ir, types, env, dialects, ptr);
         ctx.regs.visit_primitive_slots::<Infallible, _>(
             value, ty, types, env.primitives(),
             |regs, primitive, offset| {
                 let offset = offset.try_into().expect("TODO: handle large offsets");
+                let a = addr_mode.add_offset(offset).unwrap_or_else(|| {
+                    ctx.add_use(ptr);
+                    AddrMode::trivial(ctx.regs.get_one(ptr))
+                });
                 match primitive {
                         Primitive::I1 | Primitive::I8 | Primitive::U8 => {
-                            ir.add_before(env, r, x86.mov_mr8(ptr, offset, regs[0]));
+                            ir.add_before(env, r, x86.mov_mr8(a.base, a.offset(), a.index, a.scale(), regs[0]));
                         }
                         Primitive::I16 | Primitive::U16 => {
-                            ir.add_before(env, r, x86.mov_mr16(ptr, offset, regs[0]));
+                            ir.add_before(env, r, x86.mov_mr16(a.base, a.offset(), a.index, a.scale(), regs[0]));
                         }
                         Primitive::I32 | Primitive::U32 => {
-                            ir.add_before(env, r, x86.mov_mr32(ptr, offset, regs[0]));
+                            ir.add_before(env, r, x86.mov_mr32(a.base, a.offset(), a.index, a.scale(), regs[0]));
                         }
                         Primitive::I64 | Primitive::U64 | Primitive::Ptr => {
-                            ir.add_before(env, r, x86.mov_mr64(ptr, offset, regs[0]));
+                            ir.add_before(env, r, x86.mov_mr64(a.base, a.offset(), a.index, a.scale(), regs[0]));
                         }
                         Primitive::F32 | Primitive::F64 => todo!("store floats"),
                         Primitive::I128 | Primitive::U128 => todo!("store 128-bit integers"),
@@ -597,6 +633,7 @@ ir::visitor! {
                 Ok(())
             }
         );
+        ctx.remove_use(ptr, ir, env);
         Rewrite::Rename(Ref::UNIT)
     };
     (%r = mem.MemberPtr ptr (type tuple_ty) (#idx)) => {
@@ -604,7 +641,7 @@ ir::visitor! {
             unreachable!()
         };
         let offset = ir::offset_in_tuple(elem_types, idx as u32, types, env.primitives());
-        ptr_offset(ctx, ir, env, dialects, r, ptr, offset);
+        ptr_offset(ctx, ir, types, env, dialects, r, ptr, offset);
     };
     (%r = mem.IntToPtr x) => {
         let src = ctx.regs.get_one(x);
@@ -632,12 +669,13 @@ ir::visitor! {
             _ => todo!(),
         }
     };
-    (%r = mem.PtrToInt x) => todo!("PtrToInt") as ();
     (%r = mem.Global (global id)) => x86.lea_global(ctx.regs.get_one(r), id);
     (%r = mem.ArrayIndex array_ptr (type elem_ty) (%int = arith.Int (#n))) => {
         ctx.remove_use(int, ir, env);
         let stride = ir::type_layout(types[elem_ty], types, env.primitives()).stride();
-        ptr_offset(ctx, ir, env, dialects, r, array_ptr, stride.saturating_mul(n));
+        // if the stride overflows an i64, it would have been out of bounds anyways
+        let offset = stride.saturating_mul(n);
+        ptr_offset(ctx, ir, types, env, dialects, r, array_ptr, offset);
     };
     (%r = mem.ArrayIndex array_ptr (type elem_ty) idx) => {
         // CODEGEN: use more efficient addressing modes
@@ -652,7 +690,7 @@ ir::visitor! {
         x86.add_rr64(dst, array_ptr)
     };
     (%r = mem.Offset ptr (#offset)) => {
-        ptr_offset(ctx, ir, env, dialects, r, ptr, offset)
+        ptr_offset(ctx, ir, types, env, dialects, r, ptr, offset)
     };
     (%r = mem.FunctionPtr (fn id)) => {
         let dst = ctx.regs.get_one(r);
@@ -706,21 +744,69 @@ impl TryFrom<u64> for AddrScale {
     }
 }
 
+fn can_fold_memory_op(
+    ir: &IrModify,
+    env: &Environment,
+    memory: Ref,
+    usage: (BlockId, Ref),
+) -> bool {
+    // only fold if the memory op is in the same block
+    if !ir.is_ref_in_block(memory, usage.0) {
+        return false;
+    }
+    debug_assert!(memory.idx() < usage.1.idx());
+    // if there are any impure instructions inbetween the memory op and the usage site, they might
+    // interfere
+    for i in memory.idx() + 1..usage.1.idx() {
+        let inst = ir.get_inst(Ref::index(i as u32));
+        if !env[inst.module()][inst.function()].flags().pure() {
+            return false;
+        }
+    }
+    true
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct AddrMode {
     base: MCReg,
-    offset: u32,
-    scaled: Option<(MCReg, AddrScale)>,
+    offset: i32,
+    index: MCReg,
+    scale: AddrScale,
 }
 impl AddrMode {
+    /// helper for getting the offset as u32 for instruction writing
+    pub fn offset(&self) -> u32 {
+        self.offset as u32
+    }
+
+    pub const fn trivial(base: MCReg) -> Self {
+        Self {
+            base,
+            offset: 0,
+            index: NOREG,
+            scale: AddrScale::One,
+        }
+    }
+
+    pub fn scale(&self) -> u32 {
+        match self.scale {
+            AddrScale::One => 1,
+            AddrScale::Two => 2,
+            AddrScale::Four => 4,
+            AddrScale::Eight => 8,
+        }
+    }
+
     pub fn from_ptr_ref(
-        regs: &Slots<MCReg>,
+        ctx: &IselCtx<X86>,
         ir: &mut IrModify,
         types: &Types,
         env: &Environment,
         dialects: &InstructionSelector,
         addr_ref: Ref,
     ) -> Self {
+        // TODO: check range from usage site to addr and see if there
+        // are any interfering ops (only allow same block, no stores/calls in between)
         let InstructionSelector { mem, arith, .. } = *dialects;
         let inst = ir.get_inst(addr_ref);
         if let Some(inst) = inst.as_module(mem) {
@@ -728,7 +814,13 @@ impl AddrMode {
                 Mem::Offset => {
                     let (ptr, offset): (Ref, u32) = ir.typed_args(&inst);
                     return Self::from_ptr_ref_with_offset(
-                        regs, ir, types, env, dialects, ptr, offset,
+                        ctx,
+                        ir,
+                        types,
+                        env,
+                        dialects,
+                        ptr,
+                        offset as i32,
                     );
                 }
                 Mem::MemberPtr => {
@@ -739,7 +831,7 @@ impl AddrMode {
                     let offset = ir::offset_in_tuple(elem_types, idx, types, env.primitives());
                     if let Ok(offset) = offset.try_into() {
                         return Self::from_ptr_ref_with_offset(
-                            regs, ir, types, env, dialects, ptr, offset,
+                            ctx, ir, types, env, dialects, ptr, offset,
                         );
                     }
                 }
@@ -753,58 +845,72 @@ impl AddrMode {
                             if let Some(offset) =
                                 idx.checked_mul(stride).and_then(|i| i.try_into().ok())
                             {
-                                return Self {
-                                    base: regs.get_one(addr_ref),
-                                    offset,
-                                    scaled: None,
-                                };
+                                return Self::from_ptr_ref_with_offset(
+                                    ctx, ir, types, env, dialects, ptr, offset,
+                                );
                             }
                         }
                     }
                     if let Ok(scale) = AddrScale::try_from(stride) {
+                        ctx.add_use(ptr);
+                        ctx.add_use(idx);
+                        let (base, offset) =
+                            Self::from_ptr_ref_offset_only(ctx, ir, types, env, dialects, ptr);
+                        let index = ctx.regs.get_one(idx);
+                        ir.update_reg_class::<Reg>(index, RegClass::into_index);
                         return Self {
-                            base: regs.get_one(ptr),
-                            offset: 0,
-                            scaled: Some((regs.get_one(idx), scale)),
+                            base,
+                            offset,
+                            index,
+                            scale,
                         };
                     }
                 }
-                // TODO: pre-track stack offsets of Decls in the future to be able to address them directly
-                // Mem::Decl => {}
+                Mem::Decl => {
+                    let offset = ctx.stack_slots[&addr_ref];
+                    if let Ok(offset) = i32::try_from(offset) {
+                        return Self {
+                            base: MCReg::from_phys(Reg::rbp),
+                            offset: -offset,
+                            index: NOREG,
+                            scale: AddrScale::One,
+                        };
+                    }
+                }
                 // Mem::FunctionPtr => {}
                 _ => {}
             }
         }
-        Self {
-            base: regs.get_one(addr_ref),
-            offset: 0,
-            scaled: None,
-        }
+        ctx.add_use(addr_ref);
+        Self::trivial(ctx.regs.get_one(addr_ref))
     }
 
     fn from_ptr_ref_offset_only(
-        regs: &Slots<MCReg>,
+        ctx: &IselCtx<X86>,
         ir: &mut IrModify,
         types: &Types,
         env: &Environment,
         dialects: &InstructionSelector,
         ptr: Ref,
-    ) -> (MCReg, u32) {
+    ) -> (MCReg, i32) {
         let InstructionSelector { mem, arith, .. } = *dialects;
         let inst = ir.get_inst(ptr);
-        let handle_inner = |regs: &Slots<MCReg>, ir, ptr: Ref, offset: u32| {
+        let handle_inner = |ctx: &IselCtx<X86>, ir, ptr: Ref, offset: i32| {
             let (inner_ptr, inner_offset) =
-                Self::from_ptr_ref_offset_only(regs, ir, types, env, dialects, ptr);
+                Self::from_ptr_ref_offset_only(ctx, ir, types, env, dialects, ptr);
             let Some(offset) = offset.checked_add(inner_offset) else {
-                return (regs.get_one(ptr), offset);
+                return (ctx.regs.get_one(ptr), offset);
             };
             (inner_ptr, offset)
         };
         if let Some(inst) = inst.as_module(mem) {
             match inst.op() {
                 Mem::Offset => {
-                    let (ptr, offset): (Ref, u32) = ir.typed_args(&inst);
-                    return handle_inner(regs, ir, ptr, offset);
+                    let (ptr, offset): (Ref, u64) = ir.typed_args(&inst);
+                    let offset = offset as i64;
+                    if let Ok(offset) = offset.try_into() {
+                        return handle_inner(ctx, ir, ptr, offset);
+                    }
                 }
                 Mem::MemberPtr => {
                     let (ptr, tuple_ty, idx): (Ref, TypeId, u32) = ir.typed_args(&inst);
@@ -813,66 +919,59 @@ impl AddrMode {
                     };
                     let offset = ir::offset_in_tuple(elem_types, idx, types, env.primitives());
                     if let Ok(offset) = offset.try_into() {
-                        return handle_inner(regs, ir, ptr, offset);
+                        return handle_inner(ctx, ir, ptr, offset);
                     }
                 }
                 Mem::ArrayIndex => {
                     let (ptr, elem_ty, idx): (Ref, TypeId, Ref) = ir.typed_args(&inst);
                     let stride = ir::type_layout(types[elem_ty], types, env.primitives()).stride();
-                    if let Some(idx_inst) = ir.get_inst(idx).as_module(arith) {
-                        match idx_inst.op() {
-                            // constant offset
-                            Arith::Int => {
-                                let idx: u64 = ir.typed_args(&idx_inst);
-                                if let Some(offset) =
-                                    idx.checked_mul(stride).and_then(|i| i.try_into().ok())
-                                {
-                                    return handle_inner(regs, ir, ptr, offset);
-                                }
-                            }
-                            _ => {}
+                    if let Some(idx_inst) = ir.get_inst(idx).as_module(arith)
+                        && idx_inst.op() == Arith::Int
+                    {
+                        let idx: u64 = ir.typed_args(&idx_inst);
+                        if let Some(offset) =
+                            idx.checked_mul(stride).and_then(|i| i.try_into().ok())
+                        {
+                            return handle_inner(ctx, ir, ptr, offset);
                         }
                     }
                 }
-                // TODO: pre-track stack offsets of Decls in the future to be able to address them directly
-                // Mem::Decl => {}
-                // Mem::FunctionPtr => {}
+                Mem::Decl => {
+                    let offset = ctx.stack_slots[&ptr];
+                    if let Ok(offset) = i32::try_from(offset) {
+                        return (MCReg::from_phys(Reg::rbp), -offset);
+                    }
+                }
                 _ => {}
             }
         }
-        (regs.get_one(ptr), 0)
+        ctx.add_use(ptr);
+        (ctx.regs.get_one(ptr), 0)
     }
 
     fn from_ptr_ref_with_offset(
-        regs: &Slots<MCReg>,
+        ctx: &IselCtx<X86>,
         ir: &mut IrModify,
         types: &Types,
         env: &Environment,
         dialects: &InstructionSelector,
         ptr: Ref,
-        offset: u32,
+        offset: i32,
     ) -> Self {
-        let inner = Self::from_ptr_ref(regs, ir, types, env, dialects, ptr);
-        inner.add_offset(offset).unwrap_or_else(|| Self {
-            base: regs.get_one(ptr),
-            offset,
-            scaled: None,
+        let inner = Self::from_ptr_ref(ctx, ir, types, env, dialects, ptr);
+        inner.add_offset(offset).unwrap_or_else(|| {
+            ctx.add_use(ptr);
+            Self::trivial(ctx.regs.get_one(ptr))
         })
     }
 
     #[must_use]
-    pub fn add_offset(self, offset: u32) -> Option<Self> {
+    pub fn add_offset(self, offset: i32) -> Option<Self> {
         Some(Self {
             offset: self.offset.checked_add(offset)?,
             ..self
         })
     }
-}
-
-enum Operand {
-    Reg(MCReg),
-    Imm(u32),
-    Mem(AddrMode),
 }
 
 struct IntBinOp {
@@ -1010,6 +1109,7 @@ fn cmp_op(
 fn ptr_offset(
     ctx: &mut IselCtx<X86>,
     ir: &mut IrModify,
+    types: &Types,
     env: &Environment,
     dialects: &InstructionSelector,
     r: Ref,
@@ -1017,11 +1117,19 @@ fn ptr_offset(
     offset: u64,
 ) {
     let InstructionSelector { x86, mc, .. } = *dialects;
+    let dst = ctx.regs.get_one(r);
+    if let Ok(offset) = offset.try_into() {
+        let a = AddrMode::from_ptr_ref_with_offset(ctx, ir, types, env, dialects, ptr, offset);
+        ir.replace(
+            env,
+            r,
+            x86.lea_rm64(dst, a.base, a.offset(), a.index, a.scale()),
+        );
+        return;
+    }
     let offset = offset.try_into().expect("TODO: handle 64-bit offsets");
     let src = ctx.regs.get_one(ptr);
-    let dst = ctx.regs.get_one(r);
     ctx.copy(env, r, mc, ir, &[dst, src]);
-    // CODEGEN: more efficient pointer arithmetic special-casing. Can also share code with add
     if offset == 0 {
         ir.delete(env, r);
     } else {
@@ -1032,42 +1140,140 @@ fn ptr_offset(
 fn implement_memcpy(
     ctx: &mut IselCtx<X86>,
     ir: &mut IrModify,
-    types: &ir::Types,
     env: &Environment,
     dialects: &InstructionSelector,
     src: Ref,
     dst: Ref,
     before: Ref,
+    layout: Layout,
 ) {
     let InstructionSelector { x86, .. } = *dialects;
-    let layout = ir::type_layout(types[ir.get_ref_ty(src)], types, env.primitives());
     // TODO: this should just call memcpy beyond a certain size
     let mut offset = 0;
+    ctx.add_use(src);
+    ctx.add_use(dst);
     let src = ctx.regs.get_one(src);
     let dst = ctx.regs.get_one(dst);
     let mut tmp = None;
     let size: u32 = layout.size.try_into().expect("TODO: large memcpy");
     while size - offset >= 8 {
-        let tmp = *tmp.get_or_insert_with(|| ir.new_reg(ir::mc::RegClass::GP64));
-        ir.add_before(env, before, x86.mov_rm64(tmp, src, offset));
-        ir.add_before(env, before, x86.mov_mr64(dst, offset, tmp));
+        let tmp = *tmp.get_or_insert_with(|| ir.new_reg::<Reg>(RegClass::GP64));
+        ir.add_before(env, before, x86.mov_rm64(tmp, src, offset, NOREG, 1));
+        ir.add_before(env, before, x86.mov_mr64(dst, offset, NOREG, 1, tmp));
         offset += 8;
     }
     if size - offset >= 4 {
-        let tmp = *tmp.get_or_insert_with(|| ir.new_reg(ir::mc::RegClass::GP32));
-        ir.add_before(env, before, x86.mov_rm32(tmp, src, offset));
-        ir.add_before(env, before, x86.mov_mr32(dst, offset, tmp));
+        let tmp = *tmp.get_or_insert_with(|| ir.new_reg::<Reg>(RegClass::GP32));
+        ir.add_before(env, before, x86.mov_rm32(tmp, src, offset, NOREG, 1));
+        ir.add_before(env, before, x86.mov_mr32(dst, offset, NOREG, 1, tmp));
         offset += 4;
     }
     if size - offset >= 2 {
-        let tmp = *tmp.get_or_insert_with(|| ir.new_reg(ir::mc::RegClass::GP16));
-        ir.add_before(env, before, x86.mov_rm16(tmp, src, offset));
-        ir.add_before(env, before, x86.mov_mr16(dst, offset, tmp));
+        let tmp = *tmp.get_or_insert_with(|| ir.new_reg::<Reg>(RegClass::GP16));
+        ir.add_before(env, before, x86.mov_rm16(tmp, src, offset, NOREG, 1));
+        ir.add_before(env, before, x86.mov_mr16(dst, offset, NOREG, 1, tmp));
         offset += 2;
     }
     if size - offset >= 1 {
-        let tmp = *tmp.get_or_insert_with(|| ir.new_reg(ir::mc::RegClass::GP8));
-        ir.add_before(env, before, x86.mov_rm8(tmp, src, offset));
-        ir.add_before(env, before, x86.mov_mr8(dst, offset, tmp));
+        let tmp = *tmp.get_or_insert_with(|| ir.new_reg::<Reg>(RegClass::GP8));
+        ir.add_before(
+            env,
+            before,
+            x86.mov_rm8(tmp, src, offset, MCReg::from_phys(Reg::none), 0),
+        );
+        ir.add_before(env, before, x86.mov_mr8(dst, offset, NOREG, 1, tmp));
+    }
+}
+
+fn div_mod(
+    ctx: &mut IselCtx<X86>,
+    ir: &mut IrModify,
+    types: &Types,
+    env: &Environment,
+    dialects: &InstructionSelector,
+    r: Ref,
+    a: Ref,
+    b: Ref,
+    is_div: bool,
+) {
+    let InstructionSelector { x86, mc, .. } = *dialects;
+    let primitive = primitive_of_ref(r, ir, types);
+    let signed = primitive.is_signed_int();
+    let clear_upper = |ir: &mut IrModify| {
+        ir.add_before(
+            env,
+            r,
+            x86.xor_rr32(MCReg::from_phys(Reg::edx), MCReg::from_phys(Reg::edx)),
+        );
+    };
+    match primitive {
+        Primitive::I1 => todo!(),
+        Primitive::I8 | Primitive::U8 => {
+            ir.add_before(
+                env,
+                r,
+                parallel_copy(mc, &[MCReg::from_phys(Reg::al), ctx.regs.get_one(a)]),
+            );
+            if signed {
+                ir.add_before(env, r, x86.cbw());
+                ir.replace(env, r, x86.idiv_r8(ctx.regs.get_one(b)));
+            } else {
+                ir.add_before(env, r, x86.mov_ri8(MCReg::from_phys(Reg::ah), 0));
+                ir.replace(env, r, x86.div_r8(ctx.regs.get_one(b)));
+            }
+            let result = MCReg::from_phys(if is_div { Reg::al } else { Reg::dl });
+            ir.add_after(env, r, parallel_copy(mc, &[ctx.regs.get_one(r), result]));
+        }
+        Primitive::I16 | Primitive::U16 => {
+            ir.add_before(
+                env,
+                r,
+                parallel_copy(mc, &[MCReg::from_phys(Reg::ax), ctx.regs.get_one(a)]),
+            );
+            if signed {
+                ir.add_before(env, r, x86.cwd());
+                ir.replace(env, r, x86.idiv_r16(ctx.regs.get_one(b)));
+            } else {
+                clear_upper(ir);
+                ir.replace(env, r, x86.div_r16(ctx.regs.get_one(b)));
+            }
+            let result = MCReg::from_phys(if is_div { Reg::ax } else { Reg::dx });
+            ir.add_after(env, r, parallel_copy(mc, &[ctx.regs.get_one(r), result]));
+        }
+        Primitive::I32 | Primitive::U32 => {
+            ir.add_before(
+                env,
+                r,
+                parallel_copy(mc, &[MCReg::from_phys(Reg::eax), ctx.regs.get_one(a)]),
+            );
+            if signed {
+                ir.add_before(env, r, x86.cdq());
+                ir.replace(env, r, x86.idiv_r32(ctx.regs.get_one(b)));
+            } else {
+                clear_upper(ir);
+                ir.replace(env, r, x86.div_r32(ctx.regs.get_one(b)));
+            }
+            let result = MCReg::from_phys(if is_div { Reg::eax } else { Reg::edx });
+            ir.add_after(env, r, parallel_copy(mc, &[ctx.regs.get_one(r), result]));
+        }
+        Primitive::I64 | Primitive::U64 => {
+            ir.add_before(
+                env,
+                r,
+                parallel_copy(mc, &[MCReg::from_phys(Reg::rax), ctx.regs.get_one(a)]),
+            );
+            if signed {
+                ir.add_before(env, r, x86.cqo());
+                ir.replace(env, r, x86.idiv_r64(ctx.regs.get_one(b)));
+            } else {
+                clear_upper(ir);
+                ir.replace(env, r, x86.div_r64(ctx.regs.get_one(b)));
+            }
+            let result = MCReg::from_phys(if is_div { Reg::rax } else { Reg::rdx });
+            ir.add_after(env, r, parallel_copy(mc, &[ctx.regs.get_one(r), result]));
+        }
+        Primitive::I128 | Primitive::U128 => todo!("128-bit div"),
+        Primitive::F32 | Primitive::F64 => todo!("float div"),
+        Primitive::Ptr => unreachable!(),
     }
 }

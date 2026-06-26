@@ -4,8 +4,8 @@ use std::collections::hash_map::Entry;
 
 use crate::ast::{
     self, Attribute, Attributes, Definition, EnumVariantDefinition, Expr, ExprId, ExprIdPairs,
-    ExprIds, Function, GenericDef, Generics, Global, Impl, InherentImpl, Item, ItemValue, Method,
-    StructMember, TraitDefinition, TreeToken, UnOp, UnresolvedType,
+    ExprIds, Function, FunctionContext, GenericDef, Generics, Global, Impl, InherentImpl, Item,
+    ItemValue, Method, StructMember, TraitDefinition, TreeToken, UnOp, UnresolvedType,
 };
 
 use crate::unexpected;
@@ -752,6 +752,7 @@ impl<T: TreeToken> Parser<'_, T> {
             scope: function_scope,
             signature_span: TSpan::new(start, end),
             associated_name,
+            context: FunctionContext::None,
         })
     }
 

@@ -326,6 +326,7 @@ dependencies = [
 name = "ir-backend-fast"
 version = "0.1.0"
 dependencies = [
+ "dmap",
  "ir",
  "tracing",
 ]

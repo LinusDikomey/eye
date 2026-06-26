@@ -338,12 +338,27 @@ impl<T: TreeToken> AstBuilder<T> {
 
     pub fn type_def(&mut self, type_def: TypeDef<T>) -> TypeId {
         let id = TypeId(self.types.len() as _);
+        for method in type_def.methods.values() {
+            self.functions[method.function.idx()].context = FunctionContext::Method(id);
+        }
+        for impl_ in &type_def.impls {
+            for method in &impl_.base.functions {
+                self.functions[method.function.idx()].context =
+                    FunctionContext::InherentImpl(id, impl_.implemented_trait);
+            }
+        }
         self.types.push(type_def);
         id
     }
 
     pub fn trait_def(&mut self, trait_def: TraitDefinition<T>) -> TraitId {
         let id = TraitId(self.traits.len() as _);
+        for impl_ in &trait_def.impls {
+            for method in &impl_.base.functions {
+                self.functions[method.function.idx()].context =
+                    FunctionContext::Impl(id, impl_.implemented_type.clone());
+            }
+        }
         self.traits.push(trait_def);
         id
     }
@@ -661,6 +676,15 @@ pub struct Function<T: TreeToken = ()> {
     pub scope: ScopeId,
     pub signature_span: TSpan,
     pub associated_name: TSpan,
+    pub context: FunctionContext,
+}
+
+#[derive(Debug)]
+pub enum FunctionContext {
+    None,
+    Method(TypeId),
+    Impl(TraitId, UnresolvedType),
+    InherentImpl(TypeId, IdentPath),
 }
 
 #[derive(Debug)]

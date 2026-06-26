@@ -4,7 +4,7 @@ use crate::{
     Argument, Bitmap, BlockGraph, BlockId, BlockInfo, BlockTarget, Builtin, Environment,
     FunctionId, FunctionIr, INLINE_ARGS, Inst, Instruction, IntoArgs, MCReg, Parameter, Ref, Refs,
     TypeId, TypedInstruction, argument, builder::write_args, decode_args, dialect::Cf,
-    mc::RegClass, rewrite::RenameTable,
+    mc::Register, rewrite::RenameTable,
 };
 
 #[derive(Debug)]
@@ -622,8 +622,16 @@ impl IrModify {
         ir
     }
 
-    pub fn new_reg(&mut self, class: RegClass) -> MCReg {
-        self.ir.new_reg(class)
+    pub fn new_reg<R: Register>(&mut self, class: R::Class) -> MCReg {
+        self.ir.new_reg::<R>(class)
+    }
+
+    pub fn update_reg_class<R: Register>(
+        &mut self,
+        reg: MCReg,
+        update: impl FnOnce(R::Class) -> R::Class,
+    ) {
+        self.ir.update_reg_class::<R>(reg, update)
     }
 
     pub fn add_block(&mut self, args: impl IntoIterator<Item = TypeId>) -> (BlockId, Refs, Ref) {
@@ -879,6 +887,18 @@ impl IrModify {
     }
     pub fn add_manual_succs(&mut self, block: BlockId, succs: impl Iterator<Item = BlockId>) {
         self.ir.blocks[block.idx()].succs.extend(succs);
+    }
+
+    pub fn is_ref_in_block(&self, mut r: Ref, block: BlockId) -> bool {
+        if !r.is_ref() {
+            return false;
+        }
+        let info = &self.ir.blocks[block.idx()];
+        let range = info.args_idx..info.body_idx + info.len;
+        if r.0 as usize >= self.ir.insts.len() {
+            r = self.additional[r.0 as usize - self.ir.insts.len()].insert_at;
+        }
+        range.contains(&r.0)
     }
 }
 

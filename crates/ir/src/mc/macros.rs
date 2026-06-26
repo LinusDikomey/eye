@@ -22,27 +22,56 @@ pub use crate::first_reg;
 
 #[macro_export]
 macro_rules! registers {
-    ($name: ident $bits: ident $($size: ident => $($variant: ident)*;)*) => {
+    (
+        $bits: ident
+        $($size: ident => $($variant: ident)*;)*
+        !secondary:
+        $($secondary_size: ident => $($secondary_variant: ident)*;)*
+    ) => {
         #[rustfmt::skip]
         #[allow(non_camel_case_types)]
         #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
         #[repr(u8)]
-        pub enum $name {
+        pub enum Reg {
             $($($variant,)*)*
         }
-
-        impl $name {
-            pub fn class(self) -> $crate::mc::RegClass {
+        impl Reg {
+            pub fn class(self) -> RegClass {
                 match self {
-                    $($(Self::$variant => $crate::mc::RegClass::$size,)*)*
+                    $($(Self::$variant => RegClass::$size,)*)*
                 }
             }
         }
-        impl $crate::mc::Register for $name {
+
+        #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+        #[repr(u8)]
+        pub enum RegClass {
+            $($size,)*
+            $($secondary_size,)*
+        }
+        impl From<RegClass> for u8 {
+            fn from(value: RegClass) -> u8 {
+                value as u8
+            }
+        }
+        impl ::core::convert::TryFrom<u8> for RegClass {
+            type Error = ();
+
+            fn try_from(value: u8) -> ::core::result::Result<Self, ()> {
+                let count = $crate::mc::macros::ident_count!($($($variant)*)*);
+                if value >= count {
+                    return Err(());
+                }
+                unsafe { std::mem::transmute(value) }
+            }
+        }
+
+        impl $crate::mc::Register for Reg {
             const DEFAULT: Self = $crate::mc::macros::first_reg!($($($variant)*)*);
-            const NO_BITS: $bits = $bits::new();
-            const ALL_BITS: $bits = $bits::all();
-            type RegisterBits = $bits;
+            const NO_BITS: RegBits = RegBits::new();
+            const ALL_BITS: RegBits = RegBits::all();
+            type RegisterBits = RegBits;
+            type Class = RegClass;
 
             fn to_str(self) -> &'static str {
                 match self {
@@ -60,28 +89,37 @@ macro_rules! registers {
                 unsafe { std::mem::transmute(value as u8) }
             }
 
-            fn get_bit(self, bits: &$bits) -> bool {
+            fn get_bit(self, bits: &RegBits) -> bool {
                 bits.get(self)
             }
 
-            fn set_bit(self, bits: &mut $bits, set: bool) {
+            fn set_bit(self, bits: &mut RegBits, set: bool) {
                 bits.set(self, set);
             }
 
-            fn allocate_reg(free: Self::RegisterBits, class: $crate::mc::RegClass) -> Option<Self> {
-                $(
-                    if class == $crate::mc::RegClass::$size {
-                        $(if Self::$variant.get_bit(&free) {
-                            return Some(Self::$variant)
-                        })*
-                    }
-                )*
+            fn allocate_reg(free: Self::RegisterBits, class: RegClass) -> Option<Self> {
+                match class {
+                    $(
+                        RegClass::$size => {
+                            $(if Self::$variant.get_bit(&free) {
+                                return Some(Self::$variant)
+                            })*
+                        }
+                    )*
+                    $(
+                        RegClass::$secondary_size => {
+                            $(if Self::$secondary_variant.get_bit(&free) {
+                                return Some(Self::$secondary_variant)
+                            })*
+                        }
+                    )*
+                }
                 None
             }
         }
 
 
-        impl ::core::convert::TryFrom<$crate::Argument<'_>> for $name {
+        impl ::core::convert::TryFrom<$crate::Argument<'_>> for Reg {
             type Error = $crate::ArgError;
             fn try_from(value: $crate::Argument<'_>) -> Result<Self, Self::Error> {
                 let $crate::Argument::MCReg(value) = value else {

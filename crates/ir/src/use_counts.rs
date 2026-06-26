@@ -1,12 +1,15 @@
-use std::ops::{Index, IndexMut};
+use std::{
+    cell::Cell,
+    ops::{Index, IndexMut},
+};
 
 use crate::{Environment, Ref, modify::IrModify};
 
 pub struct UseCounts {
-    use_counts: Box<[u32]>,
+    use_counts: Box<[Cell<u32>]>,
 }
 impl Index<Ref> for UseCounts {
-    type Output = u32;
+    type Output = Cell<u32>;
     fn index(&self, index: Ref) -> &Self::Output {
         &self.use_counts[index.idx()]
     }
@@ -24,20 +27,20 @@ impl UseCounts {
     }
 
     pub fn compute(ir: &IrModify, env: &Environment) -> Self {
-        let mut use_counts = vec![0; ir.inst_count() as usize].into_boxed_slice();
+        let mut use_counts = vec![Cell::new(0); ir.inst_count() as usize].into_boxed_slice();
         for i in 0..ir.inst_count() {
             let inst = ir.get_inst(Ref::index(i));
             for arg in ir.args_iter(inst, env) {
                 match arg {
                     crate::Argument::Ref(r) => {
                         if let Some(r) = r.into_ref() {
-                            use_counts[r as usize] += 1;
+                            *use_counts[r as usize].get_mut() += 1;
                         }
                     }
                     crate::Argument::BlockTarget(crate::BlockTarget(_block, args)) => {
                         for r in args.iter() {
                             if let Some(r) = r.into_ref() {
-                                use_counts[r as usize] += 1;
+                                *use_counts[r as usize].get_mut() += 1;
                             }
                         }
                     }

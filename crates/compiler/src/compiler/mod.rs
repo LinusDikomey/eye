@@ -1259,7 +1259,32 @@ impl Compiler {
         if checked.is_extern() {
             return checked.name.clone();
         }
-        let mut name = self.module_path(module) + "." + &checked.name;
+        color_format::config::set_override(false);
+        let mut name = match checked.context {
+            FunctionContext::None => self.module_path(module) + ".",
+            FunctionContext::Method(base) => {
+                self.module_path(self.get_base_type_def(base).module)
+                    + "."
+                    + &self.types.get_base(base).name
+                    + "."
+            }
+            FunctionContext::InherentImpl(base, trait_id) => {
+                self.module_path(self.get_base_type_def(base).module)
+                    + "."
+                    + &self.types.get_base(base).name
+                    + "."
+                    + self.get_trait_name(trait_id.0, trait_id.1)
+                    + "."
+            }
+            FunctionContext::Impl(trait_id, ty) => format!(
+                "{}.{}@{}.",
+                self.module_path(trait_id.0),
+                self.get_trait_name(trait_id.0, trait_id.1),
+                &self.types.display(ty, &Generics::EMPTY)
+            ),
+        };
+        color_format::config::unset_override();
+        name += &checked.name;
         if !generics.is_empty() {
             // 2 characters per type because of commas and brackets is the minimum
             name.reserve(1 + 2 * generics.len());
@@ -2084,6 +2109,7 @@ pub struct CheckedFunction {
     pub return_type: LocalTypeId,
     pub generic_count: u8,
     pub body_or_types: BodyOrTypes,
+    pub context: FunctionContext,
 }
 impl CheckedFunction {
     pub fn display<'a>(
@@ -2126,6 +2152,13 @@ impl Index<LocalTypeIds> for CheckedFunction {
     }
 }
 
+pub enum FunctionContext {
+    None,
+    Method(BaseType),
+    Impl((ModuleId, TraitId), Type),
+    InherentImpl(BaseType, (ModuleId, TraitId)),
+}
+
 pub struct CheckedTrait {
     pub name: Box<str>,
     pub generics: Generics,
@@ -2138,6 +2171,7 @@ pub struct CheckedTrait {
 pub struct Instances {
     functions: DHashMap<(ast::ModuleId, ast::FunctionId, Box<[Type]>), ir::FunctionId>,
     globals: DHashMap<(ast::ModuleId, ast::GlobalId), Option<ir::GlobalId>>,
+    const_values: DHashMap<ConstValueId, Option<ir::GlobalId>>,
 }
 impl Instances {
     pub fn new() -> Self {
@@ -2168,6 +2202,14 @@ impl Instances {
         create: impl FnOnce() -> Option<ir::GlobalId>,
     ) -> Option<ir::GlobalId> {
         *self.globals.entry((module, global)).or_insert_with(create)
+    }
+
+    pub fn get_or_create_const_value(
+        &mut self,
+        id: ConstValueId,
+        create: impl FnOnce() -> Option<ir::GlobalId>,
+    ) -> Option<ir::GlobalId> {
+        *self.const_values.entry(id).or_insert_with(create)
     }
 }
 

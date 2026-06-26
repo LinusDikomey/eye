@@ -54,7 +54,7 @@ struct PeepholeCtx {
 }
 impl PeepholeCtx {
     fn single_use(&self, r: Ref) -> bool {
-        self.use_counts[r] == 1
+        self.use_counts[r].get() == 1
     }
 }
 impl rewrite::RewriteCtx for PeepholeCtx {}

@@ -36,7 +36,7 @@ impl FunctionPass<BackendState> for PrologueEpilogueInsertion {
 
         let callee_saved_size = Reg::UNIQUE_BITS
             .iter()
-            .filter(|reg| to_save & reg.bit() != super::isa::RegisterBits::default())
+            .filter(|reg| to_save & reg.bit() != super::isa::RegBits::default())
             .count() as u32
             * 8;
 
@@ -57,7 +57,7 @@ impl FunctionPass<BackendState> for PrologueEpilogueInsertion {
         }
 
         for reg in Reg::UNIQUE_BITS {
-            if to_save & reg.bit() != super::isa::RegisterBits::default() {
+            if to_save & reg.bit() != super::isa::RegBits::default() {
                 ir.add_before(env, start, x86.push_r64(MCReg::from_phys(reg)));
             }
         }
@@ -70,7 +70,7 @@ impl FunctionPass<BackendState> for PrologueEpilogueInsertion {
             {
                 // insert epilogue before return
                 for reg in Reg::UNIQUE_BITS.into_iter().rev() {
-                    if to_save & reg.bit() != super::isa::RegisterBits::default() {
+                    if to_save & reg.bit() != super::isa::RegBits::default() {
                         ir.add_before(env, r, x86.pop_r64(MCReg::from_phys(reg)));
                     }
                 }

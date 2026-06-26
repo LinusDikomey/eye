@@ -3,7 +3,7 @@ use std::{collections::VecDeque, fmt};
 use crate::{
     Argument, ArgumentMut, Bitmap, BlockGraph, BlockId, Environment, FunctionIr, MCReg, ModuleOf,
     Ref, Types, Usage,
-    mc::{Abi, McInst, RegClass},
+    mc::{Abi, McInst},
     pipeline::FunctionPass,
 };
 
@@ -230,7 +230,9 @@ fn perform_regalloc<R: Register>(
 ) {
     // PERF: cloning the reg classes here due to borrowing problems with the current design
     // (iterating arguments)
-    let classes: Box<[RegClass]> = ir.mc_reg_classes().into();
+    let classes: Box<[u8]> = ir.mc_reg_classes().into();
+    let get_class =
+        |i| R::Class::try_from(classes[i]).unwrap_or_else(|_| panic!("invalid reg class"));
     tracing::debug!(target: "regalloc", "Classes: {classes:#?}");
 
     let default_free = R::ALL_BITS & !preoccupied_bits;
@@ -260,9 +262,8 @@ fn perform_regalloc<R: Register>(
             };
             let i = r.virt().unwrap() as usize;
             let avail = free & !intersecting_precolored[i] & !preoccupied_bits;
-            let class = classes[i];
-            let chosen_reg =
-                R::allocate_reg(avail, class).expect("register allocation failed, TODO: spilling");
+            let chosen_reg = R::allocate_reg(avail, get_class(i))
+                .expect("register allocation failed, TODO: spilling");
             chosen_reg.set_bit(&mut free, false);
             chosen[i] = chosen_reg;
         }
@@ -315,8 +316,12 @@ fn perform_regalloc<R: Register>(
                                     let occupied = intersecting_precolored[i as usize];
                                     let avail = free & !occupied & !preoccupied_bits;
                                     let class = classes[r.virt().unwrap() as usize];
-                                    chosen_reg = R::allocate_reg(avail, class)
-                                        .expect("register allocation failed, TODO: spilling");
+                                    chosen_reg = R::allocate_reg(
+                                        avail,
+                                        R::Class::try_from(class)
+                                            .unwrap_or_else(|_| panic!("invalid reg class")),
+                                    )
+                                    .expect("register allocation failed, TODO: spilling");
                                     chosen[i as usize] = chosen_reg;
                                 };
                                 *r = MCReg::from_phys(chosen_reg);
@@ -362,8 +367,12 @@ fn perform_regalloc<R: Register>(
                         // TODO: spilling
                         let occupied = intersecting_precolored[i];
                         let avail = free & !occupied & !preoccupied_bits;
-                        let chosen_reg = R::allocate_reg(avail, classes[i])
-                            .expect("register allocation failed, TODO: spilling");
+                        let chosen_reg = R::allocate_reg(
+                            avail,
+                            R::Class::try_from(classes[i])
+                                .unwrap_or_else(|_| panic!("invalid reg class")),
+                        )
+                        .expect("register allocation failed, TODO: spilling");
                         chosen_reg.set_bit(&mut free, false);
                         chosen[i] = chosen_reg;
                         let dead = r.is_dead();
