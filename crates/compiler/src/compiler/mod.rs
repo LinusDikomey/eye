@@ -1276,12 +1276,18 @@ impl Compiler {
                     + self.get_trait_name(trait_id.0, trait_id.1)
                     + "."
             }
-            FunctionContext::Impl(trait_id, ty) => format!(
-                "{}.{}@{}.",
-                self.module_path(trait_id.0),
-                self.get_trait_name(trait_id.0, trait_id.1),
-                &self.types.display(ty, &Generics::EMPTY)
-            ),
+            FunctionContext::Impl(trait_id, idx) => {
+                let Some(checked_trait) = self.get_checked_trait(trait_id.0, trait_id.1) else {
+                    unreachable!()
+                };
+                let impl_ = &checked_trait.impls[idx as usize];
+                format!(
+                    "{}.{}@{}.",
+                    self.module_path(trait_id.0),
+                    self.get_trait_name(trait_id.0, trait_id.1),
+                    &self.types.display(impl_.impl_ty, &impl_.generics)
+                )
+            }
         };
         color_format::config::unset_override();
         name += &checked.name;
@@ -2155,7 +2161,7 @@ impl Index<LocalTypeIds> for CheckedFunction {
 pub enum FunctionContext {
     None,
     Method(BaseType),
-    Impl((ModuleId, TraitId), Type),
+    Impl((ModuleId, TraitId), u32),
     InherentImpl(BaseType, (ModuleId, TraitId)),
 }
 

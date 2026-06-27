@@ -132,10 +132,9 @@ pub fn function<H: Hooks>(
         ast::FunctionContext::Method(type_id) => {
             FunctionContext::Method(*parsed.symbols.types[type_id.idx()].get().unwrap())
         }
-        ast::FunctionContext::Impl(trait_id, ty) => FunctionContext::Impl(
-            (module, *trait_id),
-            compiler.resolve_type(ty, module, function.scope),
-        ),
+        &ast::FunctionContext::Impl(trait_id, idx) => {
+            FunctionContext::Impl((module, trait_id), idx)
+        }
         ast::FunctionContext::InherentImpl(type_id, trait_path) => {
             match compiler.resolve_path(module, function.scope, *trait_path) {
                 Def::Trait(trait_module, trait_id) => FunctionContext::InherentImpl(
