@@ -76,6 +76,9 @@ impl<V: Copy> Slots<V> {
         primitives: &[PrimitiveInfo],
         visit: F,
     ) -> Result<(), E> {
+        if r == Ref::UNIT {
+            return Ok(());
+        }
         self.visit_primitive_slots_inner(
             &mut { self.slot_map[r.into_ref().expect("Can't get slots for value Ref") as usize] },
             ty,

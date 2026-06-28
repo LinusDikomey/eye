@@ -159,17 +159,19 @@ def test(eye_file) -> str:
     else:
         print(f'{padding}{RED}[ERR]{R}\nFailed with status: {exit_code}, Output:')
         print(f'--------------------\n{out}\n--------------------')
-        print('... but expected:')
-        print(f'--------------------\n{expected_output}\n--------------------')
-        print(f'Stderr:\n--------------------\n{stderr}\n--------------------')
-        print(f'Diff:\n--------------------\n{stderr}\n--------------------')
-        f = open("eyebuild/out.eye", "w")
-        f.write(out)
-        f.close()
-        f = open("eyebuild/expected.eye", "w")
-        f.write(expected_output)
-        f.close()
-        subprocess.call(["diff", "eyebuild/out.eye", "eyebuild/expected.eye"])
+        if exit_code != 0:
+            print(f'Stderr:\n--------------------\n{stderr}\n--------------------')
+        else:
+            print('... but expected:')
+            print(f'--------------------\n{expected_output}\n--------------------')
+            print(f'Diff:\n--------------------\n{stderr}\n--------------------')
+            f = open("eyebuild/out.eye", "w")
+            f.write(out)
+            f.close()
+            f = open("eyebuild/expected.eye", "w")
+            f.write(expected_output)
+            f.close()
+            subprocess.call(["diff", "eyebuild/out.eye", "eyebuild/expected.eye"])
         return ERR
 
 

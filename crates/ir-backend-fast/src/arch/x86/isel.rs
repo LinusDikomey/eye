@@ -318,10 +318,10 @@ ir::visitor! {
         let regs = ctx.regs.get(r);
         match int_size_of_ref(r, ir, types) {
             Size::S8 => {
-                ir.replace(env, r, x86.mov_ri8(regs[0], x as u8 as u32));
+                ir.replace(env, r, x86.mov_ri8(regs[0], x as i8 as u32));
             }
             Size::S16 => {
-                ir.replace(env, r, x86.mov_ri16(regs[0], x as u16 as u32));
+                ir.replace(env, r, x86.mov_ri16(regs[0], x as i16 as u32));
             }
             Size::S32 => {
                 ir.replace(env, r, x86.mov_ri32(regs[0], x as u32));
@@ -330,7 +330,7 @@ ir::visitor! {
                 if x > u32::MAX as u64 {
                     todo!()
                 }
-                ir.replace(env, r, x86.mov_ri64(regs[0], x.try_into().unwrap()));
+                ir.replace(env, r, x86.mov_ri64(regs[0], x.try_into().expect("todo: 64-bit int consts")));
             }
             Size::S128 => todo!("128 bit ints"),
         }
@@ -353,12 +353,12 @@ ir::visitor! {
             Size::S32 => {
                 let (&[out], &[x]) = (out, x) else { unreachable!() };
                 ctx.copy(env, r, mc, ir, &[out, x]);
-                ir.replace(env, r, x86.neg_r32(x));
+                ir.replace(env, r, x86.neg_r32(out));
             }
             Size::S64 => {
                 let (&[out], &[x]) = (out, x) else { unreachable!() };
                 ctx.copy(env, r, mc, ir, &[out, x]);
-                ir.replace(env, r, x86.neg_r64(x));
+                ir.replace(env, r, x86.neg_r64(out));
             }
             Size::S128 => todo!(),
         }

@@ -395,6 +395,9 @@ fn insert_regs(
     a_reg: Option<Reg>,
     b_reg: Option<Reg>,
 ) {
+    if value == Ref::UNIT {
+        return;
+    }
     let mut first_inserted_a = true;
     let mut first_inserted_b = true;
     _ = regs.visit_primitive_slots::<Infallible, _>(

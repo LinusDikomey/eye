@@ -291,12 +291,16 @@ pub fn write(
                     inst_ri(text, op, &[0x80], &[0x81], ir.args(i, env), 0);
                 }
 
-                I::sub_rr8 => inst_rr_legacy(text, &[0x28], ir.args(i, env), false),
+                I::sub_rr8 => {
+                    let (a, b) = ir.args(i, env);
+                    inst_rr_legacy(text, &[0x28], (b, a), false)
+                }
                 I::sub_rr16 | I::sub_rr32 | I::sub_rr64 => {
                     if op == I::sub_rr16 {
                         text.push(P16);
                     }
-                    inst_rr_legacy(text, &[0x29], ir.args(i, env), op == I::sub_rr64);
+                    let (a, b) = ir.args(i, env);
+                    inst_rr_legacy(text, &[0x29], (b, a), op == I::sub_rr64);
                 }
                 I::sub_ri8 | I::sub_ri16 | I::sub_ri32 | I::sub_ri64 => {
                     inst_ri(text, op, &[0x80], &[0x81], ir.args(i, env), 5)
