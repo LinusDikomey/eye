@@ -538,6 +538,12 @@ ir::visitor! {
         )
     };
     (%r = cf.Branch cond (@b1 b1_args) (@b2 b2_args)) => {
+        if let Some(b) = cond.into_bool() {
+            let (target, args) = if b { (b1, b1_args.to_vec()) } else { (b2, b2_args.to_vec()) };
+            create_args_copy(ctx, env, r, mc, x86, ir, target, &args);
+            ir.replace(env, r, x86.jmp(target));
+            return Some(None);
+        }
         let cond = ctx.regs.get_one(cond);
         let b1_args = b1_args.to_vec();
         let b2_args = b2_args.to_vec();

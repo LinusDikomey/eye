@@ -37,7 +37,7 @@ impl Inline {
             .types
             .clone();
         let mut ir = IrModify::new(ir);
-        for block in ir.block_ids() {
+        for mut block in ir.block_ids() {
             for call_ref in ir.get_original_block_refs(block).iter() {
                 let call_inst = *ir.get_inst(call_ref);
                 if call_inst.function.module != module || scc.contains(&call_inst.function()) {
@@ -65,15 +65,7 @@ impl Inline {
                 let mut renames = RenameTable::new(callee_ir, old_types_offset);
                 let graph = BlockGraph::calculate(callee_ir, env);
 
-                let (after_block, call_site_insert_point) = ir.split_block_before(block, call_ref);
-
-                // add the functions return type as a block argument to the new block
-                let mut return_ty = env[call_inst.function]
-                    .return_type
-                    .expect("Function missing return type");
-                return_ty.0 += old_types_offset;
-                let (return_val, _) = ir.add_block_arg(env, after_block, return_ty);
-                ir.replace_with(env, call_ref, return_val);
+                let (after_block, call_site_insert_point) = ir.split_block_at(block, call_ref);
 
                 for &block in graph.postorder().iter().rev() {
                     let (new_block, _, _) = ir.add_block(
@@ -150,9 +142,18 @@ impl Inline {
                         }
                     }
                 }
+
+                // we keep iterating the rest of the instructions so we are now in after_block
+                block = after_block;
             }
         }
         let ir = ir.finish_and_compress(env);
+        tracing::debug!(
+            target: "pass::inline",
+            funtion = env[module][function].name,
+            "IR after inlining:\n{}",
+            ir.display(env, &types),
+        );
         let ir_function = &mut env.modules[module.idx()].functions[function.idx()];
         ir_function
             .ir
@@ -179,7 +180,7 @@ impl ModulePass for Inline {
 
 fn should_inline(_caller: &IrModify, callee: &FunctionIr) -> bool {
     // TODO: better inlining metric
-    callee.refs().count() < 20
+    callee.refs().count() < 50
 }
 
 fn called(f: &Function, module: ModuleId) -> Box<[LocalFunctionId]> {

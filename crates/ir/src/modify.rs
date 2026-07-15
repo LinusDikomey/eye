@@ -145,16 +145,17 @@ impl IrModify {
     }
 
     /// adds a block argument of the specified type to the block and returns the Ref to the new arg
-    /// as well as it's index in the arg list of that block
+    /// as well as its index in the arg list of that block
     pub fn add_block_arg(&mut self, env: &Environment, block: BlockId, ty: TypeId) -> (Ref, u32) {
         let r = Ref((self.ir.insts.len() + self.additional.len()) as u32);
         let block_info = &mut self.ir.blocks[block.idx()];
-        let before = Ref(block_info.args_idx); // before the first instruction of the body block
+        debug_assert_ne!(block_info.args_idx, block_info.body_idx);
+        let after = Ref(block_info.body_idx - 1); // before the first instruction of the body block
         let prev_arg_count = block_info.arg_count;
         block_info.arg_count += 1;
         self.additional.push(AdditionalInst {
-            insert_at: before,
-            position: Insert::Before,
+            insert_at: after,
+            position: Insert::After,
             inst: crate::builtins::block_arg_inst(ty),
         });
         for pred in &self.ir.blocks[block.idx()].preds {
@@ -254,6 +255,13 @@ impl IrModify {
                 .position(|info| {
                     if info.body_idx < self.ir.insts.len() as _ {
                         let i = info.body_idx;
+                        if position == Insert::After && insert_at.0 + 1 == info.body_idx {
+                            // This can happen after splitting a block with split_block_at
+                            // at the start of the block. Since the existing block still has
+                            // arguments but no body instructions, the insert point has to point to
+                            // the last argument/insert point (right before the body index)
+                            return true;
+                        }
                         (i..i + info.len).contains(&insert_at.0)
                     } else {
                         info.body_idx == insert_at.0
@@ -291,6 +299,14 @@ impl IrModify {
     }
 
     pub fn finish_and_compress(self, env: &Environment) -> FunctionIr {
+        self.finish_and_compress_with_options(env, true)
+    }
+
+    pub fn finish_and_compress_with_options(
+        self,
+        env: &Environment,
+        compress_gotos: bool,
+    ) -> FunctionIr {
         let cf = env.get_dialect_module_if_present::<Cf>();
         let Self { mut ir, additional } = self;
         // TODO: IrModify should keep track of number of instructions replaced with Nothing/Copy so
@@ -340,6 +356,9 @@ impl IrModify {
                                      renames: &mut RenameTable,
                                      goto_ref: Ref|
              -> bool {
+                if !compress_gotos {
+                    return false;
+                }
                 let Some(cf) = cf else {
                     return false;
                 };
@@ -418,17 +437,27 @@ impl IrModify {
                 let inst_range = if is_new_block {
                     // new blocks only contain a single Nothing "insert point" in their body
                     debug_assert_eq!(
-                        info.len, 1,
-                        "Can't have a previous length other than 1 in new block"
+                        info.len, 0,
+                        "Can't have a previous length other than 0 in new block {current_block}"
                     );
-                    info.len = 0;
                     info.args_idx..info.body_idx + 1
                 } else {
                     info.args_idx..info.body_idx + info.len
                 }
                 .map(Ref);
-                info.args_idx = insts.len() as u32;
-                info.body_idx = info.args_idx + info.arg_count;
+                let old_args_idx = info.args_idx;
+                // if we are not appending to another block (goto compression, update the indices
+                // of the block to the new starting point)
+                if appending_block.is_none() {
+                    info.args_idx = insts.len() as u32;
+                    info.body_idx = info.args_idx + info.arg_count;
+                    if info.arg_count == 0 {
+                        // add a block arg insert point in case there are no block args
+                        insts.push(Instruction::NOTHING);
+                        info.body_idx += 1;
+                    }
+                }
+
                 for old_ref in inst_range {
                     'before: while let Some((added, r)) = new_insts.get(new_idx)
                         && added.insert_at == old_ref
@@ -477,49 +506,51 @@ impl IrModify {
                         insts.push(inst);
                     }
 
-                    if !is_new_block {
-                        let mut inst = old_insts[old_ref.idx()];
-                        renames.visit_inst(&mut ir.extra, &ir.blocks, None, &mut inst, env);
-                        if let Some(inst) = inst.as_module(crate::BUILTIN) {
-                            if matches!(inst.op(), Builtin::Nothing | Builtin::Copy) {
-                                let new = if inst.op() == Builtin::Nothing {
-                                    Ref::UNIT
-                                } else {
-                                    Ref(inst.args[0])
-                                };
-                                renames.rename(old_ref, new);
-                                if appending_block.is_none() {
-                                    ir.blocks[current_block.idx()].len -= 1;
+                    'add_old_inst: {
+                        if !is_new_block {
+                            let mut inst = old_insts[old_ref.idx()];
+                            renames.visit_inst(&mut ir.extra, &ir.blocks, None, &mut inst, env);
+                            if let Some(inst) = inst.as_module(crate::BUILTIN) {
+                                if matches!(inst.op(), Builtin::Nothing | Builtin::Copy) {
+                                    let new = if inst.op() == Builtin::Nothing {
+                                        Ref::UNIT
+                                    } else {
+                                        Ref(inst.args[0])
+                                    };
+                                    renames.rename(old_ref, new);
+                                    if appending_block.is_none() && old_ref.0 != old_args_idx {
+                                        ir.blocks[current_block.idx()].len -= 1;
+                                    }
+                                    break 'add_old_inst;
+                                } else if inst.op() == Builtin::BlockArg
+                                    && let Some(renamed) =
+                                        arg_renames.as_mut().and_then(|renames| renames.next())
+                                {
+                                    renames.rename(old_ref, renamed);
+                                    break 'add_old_inst;
                                 }
-                                continue;
-                            } else if inst.op() == Builtin::BlockArg
-                                && let Some(renamed) =
-                                    arg_renames.as_mut().and_then(|renames| renames.next())
-                            {
-                                renames.rename(old_ref, renamed);
-                                continue;
                             }
+                            if compress_goto(
+                                &inst,
+                                cf,
+                                &mut ir.extra,
+                                &mut ir.blocks,
+                                &mut current_block,
+                                &mut appending_block,
+                                &visited_blocks,
+                                &mut arg_renames,
+                                &mut renames,
+                                old_ref,
+                            ) {
+                                continue 'add_block_contents;
+                            }
+                            let new_r = Ref(insts.len() as _);
+                            renames.rename(old_ref, new_r);
+                            if let Some(appending) = appending_block {
+                                ir.blocks[appending.idx()].len += 1;
+                            }
+                            insts.push(inst);
                         }
-                        if compress_goto(
-                            &inst,
-                            cf,
-                            &mut ir.extra,
-                            &mut ir.blocks,
-                            &mut current_block,
-                            &mut appending_block,
-                            &visited_blocks,
-                            &mut arg_renames,
-                            &mut renames,
-                            old_ref,
-                        ) {
-                            continue 'add_block_contents;
-                        }
-                        let new_r = Ref(insts.len() as _);
-                        renames.rename(old_ref, new_r);
-                        if let Some(appending) = appending_block {
-                            ir.blocks[appending.idx()].len += 1;
-                        }
-                        insts.push(inst);
                     }
                     'after: while let Some((added, r)) = new_insts.get(new_idx)
                         && added.insert_at == old_ref
@@ -662,7 +693,7 @@ impl IrModify {
             arg_count,
             args_idx,
             body_idx,
-            len: 1,
+            len: 0,
             preds: Vec::new(),
             succs: Vec::new(),
         });
@@ -681,11 +712,15 @@ impl IrModify {
 
     pub fn get_block_insert_point(&self, block: BlockId) -> Ref {
         let info = &self.ir.blocks[block.idx()];
-        debug_assert!(
-            info.len > 0,
-            "Can't determine insert point for an empty block, this should never happen"
-        );
-        Ref(info.body_idx + info.len - 1)
+        if info.len == 0 {
+            debug_assert!(
+                info.body_idx >= self.ir.insts.len() as u32,
+                "Empty blocks should always point to additional"
+            );
+            Ref(info.body_idx)
+        } else {
+            Ref(info.body_idx + info.len - 1)
+        }
     }
 
     pub fn replace_with(&mut self, env: &Environment, r: Ref, new: Ref) {
@@ -727,10 +762,7 @@ impl IrModify {
             self.ir
                 .blocks
                 .iter()
-                .position(|info| {
-                    // FIXME: arg_count does not work as the offset after adding block args
-                    (info.args_idx..info.args_idx + info.arg_count + info.len).contains(&r.0)
-                })
+                .position(|info| (info.body_idx..info.body_idx + info.len).contains(&r.0))
                 .unwrap_or_else(|| panic!("no block found for ref {r}")) as _,
         )
     }
@@ -800,7 +832,7 @@ impl IrModify {
     /// Gets the Ref to the first instruction in the given block before potential modifications.
     pub fn get_original_block_start(&self, block: BlockId) -> Ref {
         let info = &self.ir.blocks[block.idx()];
-        Ref(info.args_idx + info.arg_count)
+        Ref(info.body_idx)
     }
 
     pub fn get_block_args(&self, block: BlockId) -> Refs {
@@ -830,10 +862,18 @@ impl IrModify {
         self.ir.args_iter(inst, env)
     }
 
-    /// Splits a block into two before the specified instruction Ref, returning the id of the new
-    /// block as well as the insert point of the existing block. The existing block will be left
-    /// without a terminator.
-    pub fn split_block_before(&mut self, block: BlockId, r: Ref) -> (BlockId, Ref) {
+    /// Splits a block into two before at the specified instruction Ref. Converts the given
+    /// instruction into the single block arg of the new block.
+    /// Returns the id of the new block as well as the insert point at the end of the existing
+    /// block. Note that the existing block will be left without a terminator.
+    ///
+    /// This is mainly used for inlining where a call instruction is made the start of the new
+    /// block. The inlined function will Goto the new block when returning, passing is return value
+    pub fn split_block_at(&mut self, block: BlockId, r: Ref) -> (BlockId, Ref) {
+        debug_assert!(
+            r.idx() < self.ir.insts.len(),
+            "Can't split blocks in additional"
+        );
         let new_block_id = BlockId(self.ir.blocks.len() as _);
         let info = &mut self.ir.blocks[block.idx()];
         debug_assert!(
@@ -842,23 +882,9 @@ impl IrModify {
         );
         let split_offset = r.0 - info.body_idx;
         let new_block_idx = info.body_idx + split_offset;
-        let new_block_len = info.len - split_offset;
+        let new_block_len = info.len - split_offset - 1;
         info.len = split_offset;
-        let insert_point = if split_offset == 0 && info.arg_count == 0 {
-            info.args_idx = (self.ir.insts.len() + self.additional.len()) as u32;
-            info.body_idx = info.args_idx;
-            info.len = 1;
-            let insert_point = Ref(info.body_idx);
-            // insert point instruction
-            self.additional.push(AdditionalInst {
-                insert_at: insert_point,
-                position: Insert::After,
-                inst: Instruction::NOTHING,
-            });
-            insert_point
-        } else {
-            Ref(info.body_idx + split_offset - 1)
-        };
+        let insert_point = Ref(info.body_idx + split_offset - 1);
         let succs = {
             let mut succs = std::mem::take(&mut info.succs);
             for succ in &mut succs {
@@ -871,10 +897,11 @@ impl IrModify {
             }
             succs
         };
+        self.ir.insts[r.idx()] = crate::builtins::block_arg_inst(self.ir.insts[r.idx()].ty);
         self.ir.blocks.push(BlockInfo {
-            arg_count: 0,
+            arg_count: 1,
             args_idx: new_block_idx,
-            body_idx: new_block_idx,
+            body_idx: new_block_idx + 1,
             len: new_block_len,
             preds: Vec::new(),
             succs,
@@ -883,7 +910,7 @@ impl IrModify {
     }
 
     pub fn add_manual_preds(&mut self, block: BlockId, preds: impl Iterator<Item = BlockId>) {
-        self.ir.blocks[block.idx()].succs.extend(preds);
+        self.ir.blocks[block.idx()].preds.extend(preds);
     }
     pub fn add_manual_succs(&mut self, block: BlockId, succs: impl Iterator<Item = BlockId>) {
         self.ir.blocks[block.idx()].succs.extend(succs);
@@ -917,11 +944,63 @@ pub enum Insert {
 
 #[cfg(test)]
 mod tests {
-    use crate::{BlockId, Environment, Primitive, dialect, modify::IrModify, verify};
+    use crate::{
+        BlockId, BlockTarget, Environment, FunctionIr, Primitive, Ref, dialect, modify::IrModify,
+        parse::parse_function_body, verify,
+    };
+
+    fn test_env() -> Environment {
+        let mut env = Environment::new(Primitive::create_infos());
+        env.get_dialect_module::<dialect::Arith>();
+        env.get_dialect_module::<dialect::Cf>();
+        env
+    }
+
+    #[track_caller]
+    fn assert_ir_eq(env: &Environment, ir: &FunctionIr, types: &crate::Types, expected: &str) {
+        let mut expected_lines = expected.trim().lines();
+        color_format::config::set_override(false);
+        let actual = ir.display(env, types).to_string();
+        color_format::config::unset_override();
+        let mut actual_lines = actual.trim().lines();
+        let mut line_number = 0;
+        loop {
+            line_number += 1;
+            match (expected_lines.next(), actual_lines.next()) {
+                (None, None) => break,
+                (Some(expected_line), Some(actual_line)) => {
+                    let expected_line = expected_line
+                        .split_once('#')
+                        .map_or(expected_line, |(line, _)| line)
+                        .trim();
+                    let actual_line = actual_line
+                        .split_once('#')
+                        .map_or(actual_line, |(line, _)| line)
+                        .trim();
+                    if expected_line.trim() != actual_line.trim() {
+                        panic!(
+                            "assert_ir_eq mismatch at line {line_number}:\n\
+                            expected : {expected_line:?}\n\
+                            but found: {actual_line:?}\n\
+                            ----- Full actual IR -----\n{actual}
+                            "
+                        );
+                    }
+                    assert_eq!(
+                        expected_line.trim(),
+                        actual_line.trim(),
+                        "Line {line_number} ir mismatch"
+                    )
+                }
+                (Some(_), None) => panic!("Expected more lines:\n{actual}"),
+                (None, Some(_)) => panic!("Expected less lines:\n{actual}"),
+            }
+        }
+    }
 
     #[test]
     fn add_block_arg() {
-        let mut env = Environment::new(Primitive::create_infos());
+        let mut env = test_env();
         env.get_dialect_module::<dialect::Arith>();
         env.get_dialect_module::<dialect::Cf>();
         let src = r#"
@@ -939,14 +1018,61 @@ mod tests {
             b3:
                      cf.Ret unit
         "#;
-        let (function, mut types) = crate::parse::parse_function_body(&env, src);
+        let (function, mut types) = parse_function_body(&env, src);
         verify::function_body(&env, &function, &types, "test");
         let mut ir = IrModify::new(function);
         let i64 = types.add(Primitive::I64);
         let (_, n) = ir.add_block_arg(&env, BlockId(1), i64);
         assert_eq!(n, 0);
         let function = ir.finish_and_compress(&env);
+        for block in function.block_ids() {
+            let arg_count = function.get_block_args(block).count;
+            assert_eq!(arg_count, (block == BlockId(1)) as _);
+        }
         println!("{}", function.display(&env, &types));
         verify::function_body(&env, &function, &types, "test");
+    }
+
+    #[test]
+    fn split_block() {
+        let mut env = test_env();
+        let arith = env.get_dialect_module::<dialect::Arith>();
+        let cf = env.get_dialect_module::<dialect::Cf>();
+        let src = r#"
+            b0:
+                %1 = arith.Int 0 :: I32
+                     cf.Ret %1
+        "#;
+        let (function, types) = parse_function_body(&env, src);
+        {
+            let mut types = types.clone();
+            let mut ir = IrModify::new(function.clone());
+            let b0 = BlockId(0);
+            let i32 = types.add(Primitive::I32);
+            let (new_block, insert_point) = ir.split_block_at(b0, Ref(1));
+            ir.add_block_arg(&env, b0, i32);
+            ir.add_block_arg(&env, new_block, i32);
+            let five = ir.add_after(&env, insert_point, arith.Int(5, i32));
+            ir.add_after(
+                &env,
+                insert_point,
+                cf.Goto(BlockTarget(new_block, (&[five, five]).into())),
+            );
+            let ir = ir.finish_and_compress_with_options(&env, false);
+            println!("{}", ir.display(&env, &types));
+            assert_ir_eq(
+                &env,
+                &ir,
+                &types,
+                r#"
+                    b0(%0: I32):
+                        %1 = arith.Int 5 :: I32
+                            cf.Goto b1(%1, %1)
+                    b1(%3: I32, %4: I32):
+                             cf.Ret %3
+                 "#,
+            );
+            verify::function_body(&env, &ir, &types, "function");
+        }
     }
 }

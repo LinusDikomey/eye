@@ -19,7 +19,12 @@ impl FunctionPass for DeadCodeElimination {
         loop {
             let mut changed = false;
             for block in ir.block_ids() {
-                for r in ir.get_block(block).all_refs() {
+                let info = ir.get_block(block);
+                if info.arg_count == 0 {
+                    // mark insert point instruction as alive so it doesn't get killed
+                    alive_insts.set(info.args_idx as usize, true);
+                }
+                for r in info.all_refs() {
                     let inst = ir.get_inst(r);
                     let f = &env[inst.function];
                     if !f.flags.pure()

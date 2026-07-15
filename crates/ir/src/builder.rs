@@ -53,7 +53,7 @@ impl<Env: HasEnvironment> Builder<Env> {
     pub fn begin_function(env: Env, id: FunctionId) -> (Self, Refs) {
         let func = &env.env()[id];
         let arg_count = func.params.len() as u32;
-        let insts: Vec<_> = func
+        let mut insts: Vec<_> = func
             .params
             .iter()
             .map(|p| {
@@ -70,6 +70,9 @@ impl<Env: HasEnvironment> Builder<Env> {
                 }
             })
             .collect();
+        if arg_count == 0 {
+            insts.push(Instruction::NOTHING);
+        }
         let types = func.types.clone();
         let builder = Self {
             env,
@@ -79,7 +82,7 @@ impl<Env: HasEnvironment> Builder<Env> {
             blocks: vec![BlockInfo {
                 arg_count,
                 args_idx: 0,
-                body_idx: arg_count,
+                body_idx: arg_count.max(1),
                 len: 0,
                 preds: Vec::new(),
                 succs: Vec::new(),
@@ -150,14 +153,19 @@ impl<Env: HasEnvironment> Builder<Env> {
         );
         let block = &mut self.blocks[id.0 as usize];
         debug_assert!(
-            block.len == 0 && block.arg_count == 0,
+            block.len == 0 && block.arg_count == 0 && block.body_idx == 0,
             "can't begin a block twice"
         );
         block.args_idx = self.insts.len() as _;
         self.insts
             .extend(args.into_iter().map(builtins::block_arg_inst));
         block.arg_count = self.insts.len() as u32 - block.args_idx;
-        block.body_idx = block.args_idx + block.arg_count;
+        block.body_idx = if block.arg_count == 0 {
+            self.insts.push(Instruction::NOTHING);
+            block.args_idx + 1
+        } else {
+            block.args_idx + block.arg_count
+        };
         self.current_block = Some(id);
         Refs {
             idx: block.args_idx,
@@ -188,10 +196,17 @@ impl<Env: HasEnvironment> Builder<Env> {
             idx,
             count: arg_count,
         };
+        let body_idx = if arg_count == 0 {
+            // arg insert point
+            self.insts.push(Instruction::NOTHING);
+            idx + 1
+        } else {
+            idx + arg_count
+        };
         self.blocks.push(BlockInfo {
             arg_count,
             args_idx: idx,
-            body_idx: idx + arg_count,
+            body_idx,
             len: 0,
             preds: Vec::new(),
             succs: Vec::new(),

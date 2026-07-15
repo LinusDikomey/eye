@@ -31,11 +31,20 @@ pub fn function_body(env: &Environment, ir: &FunctionIr, types: &Types, function
     let tuple = env.get_dialect_module_if_present::<Tuple>();
     for block in ir.block_ids() {
         let info = &ir.blocks[block.idx()];
-        assert_eq!(
-            info.args_idx + info.arg_count,
-            info.body_idx,
-            "Body index of block {block} is desynchronized"
-        );
+        if info.arg_count == 0 {
+            assert_eq!(
+                info.args_idx + 1,
+                info.body_idx,
+                "Body index of block {block} is desynchronized or args insert point is missing"
+            );
+            accounted_refs.insert(Ref(info.args_idx));
+        } else {
+            assert_eq!(
+                info.args_idx + info.arg_count,
+                info.body_idx,
+                "Body index of block {block} is desynchronized"
+            );
+        }
         for r in ir.get_block_args(block).iter() {
             accounted_refs.insert(r);
         }

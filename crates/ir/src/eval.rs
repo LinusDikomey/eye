@@ -538,7 +538,7 @@ pub fn eval<E: EvalEnvironment>(
                                 in_idx
                             };
                             let src = src as usize..(src + slot_count) as usize;
-                            values.slot_map.copy_within(src, out_idx as usize);
+                            values.slots.copy_within(src, out_idx as usize);
                             in_idx += slot_count;
                             out_idx += slot_count;
                         }

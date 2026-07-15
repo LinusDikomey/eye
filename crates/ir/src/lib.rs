@@ -203,6 +203,14 @@ impl Ref {
         self.is_ref().then_some(self.0)
     }
 
+    pub fn into_bool(self) -> Option<bool> {
+        match self {
+            Self::FALSE => Some(false),
+            Self::TRUE => Some(true),
+            _ => None,
+        }
+    }
+
     pub fn idx(self) -> usize {
         self.0 as usize
     }
@@ -953,7 +961,10 @@ impl block_graph::Blocks for FunctionIr {
 #[derive(Clone, Debug)]
 pub struct BlockInfo {
     pub arg_count: u32,
+    /// index of the first block argument
     pub args_idx: u32,
+    /// index of the first instruction in the block body. May not equal args_idx. A Nothing
+    /// instruction should exist before the body in the case that there are no block args
     pub body_idx: u32,
     pub len: u32,
     pub preds: Vec<BlockId>,
@@ -961,12 +972,16 @@ pub struct BlockInfo {
 }
 impl BlockInfo {
     pub fn all_refs(&self) -> impl use<> + ExactSizeIterator<Item = Ref> {
-        (self.args_idx..self.body_idx + self.len).map(Ref)
+        let start = if self.arg_count == 0 {
+            self.body_idx
+        } else {
+            self.args_idx
+        };
+        (start..self.body_idx + self.len).map(Ref)
     }
 
     pub fn body(&self) -> impl use<> + ExactSizeIterator<Item = Ref> {
-        let s = self.args_idx + self.arg_count;
-        (s..s + self.len).map(Ref)
+        (self.body_idx..self.body_idx + self.len).map(Ref)
     }
 
     pub fn replace_pred(&mut self, pred: BlockId, replaced_with: BlockId) {
@@ -1156,11 +1171,12 @@ pub fn update_inst_refs(
                     idx += 1;
                 }
                 Parameter::BlockId => {
-                    extra[idx] = update_block(BlockId(extra[idx])).0;
+                    inst.args[idx] = update_block(BlockId(inst.args[idx])).0;
                     idx += 1;
                 }
                 Parameter::BlockTarget => {
                     let target = update_block(BlockId(inst.args[idx]));
+                    inst.args[idx] = target.0;
                     let args_idx = inst.args[idx + 1];
                     idx += 2;
                     let arg_count = blocks[target.idx()].arg_count;

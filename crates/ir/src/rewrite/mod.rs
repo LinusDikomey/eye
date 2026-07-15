@@ -49,7 +49,7 @@ impl RewriteStrategy for LinearRewriteOrder {
 
     fn iterate_block(&self, ir: &IrModify, block: BlockId) -> Self::BlockInstructions {
         let info = ir.get_block(block);
-        let s = info.args_idx + info.arg_count;
+        let s = info.body_idx;
         s..s + info.len
     }
 }
