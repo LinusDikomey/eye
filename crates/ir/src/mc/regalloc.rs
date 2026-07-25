@@ -110,7 +110,7 @@ fn analyze_liveness<I: McInst>(
         // PERF: just reuse one bitmap in the future and copy over
         let mut live = liveouts[block.idx()].clone();
         let mut live_precolored = <I::Reg as Register>::NO_BITS;
-        for r in ir.block_refs(block).iter().rev() {
+        for r in ir.block_body_refs(block).iter().rev() {
             analyze_inst_liveness::<I>(
                 env,
                 mc,
@@ -275,7 +275,7 @@ fn perform_regalloc<R: Register>(
         liveins[block.idx()].visit_set_bits(|livein| {
             chosen[livein].set_bit(&mut free, false);
         });
-        for block_ref in ir.block_refs(block).iter() {
+        for block_ref in ir.block_body_refs(block).iter() {
             if let Some(inst) = ir.get_inst(block_ref).as_module(mc) {
                 match inst.op() {
                     Mc::IncomingBlockArgs => {}

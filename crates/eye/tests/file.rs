@@ -1,3 +1,6 @@
+//! This file runs end-to-end tests of the compiler. These iterate over all files in eye/ and run
+//! them, comparing output with .out or .err files of the same name.
+
 use std::{
     io::Write,
     path::Path,
@@ -10,14 +13,15 @@ use test_each_file::test_each_path;
 
 static TRACING_INIT: OnceLock<()> = OnceLock::new();
 
-fn set_dir() {
+fn setup() {
+    TRACING_INIT.get_or_init(|| tracing_subscriber::fmt().init());
     // this makes sure std is found and the normal top-level eyebuild directory is used
     std::env::set_current_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../")).unwrap();
 }
 
 #[test]
 fn check_std() {
-    set_dir();
+    setup();
     let args = args::Args {
         cmd: args::Cmd::Check,
         path: Some("std".to_owned()),
@@ -27,10 +31,14 @@ fn check_std() {
     eye::run(args).expect("std failed to check");
 }
 
-test_each_path! { for ["eye"] in "eye" => |[path]: [&Path; 1]| test_compile_and_run(path) }
+test_each_path! { for ["eye"] in "eye" => |[path]: [&Path; 1]| test_compile_and_run(path, false) }
 
-fn test_compile_and_run(eye: &Path) {
-    set_dir();
+// These test the same files with optimizations enabled. Marked ignored as optimizations are still
+// unstable and don't really work. Can run `cargo test -- --ignored` to find optimizer bugs.
+test_each_path! { #[ignore] for ["eye"] in "eye" as opt => |[path]: [&Path; 1]| test_compile_and_run(path, true) }
+
+fn test_compile_and_run(eye: &Path, optimize: bool) {
+    setup();
     let input = std::fs::read_to_string(eye.with_extension("in")).unwrap_or_default();
     let out = eye.with_extension("out");
     let err = eye.with_extension("err");
@@ -38,9 +46,9 @@ fn test_compile_and_run(eye: &Path) {
     let args = args::Args {
         cmd: args::Cmd::Build,
         path: Some(path.clone()),
+        optimize,
         ..Default::default()
     };
-    TRACING_INIT.get_or_init(|| eye::enable_tracing(&args));
     if out.exists() {
         eye::run(args).expect("Failed to compile");
         let output = run_executable(path, input);
@@ -86,7 +94,7 @@ fn run_executable(path: String, input: String) -> std::process::Output {
 #[test]
 /// Scans the README for code blocks to compils and run them, checking for successful exit
 fn readme_code_blocks() {
-    set_dir();
+    setup();
     let readme = std::fs::read_to_string("README.md").unwrap();
     // skip the initial text block and step into each code block
     for code in readme.split("\n```").skip(1).step_by(2) {
@@ -110,13 +118,13 @@ fn readme_code_blocks() {
 
 #[test]
 fn test_project() {
-    set_dir();
-    test_compile_and_run(Path::new("crates/eye/tests/test-project"));
+    setup();
+    test_compile_and_run(Path::new("crates/eye/tests/test-project"), false);
 }
 
 #[test]
 fn test_example() {
-    set_dir();
+    setup();
 
     let path = "example.eye";
     let args = args::Args {

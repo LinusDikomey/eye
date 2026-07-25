@@ -44,6 +44,7 @@ impl From<compiler::ProjectError> for MainError {
 }
 
 pub fn run(args: args::Args) -> Result<(), MainError> {
+    eprintln!("{:?}", args.path);
     match args.cmd {
         args::Cmd::ListTargets => {
             list_targets(args.backend);

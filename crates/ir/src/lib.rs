@@ -707,10 +707,10 @@ impl FunctionIr {
         &self.blocks[block.idx()].succs
     }
 
-    pub fn block_refs(&self, id: BlockId) -> Refs {
+    pub fn block_body_refs(&self, id: BlockId) -> Refs {
         let block = &self.blocks[id.idx()];
         Refs {
-            idx: block.args_idx + block.arg_count,
+            idx: block.body_idx,
             count: block.len,
         }
     }

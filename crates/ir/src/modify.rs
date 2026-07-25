@@ -105,7 +105,7 @@ impl IrModify {
         let inst = if (inst.0 as usize) < self.ir.insts.len() {
             self.ir.insts[inst.idx()]
         } else {
-            self.ir.insts[inst.idx() - self.ir.insts.len()]
+            self.additional[inst.idx() - self.ir.insts.len()].inst
         };
         let params = env[inst.function].params();
         let slot_count: usize = params.iter().map(|p| p.slot_count()).sum();
@@ -389,6 +389,12 @@ impl IrModify {
                 debug_assert_eq!(args.len(), target_info.arg_count as usize);
                 debug_assert!(!visited_blocks.get(target.idx()), "RPO is wrong");
 
+                tracing::debug!(
+                    target: "ir::compress",
+                    "Compressing direct successor block {target} into {}",
+                    appending_block.unwrap_or(*current_block),
+                );
+
                 // successors of the next block become successors of the current block
                 let succs = std::mem::take(&mut target_info.succs);
                 let appending = appending_block.unwrap_or(*current_block);
@@ -403,7 +409,9 @@ impl IrModify {
 
                 removed_blocks.insert(target);
 
-                // trivial goto is removed
+                // trivial goto is removed so decrease the block's len by 1.
+                // Note that if we are in an appending block, the len was already increased
+                // before so we still have to decrement it here.
                 blocks[appending_block.unwrap_or(*current_block).idx()].len -= 1;
 
                 // continue appending the successor to the current block
@@ -530,6 +538,9 @@ impl IrModify {
                                     break 'add_old_inst;
                                 }
                             }
+                            if let Some(appending) = appending_block {
+                                ir.blocks[appending.idx()].len += 1;
+                            }
                             if compress_goto(
                                 &inst,
                                 cf,
@@ -546,9 +557,6 @@ impl IrModify {
                             }
                             let new_r = Ref(insts.len() as _);
                             renames.rename(old_ref, new_r);
-                            if let Some(appending) = appending_block {
-                                ir.blocks[appending.idx()].len += 1;
-                            }
                             insts.push(inst);
                         }
                     }
@@ -612,24 +620,34 @@ impl IrModify {
             }
         });
 
+        // entries are renamed_to -> original_block
         let mut renamed_blocks = DHashMap::default();
         // let mut removed_block_iter = removed_blocks.iter().copied().peekable();
-        'remove_blocks: while !removed_blocks.is_empty() {
+        let mut removed_blocks: Box<[BlockId]> = removed_blocks.into_iter().collect();
+        removed_blocks.sort_by_key(|b| b.0);
+        'remove_blocks: for to_remove in removed_blocks.into_iter().rev() {
             let last = BlockId(ir.blocks.len() as u32 - 1);
-            if removed_blocks.contains(&last) {
+            if to_remove == last {
                 ir.blocks.pop();
-                removed_blocks.remove(&last);
                 continue 'remove_blocks;
             }
-            let Some(&to_remove) = removed_blocks.iter().next() else {
-                // no more blocks to remove after popping
-                break;
-            };
 
             ir.blocks.swap_remove(to_remove.idx());
-            removed_blocks.remove(&to_remove);
-            renamed_blocks.insert(BlockId(ir.blocks.len() as u32), to_remove);
+            let moved = BlockId(ir.blocks.len() as u32);
+            if let Some(original) = renamed_blocks.remove(&moved) {
+                // block was already moved before so keep track of the move from the original
+                // position
+                renamed_blocks.insert(to_remove, original);
+            } else {
+                renamed_blocks.insert(to_remove, moved);
+            }
         }
+
+        // swap direction of rename entries so we can look up a rename easily
+        let renamed_blocks: DHashMap<_, _> = renamed_blocks
+            .into_iter()
+            .map(|(to, from)| (from, to))
+            .collect();
 
         if !renamed_blocks.is_empty() {
             for inst in &mut insts {

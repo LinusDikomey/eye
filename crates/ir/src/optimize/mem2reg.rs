@@ -73,7 +73,7 @@ impl FunctionPass for Mem2Reg {
                         }
                     }
                 }
-                ir.block_refs(block)
+                ir.block_body_refs(block)
             })
             .collect();
 
@@ -218,7 +218,7 @@ impl FunctionPass for Mem2Reg {
                             }
                         }
                     }
-                    let terminator = refs.iter().last().unwrap();
+                    let terminator = refs.iter().next_back().unwrap();
                     let mut undefined_args = Vec::new();
                     ir.visit_block_targets_mut(terminator, env, |target, args| {
                         for (&var, (_ty, blocks)) in &variables {
