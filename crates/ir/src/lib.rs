@@ -182,7 +182,7 @@ impl fmt::Debug for Ref {
             Self::UNIT => write!(f, "Ref(unit)"),
             Self::FALSE => write!(f, "Ref(false)"),
             Self::TRUE => write!(f, "Ref(true)"),
-            _ => f.debug_tuple("Ref").field(&self.0).finish(),
+            _ => write!(f, "{}", self),
         }
     }
 }

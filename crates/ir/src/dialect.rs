@@ -1,3 +1,5 @@
+use std::num::NonZeroU64;
+
 use crate::{Parameter, Type, instructions, primitives};
 
 primitives! {
@@ -17,6 +19,18 @@ primitives! {
     Ptr = 8
 }
 impl Primitive {
+    pub fn byte_size(self) -> NonZeroU64 {
+        NonZeroU64::new(match self {
+            Self::I1 | Self::I8 | Self::U8 => 1,
+            Self::I16 | Self::U16 => 2,
+            Self::I32 | Self::U32 | Self::F32 => 4,
+            // FIXME(target ptr size)
+            Self::I64 | Self::U64 | Self::F64 | Self::Ptr => 8,
+            Self::I128 | Self::U128 => 16,
+        })
+        .unwrap()
+    }
+
     pub fn is_int(self) -> bool {
         self.is_signed_int() || self.is_unsigned_int()
     }
@@ -34,6 +48,19 @@ impl Primitive {
 
     pub fn is_float(self) -> bool {
         matches!(self, Self::F32 | Self::F64)
+    }
+
+    #[must_use]
+    /// returns the unsigned integer type of the same size
+    pub fn into_unsigned(self) -> Self {
+        match self {
+            Self::I1 | Self::I8 | Self::U8 => Self::U8,
+            Self::I16 | Self::U16 => Self::U16,
+            Self::I32 | Self::U32 | Self::F32 => Self::U32,
+            // FIXME(target ptr size)
+            Self::I64 | Self::U64 | Self::F64 | Self::Ptr => Self::U64,
+            Self::I128 | Self::U128 => Self::U128,
+        }
     }
 }
 

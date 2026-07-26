@@ -586,9 +586,6 @@ ir::visitor! {
                 });
                 match primitive {
                     Primitive::I1 | Primitive::I8 | Primitive::U8 => {
-                        if r.idx() == 105 {
-                            eprintln!("105 8-bit load to {}", regs[0]);
-                        }
                         ir.add_before(env, r, x86.mov_rm8(regs[0], a.base, a.offset(), a.index, a.scale()));
                     }
                     Primitive::I16 | Primitive::U16 => {
