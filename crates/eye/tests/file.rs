@@ -31,11 +31,12 @@ fn check_std() {
     eye::run(args).expect("std failed to check");
 }
 
-test_each_path! { for ["eye"] in "eye" => |[path]: [&Path; 1]| test_compile_and_run(path, false) }
+test_each_path! { for ["eye"] in "eye" => |[path]: [&Path; 1]| test_compiles(path) }
 
-// These test the same files with optimizations enabled. Marked ignored as optimizations are still
-// unstable and don't really work. Can run `cargo test -- --ignored` to find optimizer bugs.
-test_each_path! { #[ignore] for ["eye"] in "eye" as opt => |[path]: [&Path; 1]| test_compile_and_run(path, true) }
+fn test_compiles(path: &Path) {
+    test_compile_and_run(path, false);
+    test_compile_and_run(path, true);
+}
 
 fn test_compile_and_run(eye: &Path, optimize: bool) {
     setup();

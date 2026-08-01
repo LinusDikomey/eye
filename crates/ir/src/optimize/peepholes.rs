@@ -97,6 +97,9 @@ fn pre_peephole(
             // if any of the operands of one of these instructions is undef, the whole
             // instruction becomes undef
             for arg in [lhs, rhs] {
+                if !arg.is_ref() {
+                    continue;
+                }
                 if ir
                     .get_inst(arg)
                     .as_module(BUILTIN)
@@ -105,14 +108,16 @@ fn pre_peephole(
                     return Some(Rewrite::Rename(arg));
                 }
             }
-            let l_int: Option<u64> = ir
-                .get_inst(lhs)
-                .as_module(dialects.arith)
-                .and_then(|i| (i.inst == Arith::Int).then(|| ir.typed_args(&i)));
-            let r_int: Option<u64> = ir
-                .get_inst(rhs)
-                .as_module(dialects.arith)
-                .and_then(|i| (i.inst == Arith::Int).then(|| ir.typed_args(&i)));
+            let l_int: Option<u64> = lhs.into_bool().map(u64::from).or_else(|| {
+                ir.get_inst(lhs)
+                    .as_module(dialects.arith)
+                    .and_then(|i| (i.inst == Arith::Int).then(|| ir.typed_args(&i)))
+            });
+            let r_int: Option<u64> = rhs.into_bool().map(u64::from).or_else(|| {
+                ir.get_inst(rhs)
+                    .as_module(dialects.arith)
+                    .and_then(|i| (i.inst == Arith::Int).then(|| ir.typed_args(&i)))
+            });
             match (l_int, r_int) {
                 (Some(l), Some(r)) => {
                     let folded = (binop.fold)(l, r);

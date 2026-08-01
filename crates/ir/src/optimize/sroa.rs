@@ -121,6 +121,9 @@ impl FunctionPass for SROA {
                                         }
                                     },
                                 );
+                                if *disqualified {
+                                    continue;
+                                }
                                 if accesses.len() == before_count {
                                     // zero-sized store
                                     zero_sized_accesses.push(r);
