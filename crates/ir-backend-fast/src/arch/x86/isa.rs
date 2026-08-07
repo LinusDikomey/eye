@@ -48,9 +48,9 @@ impl fmt::Display for Reg {
     }
 }
 impl Reg {
-    pub const fn bit(self) -> RegBits {
+    pub const fn index(self) -> u8 {
         use Reg::*;
-        let bit_index = match self {
+        match self {
             rax | eax | ax | ah | al => 0,
             rbx | ebx | bx | bh | bl => 1,
             rcx | ecx | cx | ch | cl => 2,
@@ -70,8 +70,11 @@ impl Reg {
             eflags => 16,
             rip => 17,
             none => 31,
-        };
-        RegBits(1 << bit_index)
+        }
+    }
+
+    pub const fn bit(self) -> RegBits {
+        RegBits(1 << self.index() as u32)
     }
 
     pub const fn to_64_bits(self) -> Self {

@@ -80,7 +80,7 @@ pub fn visit_primitives<F: FnMut(PrimitiveId, u64)>(
             Type::Primitive(id) => visit(id, offset),
             Type::Array(elem, len) => {
                 let elem = types[elem];
-                let elem_layout = type_layout(elem, types, &[]);
+                let elem_layout = type_layout(elem, types, primitives);
                 for i in 0..len.into() {
                     visit_primitives_inner(
                         elem,

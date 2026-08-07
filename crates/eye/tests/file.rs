@@ -8,7 +8,7 @@ use std::{
     sync::OnceLock,
 };
 
-use eye::args;
+use eye::args::{self, Backend};
 use test_each_file::test_each_path;
 
 static TRACING_INIT: OnceLock<()> = OnceLock::new();
@@ -34,11 +34,12 @@ fn check_std() {
 test_each_path! { for ["eye"] in "eye" => |[path]: [&Path; 1]| test_compiles(path) }
 
 fn test_compiles(path: &Path) {
-    test_compile_and_run(path, false);
-    test_compile_and_run(path, true);
+    test_compile_and_run(path, false, Backend::Llvm);
+    test_compile_and_run(path, true, Backend::Llvm);
+    // test_compile_and_run(path, true, Backend::Fast);
 }
 
-fn test_compile_and_run(eye: &Path, optimize: bool) {
+fn test_compile_and_run(eye: &Path, optimize: bool, backend: Backend) {
     setup();
     let input = std::fs::read_to_string(eye.with_extension("in")).unwrap_or_default();
     let out = eye.with_extension("out");
@@ -48,6 +49,7 @@ fn test_compile_and_run(eye: &Path, optimize: bool) {
         cmd: args::Cmd::Build,
         path: Some(path.clone()),
         optimize,
+        backend,
         ..Default::default()
     };
     if out.exists() {
@@ -120,7 +122,11 @@ fn readme_code_blocks() {
 #[test]
 fn test_project() {
     setup();
-    test_compile_and_run(Path::new("crates/eye/tests/test-project"), false);
+    test_compile_and_run(
+        Path::new("crates/eye/tests/test-project"),
+        false,
+        Backend::Llvm,
+    );
 }
 
 #[test]

@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 
 use ir::{
-    Argument, Bitmap, BlockId, Environment, FunctionId, FunctionIr, GlobalId, MCReg, ModuleOf,
+    Argument, Bitmap, BlockId, Environment, FunctionId, FunctionIr, GlobalId, ModuleOf,
     block_graph::Blocks,
     mc::{Mc, ParcopySolver},
     parameter_types::Int32,
@@ -54,14 +54,13 @@ pub fn write(
                             let Argument::MCReg(r) = arg else {
                                 unreachable!()
                             };
-                            r
+                            r.phys::<Reg>().expect("need physical registers")
                         });
                         parcopy.parcopy(
                             args,
                             |to, from| {
-                                let to: Reg = to.phys().unwrap();
-                                let from: Reg = from.phys().unwrap();
-                                let size = match to.class() {
+                                let checked_reg = if to == super::TMP_REGISTER { from } else { to };
+                                let size = match checked_reg.class() {
                                     RegClass::GP8 | RegClass::GP8I => Size::S8,
                                     RegClass::GP16 | RegClass::GP16I => Size::S16,
                                     RegClass::GP32 | RegClass::GP32I => Size::S32,
@@ -82,7 +81,7 @@ pub fn write(
                                     mov_rr(text, size, (to, from));
                                 }
                             },
-                            MCReg::from_phys(super::TMP_REGISTER),
+                            super::TMP_REGISTER,
                         );
                     }
                 }
@@ -174,11 +173,9 @@ pub fn write(
                     text.push(0xc3);
                 }
                 I::cmp_rr8 | I::cmp_rr16 | I::cmp_rr32 | I::cmp_rr64 => {
-                    let (a, b) = ir.args(i, env);
-                    // comparisons need to be emitted the other way around
-                    inst_rr(text, op, &[0x3A], &[0x3B], (b, a))
+                    inst_rr(text, op, &[0x3A], &[0x3B], swap(ir.args(i, env)))
                 }
-                I::test_rr8 => inst_rr_legacy(text, &[0x84], ir.args(i, env), false),
+                I::test_rr8 => inst_rr_legacy(text, &[0x84], swap(ir.args(i, env)), false),
                 I::jmp => {
                     let target = ir.args(i, env);
                     if block_queue.front().is_none_or(|&front| front != target)
@@ -290,17 +287,8 @@ pub fn write(
                 I::add_ri8 | I::add_ri16 | I::add_ri32 | I::add_ri64 => {
                     inst_ri(text, op, &[0x80], &[0x81], ir.args(i, env), 0);
                 }
-
-                I::sub_rr8 => {
-                    let (a, b) = ir.args(i, env);
-                    inst_rr_legacy(text, &[0x28], (b, a), false)
-                }
-                I::sub_rr16 | I::sub_rr32 | I::sub_rr64 => {
-                    if op == I::sub_rr16 {
-                        text.push(P16);
-                    }
-                    let (a, b) = ir.args(i, env);
-                    inst_rr_legacy(text, &[0x29], (b, a), op == I::sub_rr64);
+                I::sub_rr8 | I::sub_rr16 | I::sub_rr32 | I::sub_rr64 => {
+                    inst_rr(text, op, &[0x28], &[0x29], ir.args(i, env));
                 }
                 I::sub_ri8 | I::sub_ri16 | I::sub_ri32 | I::sub_ri64 => {
                     inst_ri(text, op, &[0x80], &[0x81], ir.args(i, env), 5)
@@ -310,7 +298,12 @@ pub fn write(
                     if op == I::imul_rr16 {
                         text.push(P16);
                     }
-                    inst_rr_legacy(text, &[0x0F, 0xAF], ir.args(i, env), op == I::imul_rr64)
+                    inst_rr_legacy(
+                        text,
+                        &[0x0F, 0xAF],
+                        swap(ir.args(i, env)),
+                        op == I::imul_rr64,
+                    )
                 }
                 I::imul_rri16 | I::imul_rri32 | I::imul_rri64 => {
                     inst_rri(text, op.size(), &[], &[0x69], ir.args(i, env));
@@ -396,7 +389,7 @@ pub fn write(
                         I::movsx32_rr8 => Size::S32,
                         _ => Size::S64,
                     };
-                    inst_rr_generic_inner(text, size, &[], &[0x0F, 0xBE], ir.args(i, env));
+                    inst_rr_generic_inner(text, size, &[], &[0x0F, 0xBE], swap(ir.args(i, env)));
                 }
                 I::movsx32_rr16 | I::movsx64_rr16 => {
                     let size = if op == I::movsx32_rr16 {
@@ -404,10 +397,10 @@ pub fn write(
                     } else {
                         Size::S64
                     };
-                    inst_rr_generic_inner(text, size, &[], &[0x0F, 0xBF], ir.args(i, env));
+                    inst_rr_generic_inner(text, size, &[], &[0x0F, 0xBF], swap(ir.args(i, env)));
                 }
                 I::movsx64_rr32 => {
-                    inst_rr_generic_inner(text, Size::S64, &[], &[0x63], ir.args(i, env));
+                    inst_rr_generic_inner(text, Size::S64, &[], &[0x63], swap(ir.args(i, env)));
                 }
                 I::movzx16_rr8 | I::movzx32_rr8 => {
                     let size = if op == I::movzx16_rr8 {
@@ -415,10 +408,16 @@ pub fn write(
                     } else {
                         Size::S32
                     };
-                    inst_rr_generic_inner(text, size, &[], &[0x0F, 0xB6], ir.args(i, env));
+                    inst_rr_generic_inner(text, size, &[], &[0x0F, 0xB6], swap(ir.args(i, env)));
                 }
                 I::movzx32_rr16 => {
-                    inst_rr_generic_inner(text, Size::S32, &[], &[0x0F, 0xB7], ir.args(i, env));
+                    inst_rr_generic_inner(
+                        text,
+                        Size::S32,
+                        &[],
+                        &[0x0F, 0xB7],
+                        swap(ir.args(i, env)),
+                    );
                 }
             }
         }
@@ -431,6 +430,10 @@ pub fn write(
         let i = start + offset_location as usize;
         text[i..i + 4].copy_from_slice(&offset.to_le_bytes());
     }
+}
+
+fn swap((a, b): (Reg, Reg)) -> (Reg, Reg) {
+    (b, a)
 }
 
 fn mov_rr(text: &mut Vec<u8>, size: Size, (a, b): (Reg, Reg)) {
@@ -473,8 +476,8 @@ fn inst_r_legacy(text: &mut Vec<u8>, opcode: &[u8], a: Reg, extension: u8, wide:
     text.push(modrm.modrm);
 }
 
-fn inst_rr_legacy(text: &mut Vec<u8>, opcode: &[u8], (a, b): (Reg, Reg), wide: bool) {
-    let modrm = encode_modrm_rr(a, b, wide);
+fn inst_rr_legacy(text: &mut Vec<u8>, opcode: &[u8], (reg, rm): (Reg, Reg), wide: bool) {
+    let modrm = encode_modrm_rr(reg, rm, wide);
     if modrm.rex != 0 {
         text.push(modrm.rex);
     }
@@ -482,8 +485,8 @@ fn inst_rr_legacy(text: &mut Vec<u8>, opcode: &[u8], (a, b): (Reg, Reg), wide: b
     text.push(modrm.modrm);
 }
 
-fn inst_rr(text: &mut Vec<u8>, inst: X86, opcode_8: &[u8], opcode: &[u8], (a, b): (Reg, Reg)) {
-    inst_rr_generic_inner(text, inst.size(), opcode_8, opcode, (a, b));
+fn inst_rr(text: &mut Vec<u8>, inst: X86, opcode_8: &[u8], opcode: &[u8], (rm, reg): (Reg, Reg)) {
+    inst_rr_generic_inner(text, inst.size(), opcode_8, opcode, (rm, reg));
 }
 
 fn inst_rr_generic_inner(
@@ -607,12 +610,12 @@ fn inst_rri(
     size: Size,
     opcode_8: &[u8],
     opcode: &[u8],
-    (a, b, imm): (Reg, Reg, u32),
+    (reg, rm, imm): (Reg, Reg, u32),
 ) {
     if size == Size::S16 {
         text.push(P16);
     }
-    let modrm = encode_modrm_rr(a, b, size == Size::S64);
+    let modrm = encode_modrm_rr(reg, rm, size == Size::S64);
     if modrm.rex != 0 {
         text.push(modrm.rex);
     }

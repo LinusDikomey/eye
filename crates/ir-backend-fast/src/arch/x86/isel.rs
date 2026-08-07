@@ -105,7 +105,7 @@ pub fn codegen(
                     P::I64 | P::U64 | P::Ptr => regs[0] = body.new_reg::<Reg>(RegClass::GP64),
                     P::F32 => regs[0] = body.new_reg::<Reg>(RegClass::F32),
                     P::F64 => regs[0] = body.new_reg::<Reg>(RegClass::F64),
-                    _ => todo!(),
+                    P::I128 | P::U128 => todo!(),
                 };
                 Ok(())
             },

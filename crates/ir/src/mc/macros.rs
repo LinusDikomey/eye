@@ -89,6 +89,10 @@ macro_rules! registers {
                 unsafe { std::mem::transmute(value as u8) }
             }
 
+            fn bit_index(self) -> u8 {
+                self.index()
+            }
+
             fn get_bit(self, bits: &RegBits) -> bool {
                 bits.get(self)
             }

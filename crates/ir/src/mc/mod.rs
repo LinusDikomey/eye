@@ -29,6 +29,7 @@ use crate::TypeId;
 use crate::modify::IrModify;
 use crate::slots::Slots;
 use crate::use_counts::UseCounts;
+use std::hash::Hash;
 use std::ops::{BitAnd, BitOr, Not};
 
 pub trait McInst: Inst {
@@ -37,7 +38,7 @@ pub trait McInst: Inst {
     fn implicit_use(&self, abi: &'static dyn Abi<Self>) -> <Self::Reg as Register>::RegisterBits;
 }
 
-pub trait Register: 'static + Copy {
+pub trait Register: 'static + Copy + Eq + Hash {
     const DEFAULT: Self;
     type RegisterBits: Copy
         + BitAnd<Output = Self::RegisterBits>
@@ -52,12 +53,13 @@ pub trait Register: 'static + Copy {
     fn encode(self) -> u32;
     fn decode(value: u32) -> Self;
 
+    fn bit_index(self) -> u8;
     fn get_bit(self, bits: &Self::RegisterBits) -> bool;
     fn set_bit(self, bits: &mut Self::RegisterBits, bit: bool);
     fn allocate_reg(free_bits: Self::RegisterBits, class: Self::Class) -> Option<Self>;
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct UnknownRegister(u32);
 impl Register for UnknownRegister {
     const DEFAULT: Self = Self(0);
@@ -77,6 +79,12 @@ impl Register for UnknownRegister {
 
     fn decode(value: u32) -> Self {
         Self(value)
+    }
+
+    fn bit_index(self) -> u8 {
+        // this just truncates the register but it's fine since it's only used for some small test
+        // cases for parcopy.
+        self.0 as u8
     }
 
     fn get_bit(self, _bits: &Self::RegisterBits) -> bool {
