@@ -24,6 +24,7 @@ pub struct Builtins {
     option: OnceCell<BaseType>,
     fn_trait: OnceCell<(ModuleId, TraitId)>,
     eq_trait: OnceCell<(ModuleId, TraitId)>,
+    exit: OnceCell<(ModuleId, FunctionId)>,
 }
 impl Builtins {
     pub fn resolve(std: ProjectId, compiler: &mut Compiler) -> Builtins {
@@ -208,5 +209,25 @@ pub fn get_eq_trait(compiler: &Compiler) -> (ModuleId, TraitId) {
             panic!("expected a trait for std.Eq");
         };
         (module, t)
+    })
+}
+
+pub fn get_exit(compiler: &Compiler) -> (ModuleId, FunctionId) {
+    *compiler.builtins.exit.get_or_init(|| {
+        let std = compiler.builtins.std;
+        let root = compiler.get_project(std).root_module;
+        let c = resolve_module(compiler, root, "c");
+        let def = compiler.resolve_in_module(c, "exit", ModuleSpan::MISSING);
+        let Def::Function(exit_mod, exit_func) = def else {
+            panic!("expected a function for std.c.exit, found {def:?}")
+        };
+        assert!(
+            compiler.get_module_ast(exit_mod)[exit_func]
+                .generics
+                .types
+                .is_empty(),
+            "No generics expected on std.c.exit"
+        );
+        (exit_mod, exit_func)
     })
 }

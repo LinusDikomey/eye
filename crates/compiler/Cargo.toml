@@ -15,6 +15,7 @@ ir.workspace = true
 tracing.workspace = true
 pathdiff.workspace = true
 segment-list.workspace = true
+target.workspace = true
 
 indexmap = "2.7.0"
 hashbrown = "0.16.0"

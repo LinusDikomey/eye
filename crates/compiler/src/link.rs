@@ -1,40 +1,20 @@
 use std::process::{self, Command};
 
-#[allow(unused)]
-enum Os {
-    Linux,
-    Windows,
-    Osx,
-}
-
-#[cfg(target_os = "linux")]
-const OS: Option<Os> = Some(Os::Linux);
-
-#[cfg(target_os = "windows")]
-const OS: Option<Os> = Some(Os::Windows);
-
-#[cfg(target_os = "macos")]
-const OS: Option<Os> = Some(Os::Osx);
-
-#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
-const OS: Option<Os> = None;
+use target::{Os, Target};
 
 pub fn link(
     obj: &str,
     out: &str,
     linker_cmd: Option<&str>,
     linked_libraries: &[String],
+    target: &Target,
 ) -> Result<(), String> {
     let mut cmd = if let Some(link) = &linker_cmd {
         let mut cmd = Command::new("eval");
         cmd.arg(link.replace("[OBJ]", obj).replace("[OUT]", out));
         cmd
-    } else if let Some(cmd) = link_cmd(obj, out, linked_libraries) {
-        cmd
     } else {
-        return Err(format!(
-            "No link command known for this OS. You can manually link the object file created: {obj}"
-        ));
+        link_cmd(obj, out, linked_libraries, target)
     };
 
     cmd.stdout(process::Stdio::piped());
@@ -53,19 +33,15 @@ pub fn link(
     })
 }
 
-fn link_cmd(obj: &str, out: &str, link: &[String]) -> Option<Command> {
-    let os = OS?;
-    Some(match os {
+fn link_cmd(obj: &str, out: &str, link: &[String], target: &Target) -> Command {
+    match target.os {
         Os::Linux => {
             let mut cmd = Command::new("ld");
             cmd.args([
                 obj,
                 //"-dynamic-linker",
                 //"/lib64/ld-linux-x86-64.so.2",
-                "-lc",
-                "help/linux/entry.o",
-                "-o",
-                out,
+                "-lc", "-o", out,
             ]);
             for lib in link {
                 cmd.arg(format!("-l{lib}"));
@@ -100,7 +76,7 @@ fn link_cmd(obj: &str, out: &str, link: &[String]) -> Option<Command> {
             }
             cmd
         }
-        Os::Osx => {
+        Os::Darwin => {
             let sdk_path_output = Command::new("xcrun")
                 .args(["-sdk", "macosx", "--show-sdk-path"])
                 .output()
@@ -123,5 +99,5 @@ fn link_cmd(obj: &str, out: &str, link: &[String]) -> Option<Command> {
             }
             cmd
         }
-    })
+    }
 }

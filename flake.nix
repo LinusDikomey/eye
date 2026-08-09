@@ -49,6 +49,10 @@
             libxml2
           ];
           env.EYE_DEFAULT_STD = "${placeholder "out"}/lib/std";
+          # specify the path to std for tests since the final path doesn't exist yet
+          preCheck = ''
+            export EYE_STD="$(pwd)/std"
+          '';
           postInstall = ''
             mkdir -p $out/lib
             cp -r std $out/lib

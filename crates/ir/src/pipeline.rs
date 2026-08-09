@@ -56,6 +56,10 @@ impl<State: Default> Pipeline<State> {
             let Some(ir) = function.ir.get() else {
                 continue;
             };
+            // HACK: don't process _start, it's only emitted on linux and shouldn't be touched
+            if &*function.name == "_start" {
+                continue;
+            }
             tracing::debug!(
                 target: "passes",
                 stage = self.context,

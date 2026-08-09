@@ -17,6 +17,7 @@ use compiler::{
 };
 
 use error::{Error, span::TSpan};
+use target::UnknownNativeTargetError;
 
 #[derive(Debug)]
 pub enum MainError {
@@ -33,6 +34,7 @@ pub enum MainError {
     RunningProgramFailed(std::io::Error),
     ReadingStdinFailed(std::io::Error),
     LspFailed(String),
+    UnknownNativeTarget(UnknownNativeTargetError),
 }
 impl From<compiler::ProjectError> for MainError {
     fn from(value: compiler::ProjectError) -> Self {
@@ -42,8 +44,17 @@ impl From<compiler::ProjectError> for MainError {
         }
     }
 }
+impl From<target::UnknownNativeTargetError> for MainError {
+    fn from(value: target::UnknownNativeTargetError) -> Self {
+        Self::UnknownNativeTarget(value)
+    }
+}
 
 pub fn run(args: args::Args) -> Result<(), MainError> {
+    let target = args
+        .target
+        .clone()
+        .map_or_else(target::Target::native, Ok)?;
     match args.cmd {
         args::Cmd::ListTargets => {
             list_targets(args.backend);
@@ -155,7 +166,14 @@ pub fn run(args: args::Args) -> Result<(), MainError> {
                     return Err(MainError::ErrorsFound);
                 };
                 // verification was already done so the error can be ignored here
-                _ = compiler.verify_main_and_add_entry_point(&mut env, &dialects, main, main_ir_id);
+                _ = compiler.verify_main_and_add_entry_point(
+                    &mut env,
+                    &dialects,
+                    main,
+                    main_ir_id,
+                    &mut instances,
+                    &target,
+                );
             } else {
                 compiler.emit_whole_project_ir(&mut env, &dialects, &mut instances, project);
             }
@@ -199,19 +217,15 @@ pub fn run(args: args::Args) -> Result<(), MainError> {
                 Backend::Fast => {
                     let backend = ir_backend_fast::Backend::new();
                     backend
-                        .emit_module(
-                            &mut env,
-                            dialects.main,
-                            args.target.as_deref(),
-                            Path::new(&obj_file),
-                        )
+                        .emit_module(&mut env, dialects.main, &target, Path::new(&obj_file))
                         .map_err(|err| MainError::BackendFailed(format!("{err:?}")))?;
                 }
                 #[cfg(feature = "llvm-backend")]
                 Backend::Llvm => {
                     let backend = ir_backend_llvm::Backend::new();
                     let target = args.target.as_ref().map(|target| {
-                        std::ffi::CString::new(target.as_bytes()).expect("invalid target string")
+                        std::ffi::CString::new(target.to_string().as_bytes())
+                            .expect("invalid target string")
                     });
                     backend
                         .emit_module(
@@ -230,9 +244,13 @@ pub fn run(args: args::Args) -> Result<(), MainError> {
                 return Ok(());
             }
             let exe_file = exe_file_path(&name);
-            if let Err(err) =
-                compiler::link(&obj_file, &exe_file, args.link_cmd.as_deref(), &args.link)
-            {
+            if let Err(err) = compiler::link(
+                &obj_file,
+                &exe_file,
+                args.link_cmd.as_deref(),
+                &args.link,
+                &target,
+            ) {
                 return Err(MainError::LinkingFailed(err));
             }
             if matches!(args.cmd, args::Cmd::Run) {

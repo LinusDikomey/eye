@@ -31,10 +31,15 @@ impl Backend {
         &self,
         env: &mut ir::Environment,
         module_id: ir::ModuleId,
-        target: Option<&str>,
+        target: &target::Target,
         out_file: &Path,
     ) -> Result<(), Error> {
-        assert!(target.is_none(), "todo: check target");
+        if target.arch != target::Arch::X86_64 {
+            todo!("Support other architectures than x86_64 in fast backend")
+        }
+        if target.os != target::Os::Linux {
+            todo!("Support other OSes than Linux in fast backend")
+        }
 
         let mut writer = exe::elf::ElfObjectWriter::new();
         let mut symtab = exe::elf::symtab::SymtabWriter::new();

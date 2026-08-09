@@ -116,8 +116,8 @@ pub struct Args {
     pub backend: Backend,
 
     #[clap(global = true, short, long)]
-    /// The targeted backend to emit code for.
-    pub target: Option<String>,
+    /// The target triple to emit code for.
+    pub target: Option<target::Target>,
 
     /// This will still try to build and run the program even if errors are present. Most errors
     /// will lead to a runtime crash when the corresponding code is encountered. No correctness is

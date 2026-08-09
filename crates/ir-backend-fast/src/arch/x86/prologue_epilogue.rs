@@ -24,10 +24,16 @@ impl FunctionPass<BackendState> for PrologueEpilogueInsertion {
         env: &ir::Environment,
         _types: &ir::Types,
         ir: ir::FunctionIr,
-        _name: &str,
+        name: &str,
         state: &mut BackendState,
     ) -> (ir::FunctionIr, Option<ir::Types>) {
+        // HACK: don't insert a prologue/epilogue for _start (used on linux only) since it's
+        // supposed to be a naked function
+        if name == "_start" {
+            return (ir, None);
+        }
         let mut ir = IrModify::new(ir);
+
         let used_regs = ir::mc::used_physical_registers::<Reg>(&ir, env);
         let to_save = used_regs & self.abi.callee_saved() & !(Reg::rsp.bit() | Reg::rbp.bit());
 

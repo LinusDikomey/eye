@@ -7,3 +7,4 @@ edition = "2024"
 ir.workspace = true
 dmap.workspace = true
 tracing.workspace = true
+target.workspace = true

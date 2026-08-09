@@ -4,8 +4,6 @@ mod entry_point;
 mod intrinsics;
 pub mod types;
 
-pub use entry_point::entry_point;
-
 use std::borrow::Cow;
 use std::num::NonZero;
 

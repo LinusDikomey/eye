@@ -62,6 +62,13 @@ pub unsafe fn add_function(
     );
     let name = CString::new(function.name.to_string()).map_err(|_| Error::NulByte)?;
     let llvm_func = LLVMAddFunction(llvm_module, name.as_ptr(), llvm_func_ty);
+
+    // HACK: _start is emitted as a normal function on linux targets but needs to be naked
+    if &*function.name == "_start" {
+        let naked = core::LLVMCreateEnumAttribute(ctx, attribs.naked, 0);
+        core::LLVMAddAttributeAtIndex(llvm_func, llvm_sys::LLVMAttributeFunctionIndex, naked);
+    }
+
     if function.flags().terminator() {
         let noreturn = core::LLVMCreateEnumAttribute(ctx, attribs.noreturn, 0);
         core::LLVMAddAttributeAtIndex(llvm_func, -1i32 as u32, noreturn);
@@ -139,6 +146,7 @@ pub unsafe fn function(
 
 pub struct Attribs {
     noreturn: u32,
+    naked: u32,
 }
 impl Attribs {
     pub fn lookup() -> Self {
@@ -147,6 +155,7 @@ impl Attribs {
         }
         Self {
             noreturn: l("noreturn"),
+            naked: l("naked"),
         }
     }
 }

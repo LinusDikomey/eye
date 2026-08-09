@@ -14,6 +14,7 @@ members = [
     "crates/token",
     "crates/format",
     "crates/segment-list",
+    "crates/target",
 ]
 default-members = ["crates/eye"]
 
@@ -33,6 +34,7 @@ token.path = "crates/token"
 format.path = "crates/format"
 segment-list.path = "crates/segment-list"
 eye-lsp.path = "crates/eye-lsp"
+target.path = "crates/target"
 
 pathdiff = "0.2.1"
 tracing = { version = "0.1.41", default-features = false, features = ["release_max_level_off"] }

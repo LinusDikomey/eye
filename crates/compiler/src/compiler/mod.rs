@@ -1029,12 +1029,14 @@ impl Compiler {
             let func =
                 irgen::declare_function(self, ir, checked, signature, module, generics).ok()?;
             let ir_id = ir.add_function(dialects.main, func);
-            to_generate.push(FunctionToGenerate {
-                ir_id,
-                module,
-                ast_function_id: id,
-                generics: generics.into(),
-            });
+            if checked.body_or_types.is_body() {
+                to_generate.push(FunctionToGenerate {
+                    ir_id,
+                    module,
+                    ast_function_id: id,
+                    generics: generics.into(),
+                });
+            }
             Some(ir_id)
         })
     }
@@ -1062,25 +1064,26 @@ impl Compiler {
             "a function instance queued for ir generation has an invalid generic count"
         );
 
-        if let BodyOrTypes::Body(body) = &checked.body_or_types {
-            let callconv = self.get_signature(f.module, f.ast_function_id).callconv;
-            let return_type = ir[f.ir_id].return_type().unwrap();
-            let (builder, params) = ir::builder::Builder::begin_function(&mut *ir, f.ir_id);
-            let (body, types) = irgen::lower_hir(
-                self,
-                dialects,
-                instances,
-                builder,
-                body,
-                to_generate,
-                &f.generics,
-                params,
-                return_type,
-                callconv,
-            );
-            ir[f.ir_id].attach_body(body);
-            ir[f.ir_id].overwrite_types(types);
-        }
+        let BodyOrTypes::Body(body) = &checked.body_or_types else {
+            unreachable!("to_generate should only contain functions with bodies")
+        };
+        let callconv = self.get_signature(f.module, f.ast_function_id).callconv;
+        let return_type = ir[f.ir_id].return_type().unwrap();
+        let (builder, params) = ir::builder::Builder::begin_function(&mut *ir, f.ir_id);
+        let (body, types) = irgen::lower_hir(
+            self,
+            dialects,
+            instances,
+            builder,
+            body,
+            to_generate,
+            &f.generics,
+            params,
+            return_type,
+            callconv,
+        );
+        ir[f.ir_id].attach_body(body);
+        ir[f.ir_id].overwrite_types(types);
     }
 
     pub fn print_project_hir(&mut self, project: ProjectId) {
@@ -1160,16 +1163,25 @@ impl Compiler {
     }
 
     pub fn verify_main_and_add_entry_point(
-        &self,
+        &mut self,
         ir: &mut ir::Environment,
         dialects: &Dialects,
         main: (ModuleId, FunctionId),
         main_ir: ir::FunctionId,
+        instances: &mut Instances,
+        target: &target::Target,
     ) -> Result<ir::FunctionId, Option<CompileError>> {
         let main_signature = self.get_signature(main.0, main.1);
         check::verify_main_signature(self, main_signature).map(|()| {
             let main_signature = self.get_signature(main.0, main.1);
-            let entry_point = irgen::entry_point(main_ir, main_signature.return_type, ir, dialects);
+            let entry_point = self.generate_entry_point(
+                main_ir,
+                main_signature.return_type,
+                ir,
+                dialects,
+                instances,
+                target,
+            );
             ir.add_function(dialects.main, entry_point)
         })
     }
@@ -2169,6 +2181,11 @@ impl CheckedFunction {
 pub enum BodyOrTypes {
     Body(Hir),
     Types(Box<[Type]>),
+}
+impl BodyOrTypes {
+    pub fn is_body(&self) -> bool {
+        matches!(self, Self::Body(_))
+    }
 }
 impl Index<LocalTypeId> for CheckedFunction {
     type Output = Type;

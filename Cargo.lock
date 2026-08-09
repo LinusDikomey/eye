@@ -172,6 +172,7 @@ dependencies = [
  "parser",
  "pathdiff",
  "segment-list",
+ "target",
  "tracing",
 ]
 
@@ -216,6 +217,7 @@ dependencies = [
  "ir-backend-fast",
  "ir-backend-llvm",
  "pathdiff",
+ "target",
  "test_each_file",
  "tracing",
  "tracing-error",
@@ -329,6 +331,7 @@ version = "0.1.0"
 dependencies = [
  "dmap",
  "ir",
+ "target",
  "tracing",
 ]
 
@@ -652,6 +655,10 @@ dependencies = [
  "quote",
  "unicode-ident",
 ]
+
+[[package]]
+name = "target"
+version = "0.1.0"
 
 [[package]]
 name = "test_each_file"
