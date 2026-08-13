@@ -37,6 +37,7 @@ pub use compiler::{Compiler, Def, ModuleSpan, ProjectError};
 pub use eval::{ConstValue, ConstValueId};
 pub use link::link;
 pub use modules::all_project_files_from_root;
+pub use target;
 pub use types::{FunctionType, InvalidTypeError, Type};
 
 id::id!(ProjectId);

@@ -109,6 +109,7 @@ impl Arch {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Os {
+    Unknown,
     Linux,
     Windows,
     Darwin,
@@ -119,6 +120,7 @@ impl fmt::Display for Os {
             f,
             "{}",
             match self {
+                Self::Unknown => "unknown",
                 Self::Linux => "linux",
                 Self::Windows => "windows",
                 Self::Darwin => "darwin",

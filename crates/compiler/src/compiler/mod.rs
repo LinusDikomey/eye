@@ -24,6 +24,7 @@ use parser::{
     },
 };
 use segment_list::SegmentList;
+use target::Target;
 
 use crate::{
     InvalidTypeError, ProjectId, Type,
@@ -45,6 +46,7 @@ use crate::{
 use builtins::Builtins;
 
 pub struct Compiler {
+    pub target: Target,
     pub projects: SegmentList<Project>,
     pub modules: SegmentList<Module>,
     pub const_values: SegmentList<(ConstValue, Type)>,
@@ -76,7 +78,7 @@ pub struct Dialects {
     pub main: ir::ModuleId,
 }
 impl Compiler {
-    pub fn new() -> Self {
+    pub fn new(target: Target) -> Self {
         // let mut ir = ir::Environment::new(ir::dialect::Primitive::create_infos());
         // let dialects = Dialects {
         //     arith: ir.get_dialect_module(),
@@ -86,6 +88,7 @@ impl Compiler {
         // };
         // let ir_module = ir.create_module("main");
         Self {
+            target,
             projects: SegmentList::new(),
             modules: SegmentList::new(),
             const_values: SegmentList::new(),
@@ -1169,7 +1172,6 @@ impl Compiler {
         main: (ModuleId, FunctionId),
         main_ir: ir::FunctionId,
         instances: &mut Instances,
-        target: &target::Target,
     ) -> Result<ir::FunctionId, Option<CompileError>> {
         let main_signature = self.get_signature(main.0, main.1);
         check::verify_main_signature(self, main_signature).map(|()| {
@@ -1180,7 +1182,6 @@ impl Compiler {
                 ir,
                 dialects,
                 instances,
-                target,
             );
             ir.add_function(dialects.main, entry_point)
         })

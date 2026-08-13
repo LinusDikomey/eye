@@ -14,7 +14,7 @@ pub fn link(
         cmd.arg(link.replace("[OBJ]", obj).replace("[OUT]", out));
         cmd
     } else {
-        link_cmd(obj, out, linked_libraries, target)
+        link_cmd(obj, out, linked_libraries, target).ok_or("No known link command for target")?
     };
 
     cmd.stdout(process::Stdio::piped());
@@ -33,8 +33,9 @@ pub fn link(
     })
 }
 
-fn link_cmd(obj: &str, out: &str, link: &[String], target: &Target) -> Command {
-    match target.os {
+fn link_cmd(obj: &str, out: &str, link: &[String], target: &Target) -> Option<Command> {
+    Some(match target.os {
+        Os::Unknown => return None,
         Os::Linux => {
             let mut cmd = Command::new("ld");
             cmd.args([
@@ -99,5 +100,5 @@ fn link_cmd(obj: &str, out: &str, link: &[String], target: &Target) -> Command {
             }
             cmd
         }
-    }
+    })
 }

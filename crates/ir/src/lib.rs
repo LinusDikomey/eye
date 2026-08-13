@@ -152,6 +152,13 @@ pub struct TypeIds {
 impl TypeIds {
     pub const EMPTY: Self = Self { idx: 0, count: 0 };
 
+    pub fn one(id: TypeId) -> Self {
+        Self {
+            idx: id.0,
+            count: 1,
+        }
+    }
+
     pub fn count(self) -> u32 {
         self.count
     }

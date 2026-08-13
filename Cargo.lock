@@ -217,7 +217,6 @@ dependencies = [
  "ir-backend-fast",
  "ir-backend-llvm",
  "pathdiff",
- "target",
  "test_each_file",
  "tracing",
  "tracing-error",

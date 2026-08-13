@@ -5,12 +5,6 @@ use crate::ast::{
     Ast, Definition, Expr, ExprId, ExprIds, FunctionId, ScopeId, TraitId, TypeId, UnresolvedType,
 };
 
-impl PartialEq for Ast<()> {
-    fn eq(&self, other: &Self) -> bool {
-        self.eq_scope(other, self.top_level_scope_id(), other.top_level_scope_id())
-    }
-}
-
 impl Ast<()> {
     fn eq_scope(&self, other: &Self, a: ScopeId, b: ScopeId) -> bool {
         let a_defs = &self[a].definitions;

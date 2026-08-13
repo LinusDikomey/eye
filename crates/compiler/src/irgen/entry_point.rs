@@ -16,7 +16,6 @@ impl Compiler {
         env: &mut Environment,
         dialects: &Dialects,
         instances: &mut Instances,
-        target: &target::Target,
     ) -> ir::Function {
         let Dialects { arith, cf, .. } = dialects;
 
@@ -49,7 +48,7 @@ impl Compiler {
             }
             _ => builder.append(arith.CastInt(main_val, i32_ty)),
         };
-        if target.os == target::Os::Linux {
+        if self.target.os == target::Os::Linux {
             // emit _start directly on linux. It calls exit instead of returning
             let mut to_generate = Vec::new();
             let exit_id = builtins::get_exit(self);

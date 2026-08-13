@@ -117,7 +117,7 @@ pub struct Args {
 
     #[clap(global = true, short, long)]
     /// The target triple to emit code for.
-    pub target: Option<target::Target>,
+    pub target: Option<compiler::target::Target>,
 
     /// This will still try to build and run the program even if errors are present. Most errors
     /// will lead to a runtime crash when the corresponding code is encountered. No correctness is

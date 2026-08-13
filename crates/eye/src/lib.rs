@@ -14,10 +14,11 @@ pub use compiler::Compiler;
 use compiler::{
     Def, ModuleSpan,
     compiler::{Dialects, Instances, ModuleStorage},
+    target,
 };
 
+use compiler::target::UnknownNativeTargetError;
 use error::{Error, span::TSpan};
-use target::UnknownNativeTargetError;
 
 #[derive(Debug)]
 pub enum MainError {
@@ -70,7 +71,7 @@ pub fn run(args: args::Args) -> Result<(), MainError> {
         _ => {}
     }
     let start_time = std::time::Instant::now();
-    let mut compiler = compiler::Compiler::new();
+    let mut compiler = compiler::Compiler::new(target);
     if args.crash_on_error {
         eprintln!("enabling crash on error");
         compiler.errors.enable_crash_on_error();
@@ -172,7 +173,6 @@ pub fn run(args: args::Args) -> Result<(), MainError> {
                     main,
                     main_ir_id,
                     &mut instances,
-                    &target,
                 );
             } else {
                 compiler.emit_whole_project_ir(&mut env, &dialects, &mut instances, project);
@@ -196,7 +196,7 @@ pub fn run(args: args::Args) -> Result<(), MainError> {
                 return Err(MainError::ErrorsFound);
             }
             // Done with front-end, drop compiler so all the memory gets freed while in backend
-            drop(compiler);
+            let Compiler { target, .. } = compiler;
 
             #[cfg(debug_assertions)]
             ir::verify::module(&env, dialects.main);

@@ -17,7 +17,6 @@ format = ["dep:format"]
 compiler.workspace = true
 ir.workspace = true
 error.workspace = true
-target.workspace = true
 format = { workspace = true, optional = true }
 eye-lsp = { workspace = true, optional = true }
 

@@ -27,7 +27,8 @@ pub struct Lsp {
 }
 impl Lsp {
     pub fn new(initialize: types::Initialize) -> Self {
-        let mut compiler = Compiler::new();
+        let mut compiler =
+            Compiler::new(compiler::target::Target::native().expect("Unknown native target"));
         let project_path = initialize.root_uri.map_or_else(
             || initialize.root_path.as_deref().map(PathBuf::from),
             |uri| Some(uri.path().to_path_buf()),
