@@ -625,7 +625,7 @@ impl IrModify {
         // let mut removed_block_iter = removed_blocks.iter().copied().peekable();
         let mut removed_blocks: Box<[BlockId]> = removed_blocks.into_iter().collect();
         removed_blocks.sort_by_key(|b| b.0);
-        'remove_blocks: for to_remove in removed_blocks.into_iter().rev() {
+        'remove_blocks: for to_remove in removed_blocks.iter().copied().rev() {
             let last = BlockId(ir.blocks.len() as u32 - 1);
             if to_remove == last {
                 ir.blocks.pop();
@@ -644,10 +644,15 @@ impl IrModify {
         }
 
         // swap direction of rename entries so we can look up a rename easily
-        let renamed_blocks: DHashMap<_, _> = renamed_blocks
+        let mut renamed_blocks: DHashMap<_, _> = renamed_blocks
             .into_iter()
-            .map(|(to, from)| (from, to))
+            .map(|(to, from)| (from, Some(to)))
             .collect();
+
+        // also keep track of block removals as (removed, None)
+        for removed in removed_blocks {
+            renamed_blocks.insert(removed, None);
+        }
 
         if !renamed_blocks.is_empty() {
             for inst in &mut insts {
@@ -657,13 +662,25 @@ impl IrModify {
                     &mut ir.extra,
                     &ir.blocks,
                     std::convert::identity,
-                    |block| renamed_blocks.get(&block).copied().unwrap_or(block),
+                    |block| {
+                        renamed_blocks
+                            .get(&block)
+                            .copied()
+                            .unwrap_or(Some(block))
+                            .expect("Block reference found after removal")
+                    },
                 );
             }
             for block in &mut ir.blocks {
-                for b in block.succs.iter_mut().chain(block.preds.iter_mut()) {
-                    *b = renamed_blocks.get(b).copied().unwrap_or(*b);
-                }
+                let f = |b: &mut BlockId| {
+                    let Some(new) = renamed_blocks.get(b).copied().unwrap_or(Some(*b)) else {
+                        return false;
+                    };
+                    *b = new;
+                    true
+                };
+                block.succs.retain_mut(f);
+                block.preds.retain_mut(f);
             }
         }
 
