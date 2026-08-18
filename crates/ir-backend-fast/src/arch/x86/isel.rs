@@ -23,7 +23,7 @@ pub fn codegen(
     env: &Environment,
     body: &FunctionIr,
     types: &ir::Types,
-    isel: &mut InstructionSelector,
+    isel: &InstructionSelector,
     main_module: ModuleId,
     abi: &'static dyn Abi<X86>,
     state: &mut BackendState,

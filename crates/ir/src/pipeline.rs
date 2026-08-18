@@ -141,7 +141,7 @@ impl<State: Default> Pipeline<State> {
 
     pub fn process_function(
         &self,
-        env: &mut Environment,
+        env: &Environment,
         ir: FunctionIr,
         types: &mut Types,
         name: &str,
@@ -151,7 +151,7 @@ impl<State: Default> Pipeline<State> {
 
     pub fn process_function_with_regs<R: crate::mc::Register>(
         &self,
-        env: &mut Environment,
+        env: &Environment,
         mut ir: FunctionIr,
         types: &mut Types,
         name: &str,

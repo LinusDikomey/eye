@@ -98,6 +98,11 @@ impl Index<LocalFunctionId> for Module {
         &self.functions[index.0 as usize]
     }
 }
+impl IndexMut<LocalFunctionId> for Module {
+    fn index_mut(&mut self, index: LocalFunctionId) -> &mut Self::Output {
+        &mut self.functions[index.0 as usize]
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(transparent)]

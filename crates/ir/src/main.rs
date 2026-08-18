@@ -31,7 +31,7 @@ fn main() {
     println!("Parsed function body:\n{}", ir.display(&env, &types));
     if optimize {
         let pipeline = ir::optimize::optimizing_pipeline(&mut env);
-        ir = pipeline.process_function(&mut env, ir, &mut types, "example");
+        ir = pipeline.process_function(&env, ir, &mut types, "example");
         println!("Final IR:\n{}", ir.display(&env, &types));
     }
     if let Some(output) = output {

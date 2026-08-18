@@ -8,6 +8,200 @@ use std::{
     path::Path,
 };
 
+use crate::{Error, exe::elf::symtab::SymtabIdx};
+
+pub fn emit(
+    env: &mut ir::Environment,
+    module_id: ir::ModuleId,
+    out_file: &Path,
+    codegen: crate::CodegenFn,
+) -> Result<(), Error> {
+    let mut writer = ElfObjectWriter::new();
+    let mut symtab = symtab::SymtabWriter::new();
+
+    let text = writer.section(
+        SectionHeader {
+            name: ".text".to_owned(),
+            ty: SectionHeaderType::Progbits,
+            flags: SectionHeaderFlags {
+                alloc: true,
+                execinstr: true,
+                ..Default::default()
+            },
+            addr: 0,
+            link: SectionIdx::NONE,
+            info: 0,
+            addralign: 16,
+            entsize: 0,
+        },
+        Vec::new(),
+    );
+
+    let rodata = writer.section(
+        SectionHeader {
+            name: ".rodata".to_owned(),
+            ty: SectionHeaderType::Progbits,
+            flags: SectionHeaderFlags {
+                alloc: true,
+                ..Default::default()
+            },
+            addr: 0,
+            link: SectionIdx::NONE,
+            info: 0,
+            addralign: 8,
+            entsize: 0,
+        },
+        Vec::new(),
+    );
+
+    let data = writer.section(
+        SectionHeader {
+            name: ".data".to_owned(),
+            ty: SectionHeaderType::Progbits,
+            flags: SectionHeaderFlags {
+                alloc: true,
+                write: true,
+                ..Default::default()
+            },
+            addr: 0,
+            link: SectionIdx::NONE,
+            info: 0,
+            addralign: 8,
+            entsize: 0,
+        },
+        Vec::new(),
+    );
+
+    // file entry
+    let file_name = writer.add_str(env[module_id].name());
+    symtab.entry(symtab::Entry {
+        name_index: file_name,
+        bind: symtab::Bind::Local,
+        ty: symtab::Type::File,
+        visibility: symtab::Visibility::Default,
+        section_index: SectionIdx::ABSENT,
+        value: 0,
+        size: 0,
+    });
+    // section entry
+    symtab.entry(symtab::Entry {
+        name_index: 0,
+        bind: symtab::Bind::Local,
+        ty: symtab::Type::Section,
+        visibility: symtab::Visibility::Default,
+        section_index: text,
+        value: 0,
+        size: 0,
+    });
+
+    let mut relocations = Vec::new();
+    let mut global_relocations = Vec::new();
+
+    let mut function_offsets = vec![0u64; env[module_id].function_ids().len()];
+
+    // emit functions
+
+    let symtab_entries: Box<[SymtabIdx]> = (env[module_id].function_ids())
+        .zip(function_offsets.iter_mut())
+        .map(|(id, function_offset)| {
+            let func = &env[module_id][id];
+            let (section_index, offset_in_section, size) = if let Some(ir) = func.ir() {
+                let offset = writer[text].len() as u64;
+                *function_offset = offset;
+                // PERF: cloning ir, types, name
+                let ir = ir.clone();
+                let types = func.types().clone();
+                let name = func.name.clone();
+                codegen(
+                    env,
+                    ir,
+                    types,
+                    &name,
+                    &mut writer[text],
+                    &mut relocations,
+                    &mut global_relocations,
+                );
+                let size = writer[text].len() as u64 - offset;
+                (text, offset, size)
+            } else {
+                (SectionIdx::NONE, 0, 0)
+            };
+            let name_index = writer.add_str(&env[module_id][id].name);
+            symtab.entry(symtab::Entry {
+                name_index,
+                bind: symtab::Bind::Global,
+                ty: symtab::Type::Function,
+                visibility: symtab::Visibility::Default,
+                section_index,
+                value: offset_in_section,
+                size,
+            })
+        })
+        .collect();
+
+    // emit globals
+
+    let global_symtab_entries: Box<[SymtabIdx]> = env[module_id]
+        .globals()
+        .map(|global| {
+            let name_index = writer.add_str(&global.name);
+            let section = if global.readonly { rodata } else { data };
+            let value = writer[section].len() as u64;
+            writer[section].extend_from_slice(&global.value);
+            symtab.entry(symtab::Entry {
+                name_index,
+                bind: symtab::Bind::Global,
+                ty: symtab::Type::Object,
+                visibility: symtab::Visibility::Default,
+                section_index: section,
+                value,
+                size: global.value.len() as u64,
+            })
+        })
+        .collect();
+
+    // emit relocations to elf
+
+    let mut rela = relocation::RelaWriter::new();
+    for (function_id, i) in relocations {
+        debug_assert_eq!(function_id.module, module_id);
+        let is_extern = env[module_id][function_id.function].ir().is_none();
+        if is_extern {
+            rela.entry(relocation::Rela {
+                r_offset: i,
+                sym: symtab_entries[function_id.function.idx()],
+                ty: relocation::RelaType::X86_64Plt32,
+                r_addend: -4, // call rel32, therefore offset by -4 since RIP is behind the instruction
+            });
+        } else {
+            let offset = function_offsets[function_id.function.idx()]
+                .checked_signed_diff(i)
+                .and_then(|i| i.checked_sub(4))
+                .and_then(|i| i32::try_from(i).ok())
+                .expect("Function call is out of range for i32 offset");
+
+            writer[text][i as usize..i as usize + 4].copy_from_slice(&offset.to_le_bytes());
+        }
+    }
+
+    for (global_id, offset) in global_relocations {
+        rela.entry(relocation::Rela {
+            r_offset: offset,
+            sym: global_symtab_entries[global_id.idx as usize],
+            ty: relocation::RelaType::X86_64PC32,
+            r_addend: -4,
+        });
+    }
+
+    let (symtab_header, symtab_contents) = symtab.finish(writer.strtab_idx());
+
+    let symtab_idx = writer.section(symtab_header, symtab_contents);
+    let (rela_header, rela_contents) = rela.finish(text, symtab_idx);
+    writer.section(rela_header, rela_contents);
+
+    writer.write(out_file).map_err(Error::IO)
+}
+
 #[repr(u8)]
 #[derive(Clone, Copy)]
 #[allow(unused)]
