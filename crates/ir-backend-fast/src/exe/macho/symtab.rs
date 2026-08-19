@@ -19,8 +19,11 @@ impl SymTab {
 
     pub const COMMAND_SIZE: u32 = 16;
 
-    pub fn sym(&mut self, symbol: nlist_64) {
+    pub fn sym(&mut self, symbol: nlist_64) -> SymbolNum {
+        let i = self.symbols.len();
+        assert!(i < (1 << 24), "mach-o symbolnum too large");
         self.symbols.push(symbol);
+        SymbolNum(i as u32)
     }
 
     pub fn str(&mut self, s: &str, underscore_prefix: bool) -> StrIdx {
@@ -95,3 +98,6 @@ pub enum SymbolVisibility {
     Private  = 0b0001_0000,
     External = 0b0000_0001,
 }
+
+#[derive(Clone, Copy)]
+pub struct SymbolNum(pub u32);

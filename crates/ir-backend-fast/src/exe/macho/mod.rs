@@ -1,3 +1,4 @@
+mod relocation;
 mod symtab;
 
 use std::{
@@ -7,7 +8,7 @@ use std::{
     path::Path,
 };
 
-use crate::{exe::macho::symtab::SymTab, Error};
+use crate::{Error, Relocation, exe::macho::symtab::SymTab};
 
 pub fn emit(
     env: &mut ir::Environment,
@@ -23,58 +24,165 @@ pub fn emit(
     };
     let mut w = MachoObjectWriter::new();
 
-    let mut text = Vec::new();
-    let mut relocations = Vec::new();
-    let mut global_relocations = Vec::new();
+    // section indices are 1-indexed
+    let text_section = SectionIdx(1);
+    let const_section = SectionIdx(2);
+    let data_section = SectionIdx(3);
 
-    for id in env[module_id].function_ids() {
-        let func = &env[module_id][id];
-        if let Some(ir) = func.ir() {
-            let offset = text.len() as u64;
-            // *function_offset = offset;
-            // PERF: cloning ir, types, name
-            let ir = ir.clone();
-            let types = func.types().clone();
-            let name = func.name.clone();
-            codegen(
-                env,
-                ir,
-                types,
-                &name,
-                &mut text,
-                &mut relocations,
-                &mut global_relocations,
-            );
-            let n_strx = w.symtab.str(&name, true);
+    let mut text = Vec::new();
+    let mut consts = Vec::new();
+    let mut data = Vec::new();
+
+    let mut relocations = Vec::new();
+
+    let function_symbols: Vec<_> = env[module_id]
+        .function_ids()
+        .map(|id| {
+            let func = &env[module_id][id];
+            let n_strx = w.symtab.str(&func.name, true);
+            if let Some(ir) = func.ir() {
+                let offset = text.len() as u64;
+                // *function_offset = offset;
+                // PERF: cloning ir, types, name
+                let ir = ir.clone();
+                let types = func.types().clone();
+                let name = func.name.clone();
+                codegen(env, ir, types, &name, &mut text, &mut relocations);
+                let symbolnum = w.symtab.sym(symtab::nlist_64 {
+                    n_strx,
+                    addr_type: symtab::SymbolAddrType::SecNumDefined,
+                    vis: symtab::SymbolVisibility::External,
+                    n_sect: text_section,
+                    n_desc: 0,
+                    n_value: offset,
+                });
+                // let size = text.len() as u64 - offset;
+                (Some(offset), symbolnum)
+            } else {
+                let symbolnum = w.symtab.sym(symtab::nlist_64 {
+                    n_strx,
+                    addr_type: symtab::SymbolAddrType::Undefined,
+                    vis: symtab::SymbolVisibility::External,
+                    n_sect: SectionIdx(0),
+                    n_desc: 0,
+                    n_value: 0,
+                });
+                (None, symbolnum)
+            }
+        })
+        .collect();
+
+    let global_symbols: Vec<_> = env[module_id]
+        .globals()
+        .map(|global| {
+            let name = w.symtab.str(&global.name, true);
+            let (section, section_idx) = if global.readonly {
+                (&mut consts, const_section)
+            } else {
+                (&mut data, data_section)
+            };
+            let offset = section.len() as u64;
+            section.extend_from_slice(&global.value);
+
             w.symtab.sym(symtab::nlist_64 {
-                n_strx,
+                n_strx: name,
                 addr_type: symtab::SymbolAddrType::SecNumDefined,
                 vis: symtab::SymbolVisibility::External,
-                n_sect: SectionIdx(1),
+                n_sect: section_idx,
                 n_desc: 0,
                 n_value: offset,
-            });
-            // let size = text.len() as u64 - offset;
-        }
-    }
+            })
+        })
+        .collect();
+
+    let relocations = relocations
+        .iter()
+        .filter_map(|relocation| match *relocation {
+            Relocation::FunctionCall(id, offset) | Relocation::FunctionAddr(id, offset) => {
+                let (target_offset, symbol) = function_symbols[id.idx()];
+                let ty = if matches!(relocation, Relocation::FunctionCall(_, _)) {
+                    relocation::RelocationTypeX86_64::Branch
+                } else {
+                    relocation::RelocationTypeX86_64::Signed
+                };
+                if let Some(target_offset) = target_offset {
+                    let offset = target_offset
+                        .checked_signed_diff(offset)
+                        .and_then(|i| i.checked_sub(4))
+                        .and_then(|i| i32::try_from(i).ok())
+                        .expect("Function call is out of range for i32 offset");
+
+                    text[offset as usize..offset as usize + 4]
+                        .copy_from_slice(&offset.to_le_bytes());
+                    None
+                } else {
+                    let offset = u32::try_from(offset).unwrap();
+                    Some(relocation::RelocationInfo::new(
+                        offset,
+                        symbol,
+                        true,
+                        relocation::RelocationLength::L4,
+                        true,
+                        ty,
+                    ))
+                }
+            }
+            Relocation::GlobalAddr(id, offset) => Some(relocation::RelocationInfo::new(
+                offset.try_into().unwrap(),
+                global_symbols[id as usize],
+                true,
+                relocation::RelocationLength::L4,
+                true,
+                relocation::RelocationTypeX86_64::Signed,
+            )),
+        })
+        .collect();
 
     w.load_command(LoadCommand {
         necessary_for_loading: false,
         content: LoadCommandContent::Segment(SegmentLoad64 {
             segment_name: Name::TEXT_SEGMENT,
             vmaddr: 0,
-            vmsize: text.len() as u64,
+            vmsize: (text.len() + consts.len()) as u64,
             max_vmem_prot: PermissionFlags::READ | PermissionFlags::EXEC,
             init_vmem_prot: PermissionFlags::READ | PermissionFlags::EXEC,
             flags: SegmentFlags::default(),
+            sections: vec![
+                SegmentSection64 {
+                    section_name: Name::TEXT_SECTION,
+                    section_addr: 0,
+                    alignment: 0,
+                    flag: 0,
+                    contents: text,
+                    relocations,
+                },
+                SegmentSection64 {
+                    section_name: Name::CONST_SECTION,
+                    section_addr: 0,
+                    alignment: 0, // TODO: const alignment?
+                    flag: 0,
+                    contents: consts,
+                    relocations: Vec::new(),
+                },
+            ],
+        }),
+    });
+    w.load_command(LoadCommand {
+        necessary_for_loading: false,
+        content: LoadCommandContent::Segment(SegmentLoad64 {
+            segment_name: Name::DATA_SEGMENT,
+            vmaddr: 0,
+            vmsize: data.len() as u64,
+            max_vmem_prot: PermissionFlags::READ | PermissionFlags::WRITE,
+            init_vmem_prot: PermissionFlags::READ | PermissionFlags::WRITE,
+            flags: SegmentFlags::default(),
             sections: vec![SegmentSection64 {
-                section_name: Name::TEXT_SECTION,
+                section_name: Name::DATA_SECTION,
                 section_addr: 0,
-                alignment: 0,
-                relocations_file_offset: 0,
-                num_relocations: 0,
+                alignment: 0, // TODO: data alignment?
                 flag: 0,
-                contents: text,
+                contents: data,
+                relocations: Vec::new(),
             }],
         }),
     });
@@ -138,6 +246,9 @@ impl MachoObjectWriter {
                 LoadCommandContent::Segment(segment) => {
                     for section in &segment.sections {
                         f.write_all(&section.contents)?;
+                        for relocation in &section.relocations {
+                            f.write_all(&relocation.bytes())?;
+                        }
                     }
                 }
                 LoadCommandContent::SymTab(symtab) => {
@@ -285,10 +396,9 @@ struct SegmentSection64 {
     section_name: Name,
     section_addr: u64,
     alignment: u32,
-    relocations_file_offset: u32,
-    num_relocations: u32,
     flag: u32,
     contents: Vec<u8>,
+    relocations: Vec<relocation::RelocationInfo>,
 }
 impl SegmentSection64 {
     const SIZE: u32 = 16 + 16 + 8 + 8 + 4 + 4 + 4 + 4 + 4 + 12;
@@ -305,13 +415,17 @@ impl SegmentSection64 {
         let size = self.contents.len() as u64;
         f.write_all(&size.to_le_bytes())?;
         let offset = u32::try_from(*file_offset).expect("mach-o file section offset too large");
+        *file_offset += self.contents.len() as u64;
         f.write_all(&offset.to_le_bytes())?;
         f.write_all(&self.alignment.to_le_bytes())?;
-        f.write_all(&self.relocations_file_offset.to_le_bytes())?;
-        f.write_all(&self.num_relocations.to_le_bytes())?;
+        let relocations_file_offset =
+            u32::try_from(*file_offset).expect("mach-o file section offset too large");
+        *file_offset += self.relocations.len() as u64 * relocation::RelocationInfo::SIZE;
+        f.write_all(&relocations_file_offset.to_le_bytes())?;
+        let num_relocations = u32::try_from(self.relocations.len()).expect("too many relocations");
+        f.write_all(&num_relocations.to_le_bytes())?;
         f.write_all(&self.flag.to_le_bytes())?;
         f.write_all(&[0u8; 12])?; // reserved
-        *file_offset += self.contents.len() as u64;
         Ok(())
     }
 }
@@ -321,6 +435,9 @@ struct Name([u8; 16]);
 impl Name {
     const TEXT_SEGMENT: Self = Self(*b"__TEXT\0\0\0\0\0\0\0\0\0\0");
     const TEXT_SECTION: Self = Self(*b"__text\0\0\0\0\0\0\0\0\0\0");
+    const CONST_SECTION: Self = Self(*b"__const\0\0\0\0\0\0\0\0\0");
+    const DATA_SEGMENT: Self = Self(*b"__DATA\0\0\0\0\0\0\0\0\0\0");
+    const DATA_SECTION: Self = Self(*b"__data\0\0\0\0\0\0\0\0\0\0");
 }
 
 #[cfg(test)]
@@ -333,8 +450,7 @@ mod tests {
             section_name: Name::TEXT_SECTION,
             section_addr: 0xAA,
             alignment: 8,
-            relocations_file_offset: 0,
-            num_relocations: 0,
+            relocations: Vec::new(),
             flag: 0,
             contents: vec![0xAB, 0xCD, 0xEF, 0x12],
         };

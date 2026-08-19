@@ -7,7 +7,10 @@ use ir::{
     parameter_types::Int32,
 };
 
-use crate::arch::x86::isa::{RegClass, Size};
+use crate::{
+    Relocation,
+    arch::x86::isa::{RegClass, Size},
+};
 
 use super::isa::{Reg, X86};
 
@@ -17,8 +20,7 @@ pub fn write(
     x86: ModuleOf<X86>,
     ir: &FunctionIr,
     text: &mut Vec<u8>,
-    relocations: &mut Vec<(FunctionId, u64)>,
-    global_relocations: &mut Vec<(GlobalId, u64)>,
+    relocations: &mut Vec<Relocation>,
 ) {
     let mut parcopy = ParcopySolver::new();
     let start = text.len();
@@ -358,19 +360,26 @@ pub fn write(
                     inst_rm(text, op.size(), &[], &[0x8D], ir.args(i, env));
                 }
                 I::lea_function => {
-                    let (dst, function) = ir.args(i, env);
+                    let (dst, function): (Reg, FunctionId) = ir.args(i, env);
                     // lea dst [rip + offset]
                     let relocation_offset = disp32(text, &[0x8D], dst);
-                    relocations.push((function, relocation_offset));
+                    relocations.push(Relocation::FunctionAddr(
+                        function.function,
+                        relocation_offset,
+                    ));
                 }
                 I::lea_global => {
-                    let (dst, global) = ir.args(i, env);
+                    let (dst, global): (Reg, GlobalId) = ir.args(i, env);
                     // lea dst [rip + offset]
                     let relocation_offset = disp32(text, &[0x8D], dst);
-                    global_relocations.push((global, relocation_offset));
+                    relocations.push(Relocation::GlobalAddr(global.idx, relocation_offset));
                 }
                 I::call_function => {
-                    relocations.push((ir.args(i, env), text.len() as u64 + 1));
+                    let function: FunctionId = ir.args(i, env);
+                    relocations.push(Relocation::FunctionCall(
+                        function.function,
+                        text.len() as u64 + 1,
+                    ));
                     text.extend([0xE8, 0, 0, 0, 0]);
                 }
                 I::call_r64 => {

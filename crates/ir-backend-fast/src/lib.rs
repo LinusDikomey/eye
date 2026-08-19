@@ -2,7 +2,7 @@ use core::fmt;
 use std::path::Path;
 
 use ir::{
-    ModuleId,
+    LocalFunctionId, ModuleId,
     mc::{Abi, BackendState, McInst},
     pipeline::FunctionPass,
 };
@@ -11,21 +11,19 @@ mod arch;
 mod exe;
 
 type CodegenFn = Box<
-    dyn Fn(
-        &ir::Environment,
-        ir::FunctionIr,
-        ir::Types,
-        &str,
-        &mut Vec<u8>,
-        &mut Vec<(ir::FunctionId, u64)>,
-        &mut Vec<(ir::GlobalId, u64)>,
-    ),
+    dyn Fn(&ir::Environment, ir::FunctionIr, ir::Types, &str, &mut Vec<u8>, &mut Vec<Relocation>),
 >;
 
 #[derive(Debug)]
 pub enum Error {
     IO(std::io::Error),
     UnsupportedArch,
+}
+
+enum Relocation {
+    FunctionCall(LocalFunctionId, u64),
+    FunctionAddr(LocalFunctionId, u64),
+    GlobalAddr(u32, u64),
 }
 
 #[derive(Default)]

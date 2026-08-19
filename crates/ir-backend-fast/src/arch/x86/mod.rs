@@ -31,18 +31,16 @@ pub fn init_codegen(env: &mut ir::Environment, module_id: ir::ModuleId) -> Codeg
     }));
     pipeline.add_function_pass(Box::new(PrologueEpilogueInsertion { x86, abi }));
 
-    Box::new(
-        move |env, ir, mut types, name, text, relocations, global_relocations| {
-            let mir = pipeline.process_function_with_regs::<Reg>(env, ir, &mut types, name);
+    Box::new(move |env, ir, mut types, name, text, relocations| {
+        let mir = pipeline.process_function_with_regs::<Reg>(env, ir, &mut types, name);
 
-            tracing::debug!(target: "backend-ir",
-                function = name,
-                "Final machine IR:\n{}",
-                mir.display_with_phys_regs::<Reg>(env, &types)
-            );
-            write(env, mc, x86, &mir, text, relocations, global_relocations);
-        },
-    )
+        tracing::debug!(target: "backend-ir",
+            function = name,
+            "Final machine IR:\n{}",
+            mir.display_with_phys_regs::<Reg>(env, &types)
+        );
+        write(env, mc, x86, &mir, text, relocations);
+    })
 }
 
 impl crate::InstructionSelector<X86> for isel::InstructionSelector {

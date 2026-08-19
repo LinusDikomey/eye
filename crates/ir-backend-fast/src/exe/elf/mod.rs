@@ -8,7 +8,7 @@ use std::{
     path::Path,
 };
 
-use crate::{Error, exe::elf::symtab::SymtabIdx};
+use crate::{Error, Relocation, exe::elf::symtab::SymtabIdx};
 
 pub fn emit(
     env: &mut ir::Environment,
@@ -95,7 +95,6 @@ pub fn emit(
     });
 
     let mut relocations = Vec::new();
-    let mut global_relocations = Vec::new();
 
     let mut function_offsets = vec![0u64; env[module_id].function_ids().len()];
 
@@ -112,15 +111,7 @@ pub fn emit(
                 let ir = ir.clone();
                 let types = func.types().clone();
                 let name = func.name.clone();
-                codegen(
-                    env,
-                    ir,
-                    types,
-                    &name,
-                    &mut writer[text],
-                    &mut relocations,
-                    &mut global_relocations,
-                );
+                codegen(env, ir, types, &name, &mut writer[text], &mut relocations);
                 let size = writer[text].len() as u64 - offset;
                 (text, offset, size)
             } else {
@@ -163,34 +154,36 @@ pub fn emit(
     // emit relocations to elf
 
     let mut rela = relocation::RelaWriter::new();
-    for (function_id, i) in relocations {
-        debug_assert_eq!(function_id.module, module_id);
-        let is_extern = env[module_id][function_id.function].ir().is_none();
-        if is_extern {
-            rela.entry(relocation::Rela {
-                r_offset: i,
-                sym: symtab_entries[function_id.function.idx()],
-                ty: relocation::RelaType::X86_64Plt32,
-                r_addend: -4, // call rel32, therefore offset by -4 since RIP is behind the instruction
-            });
-        } else {
-            let offset = function_offsets[function_id.function.idx()]
-                .checked_signed_diff(i)
-                .and_then(|i| i.checked_sub(4))
-                .and_then(|i| i32::try_from(i).ok())
-                .expect("Function call is out of range for i32 offset");
+    for relocation in relocations {
+        match relocation {
+            crate::Relocation::FunctionCall(id, i) | Relocation::FunctionAddr(id, i) => {
+                let is_extern = env[module_id][id].ir().is_none();
+                if is_extern {
+                    rela.entry(relocation::Rela {
+                        r_offset: i,
+                        sym: symtab_entries[id.idx()],
+                        ty: relocation::RelaType::X86_64Plt32,
+                        r_addend: -4, // call rel32, therefore offset by -4 since RIP is behind the instruction
+                    });
+                } else {
+                    let offset = function_offsets[id.idx()]
+                        .checked_signed_diff(i)
+                        .and_then(|i| i.checked_sub(4))
+                        .and_then(|i| i32::try_from(i).ok())
+                        .expect("Function relocation is out of range for i32 offset");
 
-            writer[text][i as usize..i as usize + 4].copy_from_slice(&offset.to_le_bytes());
+                    writer[text][i as usize..i as usize + 4].copy_from_slice(&offset.to_le_bytes());
+                }
+            }
+            crate::Relocation::GlobalAddr(global_idx, offset) => {
+                rela.entry(relocation::Rela {
+                    r_offset: offset,
+                    sym: global_symtab_entries[global_idx as usize],
+                    ty: relocation::RelaType::X86_64PC32,
+                    r_addend: -4,
+                });
+            }
         }
-    }
-
-    for (global_id, offset) in global_relocations {
-        rela.entry(relocation::Rela {
-            r_offset: offset,
-            sym: global_symtab_entries[global_id.idx as usize],
-            ty: relocation::RelaType::X86_64PC32,
-            r_addend: -4,
-        });
     }
 
     let (symtab_header, symtab_contents) = symtab.finish(writer.strtab_idx());
