@@ -5,7 +5,6 @@ mod isel;
 mod prologue_epilogue;
 
 use abi::get_target_abi;
-use emit::write;
 use isa::{PREOCCUPIED_REGISTERS, Reg, TMP_REGISTER, X86};
 use prologue_epilogue::PrologueEpilogueInsertion;
 
@@ -13,7 +12,7 @@ use crate::CodegenFn;
 
 pub fn init_codegen(env: &mut ir::Environment, module_id: ir::ModuleId) -> CodegenFn {
     let isel = isel::InstructionSelector::new(env);
-    let mc = env.get_dialect_module::<ir::mc::Mc>();
+    let mc = isel.mc;
     let x86 = isel.x86;
     let abi = get_target_abi();
 
@@ -24,7 +23,7 @@ pub fn init_codegen(env: &mut ir::Environment, module_id: ir::ModuleId) -> Codeg
         abi,
     }));
     pipeline.add_function_pass(Box::new(ir::mc::Regalloc::<X86> {
-        mc: isel.mc,
+        mc,
         preoccupied: PREOCCUPIED_REGISTERS,
         isa: x86,
         abi,
@@ -39,30 +38,6 @@ pub fn init_codegen(env: &mut ir::Environment, module_id: ir::ModuleId) -> Codeg
             "Final machine IR:\n{}",
             mir.display_with_phys_regs::<Reg>(env, &types)
         );
-        write(env, mc, x86, &mir, text, relocations);
+        crate::emit(env, mc, x86, &mir, text, relocations);
     })
-}
-
-impl crate::InstructionSelector<X86> for isel::InstructionSelector {
-    fn codegen(
-        &self,
-        env: &ir::Environment,
-        body: &ir::FunctionIr,
-        types: &ir::Types,
-        main_module: ir::ModuleId,
-        abi: &'static dyn ir::mc::Abi<X86>,
-        state: &mut ir::mc::BackendState,
-        function_name: &str,
-    ) -> (ir::FunctionIr, ir::Types) {
-        isel::codegen(
-            env,
-            body,
-            types,
-            self,
-            main_module,
-            abi,
-            state,
-            function_name,
-        )
-    }
 }

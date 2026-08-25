@@ -163,7 +163,6 @@ pub struct IselCtx<'a, I: McInst> {
     pub main_module: ModuleId,
     pub regs: Slots<MCReg>,
     pub abi: &'static dyn Abi<I>,
-    pub unit: crate::TypeId,
     mc: ModuleOf<Mc>,
     use_counts: UseCounts,
     pub state: &'a mut BackendState,
@@ -177,7 +176,6 @@ impl<'a, I: McInst> IselCtx<'a, I> {
         ir: &IrModify,
         regs: Slots<MCReg>,
         mc: ModuleOf<Mc>,
-        unit: TypeId,
         abi: &'static dyn Abi<I>,
         state: &'a mut BackendState,
         block_graph: &BlockGraph<FunctionIr>,
@@ -193,7 +191,6 @@ impl<'a, I: McInst> IselCtx<'a, I> {
         }
         Self {
             main_module,
-            unit,
             regs,
             mc,
             use_counts,
@@ -252,7 +249,7 @@ impl<'a, I: McInst> crate::rewrite::RewriteCtx for IselCtx<'a, I> {
             function: Mc::IncomingBlockArgs.id(),
         };
         let start = ir.get_original_block_start(block);
-        ir.add_before(env, start, (f, ((), args), self.unit));
+        ir.add_before(env, start, (f, ((), args), TypeId::UNIT));
     }
 }
 
@@ -315,7 +312,7 @@ impl<'a, I: McInst> IselCtx<'a, I> {
             })
             .collect();
         if !copyargs.is_empty() {
-            ir.add_before(env, before, parallel_copy_args(mc, &copyargs, self.unit));
+            ir.add_before(env, before, parallel_copy_args(mc, &copyargs, TypeId::UNIT));
         }
     }
 

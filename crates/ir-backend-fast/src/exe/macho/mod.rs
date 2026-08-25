@@ -19,6 +19,7 @@ pub fn emit(
 ) -> Result<(), Error> {
     let cpu_type = match arch {
         target::Arch::X86_64 => CpuType::X86_64,
+        target::Arch::Arm32 => CpuType::Arm,
         target::Arch::Aarch64 => CpuType::Arm64,
         target::Arch::Other(_) => return Err(Error::UnsupportedArch),
     };
@@ -141,7 +142,7 @@ pub fn emit(
     w.load_command(LoadCommand {
         necessary_for_loading: false,
         content: LoadCommandContent::Segment(SegmentLoad64 {
-            segment_name: Name::TEXT_SEGMENT,
+            segment_name: Name::EMPTY,
             vmaddr: 0,
             vmsize: (text.len() + consts.len()) as u64,
             max_vmem_prot: PermissionFlags::READ | PermissionFlags::EXEC,
@@ -149,6 +150,7 @@ pub fn emit(
             flags: SegmentFlags::default(),
             sections: vec![
                 SegmentSection64 {
+                    segment_name: Name::TEXT_SEGMENT,
                     section_name: Name::TEXT_SECTION,
                     section_addr: 0,
                     alignment: 0,
@@ -157,6 +159,7 @@ pub fn emit(
                     relocations,
                 },
                 SegmentSection64 {
+                    segment_name: Name::TEXT_SEGMENT,
                     section_name: Name::CONST_SECTION,
                     section_addr: 0,
                     alignment: 0, // TODO: const alignment?
@@ -164,26 +167,16 @@ pub fn emit(
                     contents: consts,
                     relocations: Vec::new(),
                 },
+                SegmentSection64 {
+                    segment_name: Name::DATA_SEGMENT,
+                    section_name: Name::DATA_SECTION,
+                    section_addr: 0,
+                    alignment: 0, // TODO: data alignment?
+                    flag: 0,
+                    contents: data,
+                    relocations: Vec::new(),
+                },
             ],
-        }),
-    });
-    w.load_command(LoadCommand {
-        necessary_for_loading: false,
-        content: LoadCommandContent::Segment(SegmentLoad64 {
-            segment_name: Name::DATA_SEGMENT,
-            vmaddr: 0,
-            vmsize: data.len() as u64,
-            max_vmem_prot: PermissionFlags::READ | PermissionFlags::WRITE,
-            init_vmem_prot: PermissionFlags::READ | PermissionFlags::WRITE,
-            flags: SegmentFlags::default(),
-            sections: vec![SegmentSection64 {
-                section_name: Name::DATA_SECTION,
-                section_addr: 0,
-                alignment: 0, // TODO: data alignment?
-                flag: 0,
-                contents: data,
-                relocations: Vec::new(),
-            }],
         }),
     });
     let mut writer = BufWriter::new(File::create(out_file).map_err(Error::IO)?);
@@ -369,7 +362,7 @@ impl SegmentLoad64 {
         f.write_all(&(self.sections.len() as u32).to_le_bytes())?;
         f.write_all(&self.flags.0.to_le_bytes())?;
         for section in &self.sections {
-            section.write(f, self.segment_name, file_offset)?;
+            section.write(f, file_offset)?;
         }
         Ok(())
     }
@@ -393,6 +386,7 @@ impl BitOr for PermissionFlags {
 struct SegmentFlags(u32);
 
 struct SegmentSection64 {
+    segment_name: Name,
     section_name: Name,
     section_addr: u64,
     alignment: u32,
@@ -403,14 +397,9 @@ struct SegmentSection64 {
 impl SegmentSection64 {
     const SIZE: u32 = 16 + 16 + 8 + 8 + 4 + 4 + 4 + 4 + 4 + 12;
 
-    fn write<W: Write>(
-        &self,
-        f: &mut W,
-        segment_name: Name,
-        file_offset: &mut u64,
-    ) -> io::Result<()> {
+    fn write<W: Write>(&self, f: &mut W, file_offset: &mut u64) -> io::Result<()> {
         f.write_all(&self.section_name.0)?;
-        f.write_all(&segment_name.0)?;
+        f.write_all(&self.segment_name.0)?;
         f.write_all(&self.section_addr.to_le_bytes())?;
         let size = self.contents.len() as u64;
         f.write_all(&size.to_le_bytes())?;
@@ -433,6 +422,7 @@ impl SegmentSection64 {
 #[derive(Clone, Copy, Debug)]
 struct Name([u8; 16]);
 impl Name {
+    const EMPTY: Self = Self([0; 16]);
     const TEXT_SEGMENT: Self = Self(*b"__TEXT\0\0\0\0\0\0\0\0\0\0");
     const TEXT_SECTION: Self = Self(*b"__text\0\0\0\0\0\0\0\0\0\0");
     const CONST_SECTION: Self = Self(*b"__const\0\0\0\0\0\0\0\0\0");
@@ -447,6 +437,7 @@ mod tests {
     #[test]
     fn segment_size() {
         let segment = SegmentSection64 {
+            segment_name: Name::TEXT_SEGMENT,
             section_name: Name::TEXT_SECTION,
             section_addr: 0xAA,
             alignment: 8,
@@ -455,7 +446,7 @@ mod tests {
             contents: vec![0xAB, 0xCD, 0xEF, 0x12],
         };
         let mut buf = Vec::new();
-        segment.write(&mut buf, Name::TEXT_SEGMENT, &mut 0).unwrap();
+        segment.write(&mut buf, &mut 0).unwrap();
         assert_eq!(buf.len(), SegmentSection64::SIZE as usize);
     }
 }

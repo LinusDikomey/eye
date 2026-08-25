@@ -121,6 +121,11 @@ macro_rules! registers {
                 None
             }
         }
+        impl ::core::fmt::Display for Reg {
+            fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+                write!(f, "{}", $crate::mc::Register::to_str(*self))
+            }
+        }
 
 
         impl ::core::convert::TryFrom<$crate::Argument<'_>> for Reg {

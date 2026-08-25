@@ -1,14 +1,22 @@
+#![recursion_limit = "256"]
+
 use core::fmt;
 use std::path::Path;
 
 use ir::{
-    LocalFunctionId, ModuleId,
+    LocalFunctionId, ModuleId, Primitive, Ref, Type, Types,
     mc::{Abi, BackendState, McInst},
+    modify::IrModify,
     pipeline::FunctionPass,
 };
 
 mod arch;
+mod emit;
 mod exe;
+
+use emit::{Emit, emit};
+
+use crate::arch::arm::ArmAbi;
 
 type CodegenFn = Box<
     dyn Fn(&ir::Environment, ir::FunctionIr, ir::Types, &str, &mut Vec<u8>, &mut Vec<Relocation>),
@@ -42,7 +50,8 @@ impl Backend {
     ) -> Result<(), Error> {
         let codegen: CodegenFn = match &target.arch {
             target::Arch::X86_64 => arch::x86::init_codegen(env, module_id),
-            target::Arch::Aarch64 => todo!(),
+            target::Arch::Arm32 => todo!(),
+            target::Arch::Aarch64 => arch::arm::init_codegen(env, module_id, &ArmAbi::Darwin64),
             target::Arch::Other(other) => unimplemented!("Unsupported architecture {other}"),
         };
 
@@ -77,10 +86,17 @@ impl<I: McInst, S: InstructionSelector<I>> FunctionPass<BackendState> for Isel<I
         name: &str,
         state: &mut BackendState,
     ) -> (ir::FunctionIr, Option<ir::Types>) {
-        let (ir, types) = self
+        let _enter = tracing::span!(
+            target: "isel",
+            tracing::Level::INFO,
+            "function",
+            function = name,
+        )
+        .entered();
+        let ir = self
             .isel
-            .codegen(env, &ir, types, self.module_id, self.abi, state, name);
-        (ir, Some(types))
+            .codegen(env, &ir, types, self.module_id, self.abi, state);
+        (ir, None)
     }
 }
 
@@ -93,6 +109,49 @@ trait InstructionSelector<I: McInst>: Copy {
         main_module: ModuleId,
         abi: &'static dyn Abi<I>,
         state: &mut BackendState,
-        function_name: &str,
-    ) -> (ir::FunctionIr, ir::Types);
+    ) -> ir::FunctionIr;
+}
+
+fn primitive_of_ref(r: Ref, ir: &IrModify, types: &Types) -> Primitive {
+    let Type::Primitive(p) = types[ir.get_ref_ty(r)] else {
+        unreachable!()
+    };
+    p.try_into().expect("Invalid primitive encountered")
+}
+
+fn int_size_of_ref(r: Ref, ir: &IrModify, types: &Types) -> Size {
+    arith_class(r, ir, types).1
+}
+
+pub enum ArithClass {
+    Signed,
+    Unsigned,
+    Float,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, PartialOrd, Ord)]
+pub enum Size {
+    S8,
+    S16,
+    S32,
+    S64,
+    S128,
+}
+
+pub fn arith_class(r: Ref, ir: &IrModify, types: &Types) -> (ArithClass, Size) {
+    match primitive_of_ref(r, ir, types) {
+        Primitive::I1 | Primitive::I8 => (ArithClass::Signed, Size::S8),
+        Primitive::I16 => (ArithClass::Signed, Size::S16),
+        Primitive::I32 => (ArithClass::Signed, Size::S32),
+        Primitive::I64 => (ArithClass::Signed, Size::S64),
+        Primitive::I128 => (ArithClass::Signed, Size::S128),
+        Primitive::U8 => (ArithClass::Unsigned, Size::S8),
+        Primitive::U16 => (ArithClass::Unsigned, Size::S16),
+        Primitive::U32 => (ArithClass::Unsigned, Size::S32),
+        Primitive::U64 => (ArithClass::Unsigned, Size::S64),
+        Primitive::U128 => (ArithClass::Unsigned, Size::S128),
+        Primitive::F32 => (ArithClass::Float, Size::S32),
+        Primitive::F64 => (ArithClass::Float, Size::S64),
+        Primitive::Ptr => unreachable!("unsupported type Ptr for arithmetic"),
+    }
 }

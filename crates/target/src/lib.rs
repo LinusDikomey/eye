@@ -85,15 +85,17 @@ pub struct UnknownNativeTargetError;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Arch {
     X86_64,
+    Arm32,
     Aarch64,
     Other(String),
 }
 impl fmt::Display for Arch {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Arch::X86_64 => write!(f, "x86_64"),
-            Arch::Aarch64 => write!(f, "aarch64"),
-            Arch::Other(other) => write!(f, "{other}"),
+            Self::X86_64 => write!(f, "x86_64"),
+            Self::Arm32 => write!(f, "arm32"),
+            Self::Aarch64 => write!(f, "aarch64"),
+            Self::Other(other) => write!(f, "{other}"),
         }
     }
 }
@@ -101,6 +103,7 @@ impl Arch {
     pub fn new(s: &str) -> Self {
         match s {
             "x86_64" => Self::X86_64,
+            "arm32" => Self::Arm32,
             "aarch64" => Self::Aarch64,
             _ => Self::Other(s.to_owned()),
         }

@@ -1,3 +1,5 @@
+use std::cmp::Ordering;
+
 use dmap::{DHashMap, DHashSet};
 
 use crate::{
@@ -154,8 +156,7 @@ impl IrModify {
         let prev_arg_count = block_info.arg_count;
         block_info.arg_count += 1;
         self.additional.push(AdditionalInst {
-            insert_at: after,
-            position: Insert::After,
+            position: Insert::After(after),
             inst: crate::builtins::block_arg_inst(ty),
         });
         for pred in &self.ir.blocks[block.idx()].preds {
@@ -217,7 +218,7 @@ impl IrModify {
         before: Ref,
         inst: (FunctionId, impl IntoArgs<'r>, TypeId),
     ) -> Ref {
-        self.add_before_or_after(env, before, Insert::Before, inst)
+        self.add_before_or_after(env, Insert::Before(before), inst)
     }
 
     pub fn add_after<'r>(
@@ -226,25 +227,28 @@ impl IrModify {
         r: Ref,
         inst: (FunctionId, impl IntoArgs<'r>, TypeId),
     ) -> Ref {
-        self.add_before_or_after(env, r, Insert::After, inst)
+        self.add_before_or_after(env, Insert::After(r), inst)
     }
 
     pub fn add_before_or_after<'r>(
         &mut self,
         env: &Environment,
-        insert_at: Ref,
         position: Insert,
         (function, args, ty): (FunctionId, impl IntoArgs<'r>, TypeId),
     ) -> Ref {
-        let insert_at_old = insert_at.idx() < self.ir.insts.len();
-        let insert_at = if insert_at_old {
-            insert_at
+        let insert_at_old = position.point().idx() < self.ir.insts.len();
+        let position = if insert_at_old {
+            position
         } else {
-            self.additional[insert_at.idx() - self.ir.insts.len()].insert_at
+            position.with(
+                self.additional[position.point().idx() - self.ir.insts.len()]
+                    .position
+                    .point(),
+            )
         };
         let def = &env[function];
         debug_assert!(
-            !def.flags.terminator() || !insert_at_old || position == Insert::After,
+            !def.flags.terminator() || !insert_at_old || position.is_after(),
             "can't add a terminator before another instruction"
         );
         // PERF: iterating blocks every time is bad, somehow avoid this
@@ -255,19 +259,19 @@ impl IrModify {
                 .position(|info| {
                     if info.body_idx < self.ir.insts.len() as _ {
                         let i = info.body_idx;
-                        if position == Insert::After && insert_at.0 + 1 == info.body_idx {
+                        if position.is_after() && position.point().0 + 1 == info.body_idx {
                             // This can happen after splitting a block with split_block_at
                             // at the start of the block. Since the existing block still has
                             // arguments but no body instructions, the insert point has to point to
                             // the last argument/insert point (right before the body index)
                             return true;
                         }
-                        (i..i + info.len).contains(&insert_at.0)
+                        (i..i + info.len).contains(&position.point().0)
                     } else {
-                        info.body_idx == insert_at.0
+                        info.body_idx == position.point().0
                     }
                 })
-                .unwrap_or_else(|| panic!("no block found for instruction {insert_at}"))
+                .unwrap_or_else(|| panic!("no block found for instruction {}", position.point()))
                 as _,
         );
         let args = write_args(
@@ -278,23 +282,14 @@ impl IrModify {
             def.varargs,
             args,
         );
-        self.add_inst_before_or_after(insert_at, position, Instruction { function, args, ty })
+        self.add_inst_before_or_after(position, Instruction { function, args, ty })
     }
 
-    pub fn add_inst_before_or_after(
-        &mut self,
-        insert_at: Ref,
-        position: Insert,
-        inst: Instruction,
-    ) -> Ref {
+    pub fn add_inst_before_or_after(&mut self, position: Insert, inst: Instruction) -> Ref {
         let r = Ref((self.ir.insts.len() + self.additional.len())
             .try_into()
             .expect("too many instructions"));
-        self.additional.push(AdditionalInst {
-            insert_at,
-            position,
-            inst,
-        });
+        self.additional.push(AdditionalInst { position, inst });
         r
     }
 
@@ -325,12 +320,7 @@ impl IrModify {
         let new_refs = (ir.insts.len() as u32..).map(Ref);
         let old_insts = ir.insts;
         let mut new_insts: Vec<_> = additional.into_iter().zip(new_refs).collect();
-        new_insts.sort_by(|(a, _), (b, _)| {
-            a.insert_at
-                .0
-                .cmp(&b.insert_at.0)
-                .then(a.position.cmp(&b.position))
-        });
+        new_insts.sort_by_key(|a| a.0.position);
 
         let mut visited_blocks = Bitmap::new(ir.blocks.len());
         let mut removed_blocks = DHashSet::default();
@@ -429,10 +419,12 @@ impl IrModify {
                 visited_blocks.set(current_block.idx(), true);
                 let info = &mut ir.blocks[current_block.idx()];
                 let mut new_idx = match new_insts
-                    .binary_search_by_key(&info.args_idx, |(add, _)| add.insert_at.0)
+                    .binary_search_by_key(&info.args_idx, |(add, _)| add.position.point().0)
                 {
                     Ok(mut new_idx) => {
-                        while new_idx > 0 && new_insts[new_idx - 1].0.insert_at.0 == info.args_idx {
+                        while new_idx > 0
+                            && new_insts[new_idx - 1].0.position.point().0 == info.args_idx
+                        {
                             new_idx -= 1;
                         }
                         new_idx
@@ -468,8 +460,7 @@ impl IrModify {
 
                 for old_ref in inst_range {
                     'before: while let Some((added, r)) = new_insts.get(new_idx)
-                        && added.insert_at == old_ref
-                        && added.position == Insert::Before
+                        && added.position == Insert::Before(old_ref)
                     {
                         let mut inst = added.inst;
                         if inst
@@ -561,11 +552,10 @@ impl IrModify {
                         }
                     }
                     'after: while let Some((added, r)) = new_insts.get(new_idx)
-                        && added.insert_at == old_ref
+                        && added.position.point() == old_ref
                     {
-                        debug_assert_eq!(
-                            added.position,
-                            Insert::After,
+                        debug_assert!(
+                            added.position.is_after(),
                             "Insert::Before should already be consumed for the instruction"
                         );
                         let mut inst = added.inst;
@@ -710,8 +700,7 @@ impl IrModify {
                     .map(|(arg_ty, idx)| AdditionalInst {
                         // add all arguments "after" the index of themselves so they all get grouped properly
                         // with the ability to insert after and before them preserved
-                        insert_at: Ref(idx),
-                        position: Insert::After,
+                        position: Insert::After(Ref(idx)),
                         inst: Instruction {
                             function: crate::FunctionId {
                                 module: crate::ModuleId::BUILTINS,
@@ -734,8 +723,7 @@ impl IrModify {
         });
         // insert point instruction
         self.additional.push(AdditionalInst {
-            insert_at: Ref(body_idx),
-            position: Insert::After,
+            position: Insert::After(Ref(body_idx)),
             inst: Instruction::NOTHING,
         });
         let arg_refs = Refs {
@@ -790,7 +778,7 @@ impl IrModify {
         let r = if r.idx() < self.ir.insts.len() {
             r
         } else {
-            self.additional[r.idx()].insert_at
+            self.additional[r.idx()].position.point()
         };
         // PERF: iterating blocks every time is bad, avoid this maybe with a BTreeMap in IrModify
         BlockId(
@@ -958,7 +946,9 @@ impl IrModify {
         let info = &self.ir.blocks[block.idx()];
         let range = info.args_idx..info.body_idx + info.len;
         if r.0 as usize >= self.ir.insts.len() {
-            r = self.additional[r.0 as usize - self.ir.insts.len()].insert_at;
+            r = self.additional[r.0 as usize - self.ir.insts.len()]
+                .position
+                .point();
         }
         range.contains(&r.0)
     }
@@ -966,15 +956,55 @@ impl IrModify {
 
 #[derive(Debug)]
 struct AdditionalInst {
-    insert_at: Ref,
     position: Insert,
     inst: Instruction,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Insert {
-    Before,
-    After,
+    Before(Ref),
+    After(Ref),
+}
+impl PartialOrd for Insert {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for Insert {
+    fn cmp(&self, other: &Self) -> Ordering {
+        match (self, other) {
+            (Self::Before(a) | Self::After(a), Self::Before(b) | Self::After(b)) if a != b => {
+                a.0.cmp(&b.0)
+            }
+            (Self::Before(_), Self::Before(_)) | (Self::After(_), Self::After(_)) => {
+                Ordering::Equal
+            }
+            (Self::Before(_), Self::After(_)) => Ordering::Less,
+            (Self::After(_), Self::Before(_)) => Ordering::Greater,
+        }
+    }
+}
+impl Insert {
+    pub fn point(self) -> Ref {
+        match self {
+            Self::Before(r) | Self::After(r) => r,
+        }
+    }
+
+    pub fn with(self, r: Ref) -> Self {
+        match self {
+            Self::Before(_) => Self::Before(r),
+            Self::After(_) => Self::After(r),
+        }
+    }
+
+    pub fn is_before(self) -> bool {
+        matches!(self, Self::Before(_))
+    }
+
+    pub fn is_after(self) -> bool {
+        matches!(self, Self::After(_))
+    }
 }
 
 #[cfg(test)]

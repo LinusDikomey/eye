@@ -137,7 +137,7 @@ impl Inline {
                             );
                         } else {
                             let renamed =
-                                ir.add_inst_before_or_after(insert_idx, Insert::After, inst);
+                                ir.add_inst_before_or_after(Insert::After(insert_idx), inst);
                             renames.rename(r, renamed);
                         }
                     }

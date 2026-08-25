@@ -1,9 +1,11 @@
-use std::{fmt, ops};
+use std::ops;
 
 use ir::{
     Usage,
     mc::{Abi, McInst, Register},
 };
+
+use crate::Size;
 
 ir::mc::registers! { RegBits
     GP64 => rax rbx rcx rdx rbp rsi rdi rsp rip r8  r9  r10  r11  r12  r13  r14  r15 none;
@@ -42,11 +44,6 @@ pub const TMP_REGISTER: Reg = Reg::r15;
 pub const PREOCCUPIED_REGISTERS: RegBits =
     RegBits(Reg::rbp.bit().0 | Reg::rsp.bit().0 | TMP_REGISTER.bit().0);
 
-impl fmt::Display for Reg {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.to_str())
-    }
-}
 impl Reg {
     pub const fn index(self) -> u8 {
         use Reg::*;
@@ -360,14 +357,6 @@ ir::instructions! {
     movzx16_rr8 dst: MCReg(Usage::Def) src: MCReg(Usage::Use);
     movzx32_rr8 dst: MCReg(Usage::Def) src: MCReg(Usage::Use);
     movzx32_rr16 dst: MCReg(Usage::Def) src: MCReg(Usage::Use);
-}
-#[derive(Clone, Copy, PartialEq, Eq, Debug, PartialOrd, Ord)]
-pub enum Size {
-    S8,
-    S16,
-    S32,
-    S64,
-    S128,
 }
 
 impl X86 {

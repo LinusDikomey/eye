@@ -1,22 +1,72 @@
-use crate::{FunctionIr, Primitive, PrimitiveInfo, Ref, Type, Types};
+use crate::{FunctionIr, ModuleOf, Primitive, PrimitiveInfo, Ref, Type, Types, dialect::Tuple};
 
 pub struct Slots<V> {
     pub slots: Vec<V>,
     pub slot_map: Vec<u32>,
 }
 impl<V: Copy> Slots<V> {
-    pub fn with_default(ir: &FunctionIr, types: &Types, default: V) -> Self {
+    pub fn with_default(
+        ir: &FunctionIr,
+        types: &Types,
+        tuple: ModuleOf<Tuple>,
+        default: V,
+    ) -> Self {
         let mut slots = Vec::new();
-        let slot_map = ir
+        // assign slots to each instruction, reusing existing slots for tuple operations
+        let slot_map: Vec<u32> = ir
             .insts
             .iter()
             .map(|inst| {
+                if inst.as_module(tuple).is_some() {
+                    return 0;
+                }
                 let count = slot_count(types[inst.ty], types);
                 let idx = slots.len() as u32;
                 slots.extend(std::iter::repeat_n(default, count as usize));
                 idx
             })
             .collect();
+        for r in ir.refs() {
+            let inst = ir.get_inst(r);
+            let Some(inst) = inst.as_module(tuple) else {
+                continue;
+            };
+            match inst.op() {
+                Tuple::MemberValue => {
+                    let (tuple, i): (Ref, u32) = ir.typed_args(&inst);
+                    let Type::Tuple(elems) = types[ir.get_ref_ty(tuple)] else {
+                        unreachable!()
+                    };
+                    let mut src = slot_map[tuple.idx()];
+                    debug_assert!(elems.count() > i);
+                    for skipped_elem in elems.iter().take(i as usize) {
+                        src += slot_count(types[skipped_elem], types);
+                    }
+                    let dst = slot_map[r.idx()] as usize;
+                    let n = slot_count(types[elems.nth(i)], types) as usize;
+                    slots.copy_within(src as usize..src as usize + n, dst);
+                }
+                Tuple::InsertMember => {
+                    let (tuple, i, value): (Ref, u32, Ref) = ir.typed_args(&inst);
+                    let mut dst = slot_map[r.idx()] as usize;
+                    let mut src = slot_map[tuple.idx()] as usize;
+                    let Type::Tuple(elems) = types[ir.get_ref_ty(r)] else {
+                        unreachable!()
+                    };
+                    for (ty, j) in elems.iter().zip(0..) {
+                        let elem_slot_count = slot_count(types[ty], types) as usize;
+                        if i == j {
+                            let value_src = slot_map[value.idx()] as usize;
+                            slots.copy_within(value_src..value_src + elem_slot_count, dst);
+                        } else {
+                            slots.copy_within(src..src + elem_slot_count, dst);
+                        }
+                        src += elem_slot_count;
+                        dst += elem_slot_count;
+                    }
+                }
+            }
+        }
         Self { slots, slot_map }
     }
 
@@ -216,8 +266,8 @@ impl<V: Copy> Slots<V> {
     }
 }
 impl<V: Copy + Default> Slots<V> {
-    pub fn new(ir: &FunctionIr, types: &Types) -> Self {
-        Self::with_default(ir, types, V::default())
+    pub fn new(ir: &FunctionIr, types: &Types, tuple: ModuleOf<Tuple>) -> Self {
+        Self::with_default(ir, types, tuple, V::default())
     }
 }
 

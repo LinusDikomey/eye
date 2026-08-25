@@ -234,7 +234,7 @@ pub fn eval<E: EvalEnvironment>(
     let dialects = Dialects::get(env.env());
     let mut mem = Mem::new();
 
-    let mut values = Values::new(top_level_ir, top_level_types);
+    let mut values = Values::new(top_level_ir, top_level_types, dialects.tuple);
     let mut current_function: Option<FunctionId> = None;
     for (param, i) in params
         .iter()
@@ -704,7 +704,7 @@ pub fn eval<E: EvalEnvironment>(
                     .collect();
                 if let Some(func_ir) = func.ir() {
                     // PERF: could copy args directly here without allocating
-                    let mut new_values = Values::new(func_ir, &func.types);
+                    let mut new_values = Values::new(func_ir, &func.types, dialects.tuple);
                     let entry = BlockId::ENTRY;
                     let args_indices = func_ir.get_block_args(entry);
                     for (arg, val) in args_indices.iter().zip(args) {

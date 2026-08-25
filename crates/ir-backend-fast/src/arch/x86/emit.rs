@@ -1,443 +1,352 @@
-use std::collections::VecDeque;
+use ir::{BlockId, FunctionId, GlobalId, TypedInstruction, parameter_types::Int32};
 
-use ir::{
-    Argument, Bitmap, BlockId, Environment, FunctionId, FunctionIr, GlobalId, ModuleOf,
-    block_graph::Blocks,
-    mc::{Mc, ParcopySolver},
-    parameter_types::Int32,
-};
-
-use crate::{
-    Relocation,
-    arch::x86::isa::{RegClass, Size},
-};
+use crate::{Emit, Relocation, Size, arch::x86::isa::RegClass, emit::Emitter};
 
 use super::isa::{Reg, X86};
 
-pub fn write(
-    env: &Environment,
-    mc: ModuleOf<Mc>,
-    x86: ModuleOf<X86>,
-    ir: &FunctionIr,
-    text: &mut Vec<u8>,
-    relocations: &mut Vec<Relocation>,
-) {
-    let mut parcopy = ParcopySolver::new();
-    let start = text.len();
-    let mut block_queue = VecDeque::from([BlockId::ENTRY]);
-    let mut queued_blocks = Bitmap::new(ir.block_count() as usize);
-    queued_blocks.set(BlockId::ENTRY.idx(), true);
-    let mut block_offsets: Box<[Option<u32>]> =
-        vec![None; ir.block_count() as usize].into_boxed_slice();
+impl Emit for X86 {
+    const TMP: Self::Reg = super::TMP_REGISTER;
 
-    let mut missing_block_addrs: Vec<(u32, BlockId)> = Vec::new();
-
-    while let Some(block) = block_queue.pop_front() {
-        let offset = &mut block_offsets[block.idx()];
-        if offset.is_some() {
-            continue;
-        }
-        *offset = Some((text.len() - start) as u32);
-        for succ in ir.successors(env, block) {
-            if queued_blocks.get(succ.idx()) {
-                continue;
+    fn implement_copy(e: &mut Emitter<Reg>, to: Self::Reg, from: Self::Reg) {
+        let checked_reg = if to == super::TMP_REGISTER { from } else { to };
+        let size = match checked_reg.class() {
+            RegClass::GP8 | RegClass::GP8I => Size::S8,
+            RegClass::GP16 | RegClass::GP16I => Size::S16,
+            RegClass::GP32 | RegClass::GP32I => Size::S32,
+            RegClass::GP64 | RegClass::GP64I => Size::S64,
+            RegClass::F32 => todo!(),
+            RegClass::F64 => todo!(),
+            RegClass::Flags => {
+                unreachable!("flags register should not be allocated")
             }
-            queued_blocks.set(succ.idx(), true);
-            block_queue.push_back(succ);
-        }
-
-        let mut block_iter = ir.get_block(block).peekable();
-        while let Some((r, i)) = block_iter.next() {
-            if let Some(inst) = i.as_module(mc) {
-                match inst.op() {
-                    Mc::IncomingBlockArgs => {}
-                    Mc::Copy | Mc::AssignBlockArgs => {
-                        let args = ir.args_iter(i, env).map(|arg| {
-                            let Argument::MCReg(r) = arg else {
-                                unreachable!()
-                            };
-                            r.phys::<Reg>().expect("need physical registers")
-                        });
-                        parcopy.parcopy(
-                            args,
-                            |to, from| {
-                                let checked_reg = if to == super::TMP_REGISTER { from } else { to };
-                                let size = match checked_reg.class() {
-                                    RegClass::GP8 | RegClass::GP8I => Size::S8,
-                                    RegClass::GP16 | RegClass::GP16I => Size::S16,
-                                    RegClass::GP32 | RegClass::GP32I => Size::S32,
-                                    RegClass::GP64 | RegClass::GP64I => Size::S64,
-                                    RegClass::F32 => todo!(),
-                                    RegClass::F64 => todo!(),
-                                    RegClass::Flags => {
-                                        unreachable!("flags register should not be allocated")
-                                    }
-                                };
-                                let ra = encode_reg(to);
-                                let rb = encode_reg(from);
-                                // HACK: currently checking the encoded registers to see if they
-                                // are the same. This shouldn't be necessary but right now, the
-                                // register size might be wrong after regalloc so only the encoded
-                                // registers will be equal.
-                                if ra != rb {
-                                    mov_rr(text, size, (to, from));
-                                }
-                            },
-                            super::TMP_REGISTER,
-                        );
-                    }
-                }
-                continue;
-            }
-            let Some(inst) = i.as_module(x86) else {
-                panic!("expected x86 instruction but encountered other module at {r}");
-            };
-
-            use X86 as I;
-            let op = inst.op();
-            match op {
-                I::or_rr8 | I::or_rr16 | I::or_rr32 | I::or_rr64 => {
-                    inst_rr(text, op, &[0x08], &[0x09], ir.args(i, env))
-                }
-                I::or_ri8
-                | I::or_ri16
-                | I::or_ri32
-                | I::or_ri64
-                | I::and_ri8
-                | I::and_ri16
-                | I::and_ri32
-                | I::and_ri64 => {
-                    let is_and = matches!(op, I::and_ri8 | I::and_ri16 | I::and_ri32 | I::and_ri64);
-                    inst_ri(
-                        text,
-                        op,
-                        &[0x80],
-                        &[0x81],
-                        ir.args(i, env),
-                        if is_and { 4 } else { 1 },
-                    )
-                }
-                I::and_rr8 | I::and_rr16 | I::and_rr32 | I::and_rr64 => {
-                    inst_rr(text, op, &[0x20], &[0x21], ir.args(i, env))
-                }
-                I::push_r64 | I::pop_r64 => {
-                    let r = encode_reg(ir.args(i, env));
-                    let rex = encode_rex(false, false, false, r.ext(), r.force());
-                    if rex != 0 {
-                        text.push(rex);
-                    }
-                    let opcode = if op == I::push_r64 { 0x50 } else { 0x58 };
-                    text.push(opcode + r.bits);
-                }
-                I::mov_ri8 => {
-                    let (a, imm): (Reg, u32) = ir.args(i, env);
-                    let imm8: i8 = (imm as i32).try_into().unwrap();
-                    let ra = encode_reg(a);
-                    let rex = encode_rex(false, false, false, ra.ext(), ra.force());
-                    if rex != 0 {
-                        text.push(rex);
-                    }
-                    text.extend([0xB0 + ra.bits, imm8 as u8]);
-                }
-                I::mov_ri16 => {
-                    text.push(P16);
-                    let (a, imm): (Reg, u32) = ir.args(i, env);
-                    let imm16: i16 = (imm as i32).try_into().unwrap();
-                    let ra = encode_reg(a);
-                    let rex = encode_rex(false, false, false, ra.ext(), ra.ext());
-                    if rex != 0 {
-                        text.push(rex);
-                    }
-                    text.extend([0xB8 + ra.bits]);
-                    text.extend(imm16.to_le_bytes());
-                }
-                I::mov_ri32 => {
-                    let (a, imm): (Reg, u32) = ir.args(i, env);
-                    let ra = encode_reg(a);
-                    let rex = encode_rex(false, false, false, ra.ext(), ra.force());
-                    if rex != 0 {
-                        text.push(rex);
-                    }
-                    text.extend([0xB8 + ra.bits]);
-                    text.extend(imm.to_le_bytes());
-                }
-                I::mov_ri64 => inst_ri32(text, &[0xC7], ir.args(i, env), true, 0),
-                I::mov_rr8 | I::mov_rr16 | I::mov_rr32 | I::mov_rr64 => {
-                    mov_rr(text, op.size(), ir.args(i, env));
-                }
-                I::mov_rm8 | I::mov_rm16 | I::mov_rm32 | I::mov_rm64 => {
-                    inst_rm(text, op.size(), &[0x8A], &[0x8B], ir.args(i, env))
-                }
-                I::mov_mr8 | I::mov_mr16 | I::mov_mr32 | I::mov_mr64 => {
-                    inst_mr(text, op.size(), &[0x88], &[0x89], ir.args(i, env))
-                }
-                I::ret0 | I::ret64 | I::ret128 => {
-                    text.push(0xc3);
-                }
-                I::cmp_rr8 | I::cmp_rr16 | I::cmp_rr32 | I::cmp_rr64 => {
-                    inst_rr(text, op, &[0x3A], &[0x3B], swap(ir.args(i, env)))
-                }
-                I::test_rr8 => inst_rr_legacy(text, &[0x84], swap(ir.args(i, env)), false),
-                I::jmp => {
-                    let target = ir.args(i, env);
-                    if block_queue.front().is_none_or(|&front| front != target)
-                        || block_iter.peek().is_some()
-                    {
-                        emit_jmp(
-                            &[0xEB],
-                            &[0xE9],
-                            target,
-                            text,
-                            start,
-                            &block_offsets,
-                            &mut missing_block_addrs,
-                        );
-                    }
-                }
-                I::je => {
-                    let target = ir.args(i, env);
-                    emit_jmp(
-                        &[0x74, 0xCB],
-                        &[0x0F, 0x84],
-                        target,
-                        text,
-                        start,
-                        &block_offsets,
-                        &mut missing_block_addrs,
-                    );
-                }
-                I::jne => {
-                    let target = ir.args(i, env);
-                    emit_jmp(
-                        &[0x75, 0xCB],
-                        &[0x0F, 0x85],
-                        target,
-                        text,
-                        start,
-                        &block_offsets,
-                        &mut missing_block_addrs,
-                    );
-                }
-                I::jl => {
-                    let target = ir.args(i, env);
-                    emit_jmp(
-                        &[0x7C, 0xCB],
-                        &[0x0F, 0x8C],
-                        target,
-                        text,
-                        start,
-                        &block_offsets,
-                        &mut missing_block_addrs,
-                    );
-                }
-                I::jge => {
-                    let target = ir.args(i, env);
-                    emit_jmp(
-                        &[0x7D, 0xCB],
-                        &[0x0F, 0x8D],
-                        target,
-                        text,
-                        start,
-                        &block_offsets,
-                        &mut missing_block_addrs,
-                    );
-                }
-                I::jle => {
-                    let target = ir.args(i, env);
-                    emit_jmp(
-                        &[0x7E, 0xCB],
-                        &[0x0F, 0x8E],
-                        target,
-                        text,
-                        start,
-                        &block_offsets,
-                        &mut missing_block_addrs,
-                    );
-                }
-                I::jg => {
-                    let target = ir.args(i, env);
-                    emit_jmp(
-                        &[0x7F, 0xCB],
-                        &[0x0F, 0x8F],
-                        target,
-                        text,
-                        start,
-                        &block_offsets,
-                        &mut missing_block_addrs,
-                    );
-                }
-                I::seto => inst_r_legacy(text, &[0x0F, 0x90], ir.args(i, env), 0, false),
-                I::setno => inst_r_legacy(text, &[0x0F, 0x91], ir.args(i, env), 0, false),
-                I::setc => inst_r_legacy(text, &[0x0F, 0x92], ir.args(i, env), 0, false),
-                I::setnc => inst_r_legacy(text, &[0x0F, 0x93], ir.args(i, env), 0, false),
-                I::sete => inst_r_legacy(text, &[0x0F, 0x94], ir.args(i, env), 0, false),
-                I::setne => inst_r_legacy(text, &[0x0F, 0x95], ir.args(i, env), 0, false),
-                I::setbe => inst_r_legacy(text, &[0x0F, 0x96], ir.args(i, env), 0, false),
-                I::seta => inst_r_legacy(text, &[0x0F, 0x97], ir.args(i, env), 0, false),
-                I::sets => inst_r_legacy(text, &[0x0F, 0x98], ir.args(i, env), 0, false),
-                I::setns => inst_r_legacy(text, &[0x0F, 0x99], ir.args(i, env), 0, false),
-                I::setp => inst_r_legacy(text, &[0x0F, 0x9A], ir.args(i, env), 0, false),
-                I::setnp => inst_r_legacy(text, &[0x0F, 0x9B], ir.args(i, env), 0, false),
-                I::setl => inst_r_legacy(text, &[0x0F, 0x9C], ir.args(i, env), 0, false),
-                I::setge => inst_r_legacy(text, &[0x0F, 0x9D], ir.args(i, env), 0, false),
-                I::setle => inst_r_legacy(text, &[0x0F, 0x9E], ir.args(i, env), 0, false),
-                I::setg => inst_r_legacy(text, &[0x0F, 0x9F], ir.args(i, env), 0, false),
-
-                I::add_rr8 | I::add_rr16 | I::add_rr32 | I::add_rr64 => {
-                    inst_rr(text, op, &[0x00], &[0x01], ir.args(i, env));
-                }
-                I::add_ri8 | I::add_ri16 | I::add_ri32 | I::add_ri64 => {
-                    inst_ri(text, op, &[0x80], &[0x81], ir.args(i, env), 0);
-                }
-                I::sub_rr8 | I::sub_rr16 | I::sub_rr32 | I::sub_rr64 => {
-                    inst_rr(text, op, &[0x28], &[0x29], ir.args(i, env));
-                }
-                I::sub_ri8 | I::sub_ri16 | I::sub_ri32 | I::sub_ri64 => {
-                    inst_ri(text, op, &[0x80], &[0x81], ir.args(i, env), 5)
-                }
-                I::imul_r8 => inst_r_legacy(text, &[0xF6], ir.args(i, env), 5, false),
-                I::imul_rr16 | I::imul_rr32 | I::imul_rr64 => {
-                    if op == I::imul_rr16 {
-                        text.push(P16);
-                    }
-                    inst_rr_legacy(
-                        text,
-                        &[0x0F, 0xAF],
-                        swap(ir.args(i, env)),
-                        op == I::imul_rr64,
-                    )
-                }
-                I::imul_rri16 | I::imul_rri32 | I::imul_rri64 => {
-                    inst_rri(text, op.size(), &[], &[0x69], ir.args(i, env));
-                }
-                I::cbw => text.push(0x98),
-                I::cwd => text.extend([P16, 0x99]),
-                I::cdq => text.push(0x99),
-                I::cqo => text.extend([encode_rex(true, false, false, false, false), 0x99]),
-                I::div_r8 | I::div_r16 | I::div_r32 | I::div_r64 => {
-                    inst_r(text, op.size(), &[0xF6], &[0xF7], ir.args(i, env), 6)
-                }
-                I::idiv_r8 | I::idiv_r16 | I::idiv_r32 | I::idiv_r64 => {
-                    inst_r(text, op.size(), &[0xF6], &[0xF7], ir.args(i, env), 7)
-                }
-                I::shl_ri8
-                | I::shl_ri16
-                | I::shl_ri32
-                | I::shl_ri64
-                | I::shr_ri8
-                | I::shr_ri16
-                | I::shr_ri32
-                | I::shr_ri64 => {
-                    let is_left =
-                        matches!(op, I::shl_ri8 | I::shl_ri16 | I::shl_ri32 | I::shl_ri64);
-                    let size = op.size();
-                    if size == Size::S16 {
-                        text.push(P16);
-                    }
-                    let (r, imm): (Reg, u32) = ir.args(i, env);
-                    // shr always uses an 8-bit imm
-                    let imm = imm as u8; // just truncating upper bits of shr here is fine
-                    let modrm = encode_modrm_ri(r, size == Size::S64, if is_left { 4 } else { 5 });
-                    if modrm.rex != 0 {
-                        text.push(modrm.rex);
-                    }
-                    text.extend([if size == Size::S8 { 0xC0 } else { 0xC1 }, modrm.modrm, imm]);
-                }
-                I::neg_r8 => inst_r_legacy(text, &[0xF6], ir.args(i, env), 3, false),
-                I::neg_r16 | I::neg_r32 | I::neg_r64 => {
-                    if op == I::neg_r16 {
-                        text.push(P16);
-                    }
-                    inst_r_legacy(text, &[0xF7], ir.args(i, env), 3, op == I::neg_r64);
-                }
-                I::xor_ri8 | I::xor_ri16 | I::xor_ri32 | I::xor_ri64 => {
-                    inst_ri(text, op, &[0x80], &[0x81], ir.args(i, env), 6)
-                }
-                I::xor_rr8 | I::xor_rr16 | I::xor_rr32 | I::xor_rr64 => {
-                    inst_rr(text, op, &[0x30], &[0x31], ir.args(i, env))
-                }
-                I::lea_rm32 | I::lea_rm64 => {
-                    inst_rm(text, op.size(), &[], &[0x8D], ir.args(i, env));
-                }
-                I::lea_function => {
-                    let (dst, function): (Reg, FunctionId) = ir.args(i, env);
-                    // lea dst [rip + offset]
-                    let relocation_offset = disp32(text, &[0x8D], dst);
-                    relocations.push(Relocation::FunctionAddr(
-                        function.function,
-                        relocation_offset,
-                    ));
-                }
-                I::lea_global => {
-                    let (dst, global): (Reg, GlobalId) = ir.args(i, env);
-                    // lea dst [rip + offset]
-                    let relocation_offset = disp32(text, &[0x8D], dst);
-                    relocations.push(Relocation::GlobalAddr(global.idx, relocation_offset));
-                }
-                I::call_function => {
-                    let function: FunctionId = ir.args(i, env);
-                    relocations.push(Relocation::FunctionCall(
-                        function.function,
-                        text.len() as u64 + 1,
-                    ));
-                    text.extend([0xE8, 0, 0, 0, 0]);
-                }
-                I::call_r64 => {
-                    let r = ir.args(i, env);
-                    let ra = encode_reg(r);
-                    let rex = encode_rex(false, false, false, ra.ext(), ra.force());
-                    debug_assert!(!(ra.prevents_rex() && rex != 0));
-                    if rex != 0 {
-                        text.push(rex);
-                    }
-                    text.extend([0xFF, MODRM_RR | (2 << 3) | ra.bits]);
-                }
-                I::movsx16_rr8 | I::movsx32_rr8 | I::movsx64_rr8 => {
-                    let size = match op {
-                        I::movsx16_rr8 => Size::S16,
-                        I::movsx32_rr8 => Size::S32,
-                        _ => Size::S64,
-                    };
-                    inst_rr_generic_inner(text, size, &[], &[0x0F, 0xBE], swap(ir.args(i, env)));
-                }
-                I::movsx32_rr16 | I::movsx64_rr16 => {
-                    let size = if op == I::movsx32_rr16 {
-                        Size::S32
-                    } else {
-                        Size::S64
-                    };
-                    inst_rr_generic_inner(text, size, &[], &[0x0F, 0xBF], swap(ir.args(i, env)));
-                }
-                I::movsx64_rr32 => {
-                    inst_rr_generic_inner(text, Size::S64, &[], &[0x63], swap(ir.args(i, env)));
-                }
-                I::movzx16_rr8 | I::movzx32_rr8 => {
-                    let size = if op == I::movzx16_rr8 {
-                        Size::S16
-                    } else {
-                        Size::S32
-                    };
-                    inst_rr_generic_inner(text, size, &[], &[0x0F, 0xB6], swap(ir.args(i, env)));
-                }
-                I::movzx32_rr16 => {
-                    inst_rr_generic_inner(
-                        text,
-                        Size::S32,
-                        &[],
-                        &[0x0F, 0xB7],
-                        swap(ir.args(i, env)),
-                    );
-                }
-            }
+        };
+        let ra = encode_reg(to);
+        let rb = encode_reg(from);
+        // HACK: currently checking the encoded registers to see if they
+        // are the same. This shouldn't be necessary but right now, the
+        // register size might be wrong after regalloc so only the encoded
+        // registers will be equal.
+        if ra != rb {
+            mov_rr(e, size, (to, from));
         }
     }
-    for (offset_location, block) in missing_block_addrs {
-        let block_offset = block_offsets[block.idx()].unwrap();
-        let offset: i32 = (block_offset as i64 - offset_location as i64 - 4)
-            .try_into()
-            .unwrap();
-        let i = start + offset_location as usize;
-        text[i..i + 4].copy_from_slice(&offset.to_le_bytes());
+
+    fn emit(e: &mut Emitter<Reg>, inst: TypedInstruction<Self>) {
+        use X86 as I;
+        let op = inst.op();
+        match op {
+            I::or_rr8 | I::or_rr16 | I::or_rr32 | I::or_rr64 => {
+                inst_rr(e.text, op, &[0x08], &[0x09], e.ir.typed_args(&inst))
+            }
+            I::or_ri8
+            | I::or_ri16
+            | I::or_ri32
+            | I::or_ri64
+            | I::and_ri8
+            | I::and_ri16
+            | I::and_ri32
+            | I::and_ri64 => {
+                let is_and = matches!(op, I::and_ri8 | I::and_ri16 | I::and_ri32 | I::and_ri64);
+                inst_ri(
+                    e.text,
+                    op,
+                    &[0x80],
+                    &[0x81],
+                    e.ir.typed_args(&inst),
+                    if is_and { 4 } else { 1 },
+                )
+            }
+            I::and_rr8 | I::and_rr16 | I::and_rr32 | I::and_rr64 => {
+                inst_rr(e.text, op, &[0x20], &[0x21], e.ir.typed_args(&inst))
+            }
+            I::push_r64 | I::pop_r64 => {
+                let r = encode_reg(e.ir.typed_args(&inst));
+                let rex = encode_rex(false, false, false, r.ext(), r.force());
+                if rex != 0 {
+                    e.text.push(rex);
+                }
+                let opcode = if op == I::push_r64 { 0x50 } else { 0x58 };
+                e.text.push(opcode + r.bits);
+            }
+            I::mov_ri8 => {
+                let (a, imm): (Reg, u32) = e.ir.typed_args(&inst);
+                let imm8: i8 = (imm as i32).try_into().unwrap();
+                let ra = encode_reg(a);
+                let rex = encode_rex(false, false, false, ra.ext(), ra.force());
+                if rex != 0 {
+                    e.text.push(rex);
+                }
+                e.text.extend([0xB0 + ra.bits, imm8 as u8]);
+            }
+            I::mov_ri16 => {
+                e.text.push(P16);
+                let (a, imm): (Reg, u32) = e.ir.typed_args(&inst);
+                let imm16: i16 = (imm as i32).try_into().unwrap();
+                let ra = encode_reg(a);
+                let rex = encode_rex(false, false, false, ra.ext(), ra.ext());
+                if rex != 0 {
+                    e.text.push(rex);
+                }
+                e.text.extend([0xB8 + ra.bits]);
+                e.text.extend(imm16.to_le_bytes());
+            }
+            I::mov_ri32 => {
+                let (a, imm): (Reg, u32) = e.ir.typed_args(&inst);
+                let ra = encode_reg(a);
+                let rex = encode_rex(false, false, false, ra.ext(), ra.force());
+                if rex != 0 {
+                    e.text.push(rex);
+                }
+                e.text.extend([0xB8 + ra.bits]);
+                e.text.extend(imm.to_le_bytes());
+            }
+            I::mov_ri64 => inst_ri32(e.text, &[0xC7], e.ir.typed_args(&inst), true, 0),
+            I::mov_rr8 | I::mov_rr16 | I::mov_rr32 | I::mov_rr64 => {
+                mov_rr(e, op.size(), e.ir.typed_args(&inst));
+            }
+            I::mov_rm8 | I::mov_rm16 | I::mov_rm32 | I::mov_rm64 => {
+                inst_rm(e.text, op.size(), &[0x8A], &[0x8B], e.ir.typed_args(&inst))
+            }
+            I::mov_mr8 | I::mov_mr16 | I::mov_mr32 | I::mov_mr64 => {
+                inst_mr(e.text, op.size(), &[0x88], &[0x89], e.ir.typed_args(&inst))
+            }
+            I::ret0 | I::ret64 | I::ret128 => {
+                e.text.push(0xc3);
+            }
+            I::cmp_rr8 | I::cmp_rr16 | I::cmp_rr32 | I::cmp_rr64 => {
+                inst_rr(e.text, op, &[0x3A], &[0x3B], swap(e.ir.typed_args(&inst)))
+            }
+            I::test_rr8 => inst_rr_legacy(e.text, &[0x84], swap(e.ir.typed_args(&inst)), false),
+            I::jmp => {
+                let target = e.ir.typed_args(&inst);
+                if !e.is_next(target) {
+                    emit_jmp(e, &[0xEB], &[0xE9], target);
+                }
+            }
+            I::je => {
+                let target = e.ir.typed_args(&inst);
+                emit_jmp(e, &[0x74, 0xCB], &[0x0F, 0x84], target);
+            }
+            I::jne => {
+                let target = e.ir.typed_args(&inst);
+                emit_jmp(e, &[0x75, 0xCB], &[0x0F, 0x85], target);
+            }
+            I::jl => {
+                let target = e.ir.typed_args(&inst);
+                emit_jmp(e, &[0x7C, 0xCB], &[0x0F, 0x8C], target);
+            }
+            I::jge => {
+                let target = e.ir.typed_args(&inst);
+                emit_jmp(e, &[0x7D, 0xCB], &[0x0F, 0x8D], target);
+            }
+            I::jle => {
+                let target = e.ir.typed_args(&inst);
+                emit_jmp(e, &[0x7E, 0xCB], &[0x0F, 0x8E], target);
+            }
+            I::jg => {
+                let target = e.ir.typed_args(&inst);
+                emit_jmp(e, &[0x7F, 0xCB], &[0x0F, 0x8F], target);
+            }
+            I::seto => inst_r_legacy(e.text, &[0x0F, 0x90], e.ir.typed_args(&inst), 0, false),
+            I::setno => inst_r_legacy(e.text, &[0x0F, 0x91], e.ir.typed_args(&inst), 0, false),
+            I::setc => inst_r_legacy(e.text, &[0x0F, 0x92], e.ir.typed_args(&inst), 0, false),
+            I::setnc => inst_r_legacy(e.text, &[0x0F, 0x93], e.ir.typed_args(&inst), 0, false),
+            I::sete => inst_r_legacy(e.text, &[0x0F, 0x94], e.ir.typed_args(&inst), 0, false),
+            I::setne => inst_r_legacy(e.text, &[0x0F, 0x95], e.ir.typed_args(&inst), 0, false),
+            I::setbe => inst_r_legacy(e.text, &[0x0F, 0x96], e.ir.typed_args(&inst), 0, false),
+            I::seta => inst_r_legacy(e.text, &[0x0F, 0x97], e.ir.typed_args(&inst), 0, false),
+            I::sets => inst_r_legacy(e.text, &[0x0F, 0x98], e.ir.typed_args(&inst), 0, false),
+            I::setns => inst_r_legacy(e.text, &[0x0F, 0x99], e.ir.typed_args(&inst), 0, false),
+            I::setp => inst_r_legacy(e.text, &[0x0F, 0x9A], e.ir.typed_args(&inst), 0, false),
+            I::setnp => inst_r_legacy(e.text, &[0x0F, 0x9B], e.ir.typed_args(&inst), 0, false),
+            I::setl => inst_r_legacy(e.text, &[0x0F, 0x9C], e.ir.typed_args(&inst), 0, false),
+            I::setge => inst_r_legacy(e.text, &[0x0F, 0x9D], e.ir.typed_args(&inst), 0, false),
+            I::setle => inst_r_legacy(e.text, &[0x0F, 0x9E], e.ir.typed_args(&inst), 0, false),
+            I::setg => inst_r_legacy(e.text, &[0x0F, 0x9F], e.ir.typed_args(&inst), 0, false),
+
+            I::add_rr8 | I::add_rr16 | I::add_rr32 | I::add_rr64 => {
+                inst_rr(e.text, op, &[0x00], &[0x01], e.ir.typed_args(&inst));
+            }
+            I::add_ri8 | I::add_ri16 | I::add_ri32 | I::add_ri64 => {
+                inst_ri(e.text, op, &[0x80], &[0x81], e.ir.typed_args(&inst), 0);
+            }
+            I::sub_rr8 | I::sub_rr16 | I::sub_rr32 | I::sub_rr64 => {
+                inst_rr(e.text, op, &[0x28], &[0x29], e.ir.typed_args(&inst));
+            }
+            I::sub_ri8 | I::sub_ri16 | I::sub_ri32 | I::sub_ri64 => {
+                inst_ri(e.text, op, &[0x80], &[0x81], e.ir.typed_args(&inst), 5)
+            }
+            I::imul_r8 => inst_r_legacy(e.text, &[0xF6], e.ir.typed_args(&inst), 5, false),
+            I::imul_rr16 | I::imul_rr32 | I::imul_rr64 => {
+                if op == I::imul_rr16 {
+                    e.text.push(P16);
+                }
+                inst_rr_legacy(
+                    e.text,
+                    &[0x0F, 0xAF],
+                    swap(e.ir.typed_args(&inst)),
+                    op == I::imul_rr64,
+                )
+            }
+            I::imul_rri16 | I::imul_rri32 | I::imul_rri64 => {
+                inst_rri(e.text, op.size(), &[], &[0x69], e.ir.typed_args(&inst));
+            }
+            I::cbw => e.text.push(0x98),
+            I::cwd => e.text.extend([P16, 0x99]),
+            I::cdq => e.text.push(0x99),
+            I::cqo => e
+                .text
+                .extend([encode_rex(true, false, false, false, false), 0x99]),
+            I::div_r8 | I::div_r16 | I::div_r32 | I::div_r64 => inst_r(
+                e.text,
+                op.size(),
+                &[0xF6],
+                &[0xF7],
+                e.ir.typed_args(&inst),
+                6,
+            ),
+            I::idiv_r8 | I::idiv_r16 | I::idiv_r32 | I::idiv_r64 => inst_r(
+                e.text,
+                op.size(),
+                &[0xF6],
+                &[0xF7],
+                e.ir.typed_args(&inst),
+                7,
+            ),
+            I::shl_ri8
+            | I::shl_ri16
+            | I::shl_ri32
+            | I::shl_ri64
+            | I::shr_ri8
+            | I::shr_ri16
+            | I::shr_ri32
+            | I::shr_ri64 => {
+                let is_left = matches!(op, I::shl_ri8 | I::shl_ri16 | I::shl_ri32 | I::shl_ri64);
+                let size = op.size();
+                if size == Size::S16 {
+                    e.text.push(P16);
+                }
+                let (r, imm): (Reg, u32) = e.ir.typed_args(&inst);
+                // shr always uses an 8-bit imm
+                let imm = imm as u8; // just truncating upper bits of shr here is fine
+                let modrm = encode_modrm_ri(r, size == Size::S64, if is_left { 4 } else { 5 });
+                if modrm.rex != 0 {
+                    e.text.push(modrm.rex);
+                }
+                e.text
+                    .extend([if size == Size::S8 { 0xC0 } else { 0xC1 }, modrm.modrm, imm]);
+            }
+            I::neg_r8 => inst_r_legacy(e.text, &[0xF6], e.ir.typed_args(&inst), 3, false),
+            I::neg_r16 | I::neg_r32 | I::neg_r64 => {
+                if op == I::neg_r16 {
+                    e.text.push(P16);
+                }
+                inst_r_legacy(e.text, &[0xF7], e.ir.typed_args(&inst), 3, op == I::neg_r64);
+            }
+            I::xor_ri8 | I::xor_ri16 | I::xor_ri32 | I::xor_ri64 => {
+                inst_ri(e.text, op, &[0x80], &[0x81], e.ir.typed_args(&inst), 6)
+            }
+            I::xor_rr8 | I::xor_rr16 | I::xor_rr32 | I::xor_rr64 => {
+                inst_rr(e.text, op, &[0x30], &[0x31], e.ir.typed_args(&inst))
+            }
+            I::lea_rm32 | I::lea_rm64 => {
+                inst_rm(e.text, op.size(), &[], &[0x8D], e.ir.typed_args(&inst));
+            }
+            I::lea_function => {
+                let (dst, function): (Reg, FunctionId) = e.ir.typed_args(&inst);
+                // lea dst [rip + offset]
+                let relocation_offset = disp32(e.text, &[0x8D], dst);
+                e.relocations.push(Relocation::FunctionAddr(
+                    function.function,
+                    relocation_offset,
+                ));
+            }
+            I::lea_global => {
+                let (dst, global): (Reg, GlobalId) = e.ir.typed_args(&inst);
+                // lea dst [rip + offset]
+                let relocation_offset = disp32(e.text, &[0x8D], dst);
+                e.relocations
+                    .push(Relocation::GlobalAddr(global.idx, relocation_offset));
+            }
+            I::call_function => {
+                let function: FunctionId = e.ir.typed_args(&inst);
+                e.relocations.push(Relocation::FunctionCall(
+                    function.function,
+                    e.text.len() as u64 + 1,
+                ));
+                e.text.extend([0xE8, 0, 0, 0, 0]);
+            }
+            I::call_r64 => {
+                let r = e.ir.typed_args(&inst);
+                let ra = encode_reg(r);
+                let rex = encode_rex(false, false, false, ra.ext(), ra.force());
+                debug_assert!(!(ra.prevents_rex() && rex != 0));
+                if rex != 0 {
+                    e.text.push(rex);
+                }
+                e.text.extend([0xFF, MODRM_RR | (2 << 3) | ra.bits]);
+            }
+            I::movsx16_rr8 | I::movsx32_rr8 | I::movsx64_rr8 => {
+                let size = match op {
+                    I::movsx16_rr8 => Size::S16,
+                    I::movsx32_rr8 => Size::S32,
+                    _ => Size::S64,
+                };
+                inst_rr_generic_inner(
+                    e.text,
+                    size,
+                    &[],
+                    &[0x0F, 0xBE],
+                    swap(e.ir.typed_args(&inst)),
+                );
+            }
+            I::movsx32_rr16 | I::movsx64_rr16 => {
+                let size = if op == I::movsx32_rr16 {
+                    Size::S32
+                } else {
+                    Size::S64
+                };
+                inst_rr_generic_inner(
+                    e.text,
+                    size,
+                    &[],
+                    &[0x0F, 0xBF],
+                    swap(e.ir.typed_args(&inst)),
+                );
+            }
+            I::movsx64_rr32 => {
+                inst_rr_generic_inner(
+                    e.text,
+                    Size::S64,
+                    &[],
+                    &[0x63],
+                    swap(e.ir.typed_args(&inst)),
+                );
+            }
+            I::movzx16_rr8 | I::movzx32_rr8 => {
+                let size = if op == I::movzx16_rr8 {
+                    Size::S16
+                } else {
+                    Size::S32
+                };
+                inst_rr_generic_inner(
+                    e.text,
+                    size,
+                    &[],
+                    &[0x0F, 0xB6],
+                    swap(e.ir.typed_args(&inst)),
+                );
+            }
+            I::movzx32_rr16 => {
+                inst_rr_generic_inner(
+                    e.text,
+                    Size::S32,
+                    &[],
+                    &[0x0F, 0xB7],
+                    swap(e.ir.typed_args(&inst)),
+                );
+            }
+        }
     }
 }
 
@@ -445,8 +354,8 @@ fn swap((a, b): (Reg, Reg)) -> (Reg, Reg) {
     (b, a)
 }
 
-fn mov_rr(text: &mut Vec<u8>, size: Size, (a, b): (Reg, Reg)) {
-    inst_rr_generic_inner(text, size, &[0x88], &[0x89], (a, b))
+fn mov_rr(e: &mut Emitter<Reg>, size: Size, (a, b): (Reg, Reg)) {
+    inst_rr_generic_inner(e.text, size, &[0x88], &[0x89], (a, b))
 }
 
 /// emits an instruction with a placeholder disp32 (rip-relative address) and returns the offset
@@ -648,34 +557,26 @@ fn inst_ri32(text: &mut Vec<u8>, opcode: &[u8], (r, imm): (Reg, u32), wide: bool
     text.extend(imm.to_le_bytes());
 }
 
-fn emit_jmp(
-    rel8_op: &[u8],
-    rel32_op: &[u8],
-    target: BlockId,
-    text: &mut Vec<u8>,
-    start: usize,
-    block_offsets: &[Option<u32>],
-    missing_block_addrs: &mut Vec<(u32, BlockId)>,
-) {
-    let my_rel8_offset = (text.len() + rel8_op.len() - start + 1) as u32;
-    if let Some(known) = block_offsets[target.idx()] {
+fn emit_jmp(e: &mut Emitter<Reg>, rel8_op: &[u8], rel32_op: &[u8], target: BlockId) {
+    let my_rel8_offset = e.offset_in_function() + rel8_op.len() as u32 - 1;
+    if let Some(known) = e.block_offset(target) {
         let offset: i32 = (known as i64 - my_rel8_offset as i64).try_into().unwrap();
         let offset8: Result<i8, _> = offset.try_into();
         if let Ok(offset8) = offset8 {
-            text.extend(rel8_op);
-            text.push(offset8 as u8);
+            e.text.extend(rel8_op);
+            e.text.push(offset8 as u8);
         } else {
-            text.extend(rel32_op);
-            let offset: i32 = (known as i64 - (text.len() - start + 4) as i64)
-                .try_into()
+            e.text.extend(rel32_op);
+            let offset: i32 = known
+                .checked_signed_diff(e.offset_in_function() + 4)
                 .unwrap();
-            text.extend(offset.to_le_bytes());
+            e.text.extend(offset.to_le_bytes());
         }
     } else {
-        text.extend(rel32_op);
-        let offset = (text.len() - start) as u32;
-        missing_block_addrs.push((offset, target));
-        text.extend(0i32.to_le_bytes());
+        e.text.extend(rel32_op);
+        let offset = e.offset_in_function();
+        e.missing_block_addrs.push((offset, target));
+        e.text.extend(0i32.to_le_bytes());
     }
 }
 

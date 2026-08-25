@@ -124,8 +124,7 @@ impl Abi<X86> for SystemV {
         types: &Types,
         regs: &ir::slots::Slots<MCReg>,
     ) {
-        let info = ir.get_block(BlockId::ENTRY);
-        let before = Ref::index(info.body_idx);
+        let before = Ref::index(ir.get_block(BlockId::ENTRY).body_idx);
         let mut integer_regs = ABI_PARAM_REGISTERS_INTEGER.into_iter();
         for arg in args.iter() {
             let [a, b] = classify(types, types[ir.get_ref_ty(arg)], env.primitives());
@@ -148,8 +147,7 @@ impl Abi<X86> for SystemV {
                 x86,
                 types,
                 regs,
-                before,
-                Insert::Before,
+                Insert::Before(before),
                 arg,
                 a_reg,
                 b_reg,
@@ -236,8 +234,7 @@ impl Abi<X86> for SystemV {
                 x86,
                 types,
                 regs,
-                call_inst,
-                Insert::After,
+                Insert::After(call_inst),
                 call_inst,
                 a_reg,
                 b_reg,
@@ -283,11 +280,11 @@ impl Abi<X86> for SystemV {
         insert_regs(r, ir, env, mc, x86, types, regs, value, a_reg, b_reg);
     }
 
-    fn caller_saved(&self) -> <<X86 as ir::mc::McInst>::Reg as ir::mc::Register>::RegisterBits {
+    fn caller_saved(&self) -> RegBits {
         CALLER_SAVED.iter().fold(RegBits::new(), |a, b| a | b.bit())
     }
 
-    fn callee_saved(&self) -> <<X86 as ir::mc::McInst>::Reg as ir::mc::Register>::RegisterBits {
+    fn callee_saved(&self) -> RegBits {
         CALLEE_SAVED.iter().fold(RegBits::new(), |a, b| a | b.bit())
     }
 
@@ -308,7 +305,6 @@ fn extract_regs(
     x86: ModuleOf<X86>,
     types: &Types,
     regs: &Slots<MCReg>,
-    insert_at: Ref,
     position: Insert,
     arg: Ref,
     a_reg: Option<Reg>,
@@ -328,15 +324,15 @@ fn extract_regs(
             let src = src.expect("Handle stack-passed params");
             match regs {
                 [] => {}
-                &[dst] => extract(ir, env, mc, x86, insert_at, position, dst, src, reg_offset),
+                &[dst] => extract(ir, env, mc, x86, position, dst, src, reg_offset),
                 &[dst_a, dst_b] => {
                     // any 128-bit primitive has to be exactly at offset 0 since the param
                     // would have been passed in memory otherwise
                     debug_assert_eq!(offset, 0);
                     let a_reg = a_reg.expect("Handle stack-passed params");
                     let b_reg = b_reg.expect("Handle stack-passed params");
-                    extract(ir, env, mc, x86, insert_at, position, dst_a, a_reg, 0);
-                    extract(ir, env, mc, x86, insert_at, position, dst_b, b_reg, 0);
+                    extract(ir, env, mc, x86, position, dst_a, a_reg, 0);
+                    extract(ir, env, mc, x86, position, dst_b, b_reg, 0);
                 }
                 _ => unreachable!(), // no primitive should use more than 2 regs
             };
@@ -350,7 +346,6 @@ fn extract(
     env: &Environment,
     mc: ModuleOf<Mc>,
     x86: ModuleOf<X86>,
-    insert_at: Ref,
     position: Insert,
     to: MCReg,
     from: Reg,
@@ -359,7 +354,6 @@ fn extract(
     if byte_offset == 0 {
         ir.add_before_or_after(
             env,
-            insert_at,
             position,
             parallel_copy(mc, &[to, MCReg::from_phys(from)]),
         );
@@ -369,18 +363,8 @@ fn extract(
     // Further uses will only use the lower bits.
     // CODEGEN: could use a smaller mov in some cases if higher bits aren't needed. Should be a
     // pretty simple check but maybe only downgrading to mov32 is worth it
-    ir.add_before_or_after(
-        env,
-        insert_at,
-        position,
-        x86.mov_rr64(to, MCReg::from_phys(from)),
-    );
-    ir.add_before_or_after(
-        env,
-        insert_at,
-        position,
-        x86.shr_ri64(to, (byte_offset * 8).into()),
-    );
+    ir.add_before_or_after(env, position, x86.mov_rr64(to, MCReg::from_phys(from)));
+    ir.add_before_or_after(env, position, x86.shr_ri64(to, (byte_offset * 8).into()));
 }
 
 fn insert_regs(

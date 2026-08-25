@@ -4,177 +4,92 @@ use dmap::DHashMap;
 use ir::{
     BlockGraph, BlockId, Environment, FunctionId, FunctionIr, IntoArgs, Layout, MCReg, ModuleId,
     ModuleOf, Primitive, Ref, Type, TypeId, Types,
-    dialect::{Arith, Mem, Tuple},
+    dialect::{Arith, Mem},
     mc::{Abi, BackendState, IselCtx, Mc, parallel_copy},
     modify::IrModify,
     rewrite::{ReverseRewriteOrder, Rewrite},
     slots::Slots,
 };
 
-use crate::arch::x86::{
-    Reg, X86,
-    isa::{RegClass, Size},
+use crate::{
+    ArithClass, Size,
+    arch::x86::{Reg, X86, isa::RegClass},
+    arith_class, int_size_of_ref, primitive_of_ref,
 };
 
 // not using proper from_virt function since it can't be const due to trait functions
 const NOREG: MCReg = MCReg::from_inner(Reg::none as u32);
 
-pub fn codegen(
-    env: &Environment,
-    body: &FunctionIr,
-    types: &ir::Types,
-    isel: &InstructionSelector,
-    main_module: ModuleId,
-    abi: &'static dyn Abi<X86>,
-    state: &mut BackendState,
-    function_name: &str,
-) -> (FunctionIr, ir::Types) {
-    let _enter = tracing::span!(
-        target: "isel",
-        tracing::Level::INFO,
-        "function",
-        function = function_name,
-    )
-    .entered();
-    let mut body = body.clone();
+impl crate::InstructionSelector<X86> for InstructionSelector {
+    fn codegen(
+        &self,
+        env: &Environment,
+        body: &FunctionIr,
+        types: &ir::Types,
+        main_module: ModuleId,
+        abi: &'static dyn Abi<X86>,
+        state: &mut BackendState,
+    ) -> FunctionIr {
+        let mut body = body.clone();
 
-    let mut regs = Slots::with_default(&body, types, MCReg::from_virt(0));
-    let mut stack_slots = DHashMap::default();
-    for r in body.refs() {
-        // allocate stack for Decls
-        if let Some(inst) = body.get_inst(r).as_module(isel.mem)
-            && inst.op() == Mem::Decl
-        {
-            let decl_ty: TypeId = body.typed_args(&inst);
-            let layout = ir::type_layout(types[decl_ty], types, env.primitives());
-            stack_slots.insert(r, state.alloc_stack(layout));
-        }
-        // special case some operations to reuse registers but allocate new slots for each primitive
-        // value by default.
-        if let Some(inst) = body.get_inst(r).as_module(isel.tuple) {
-            // tuple operations can always (partially) reuse registers
-            match inst.op() {
-                Tuple::MemberValue => {
-                    let (tuple, i): (Ref, u32) = body.typed_args(&inst);
-                    let Type::Tuple(elems) = types[body.get_ref_ty(tuple)] else {
-                        unreachable!()
-                    };
-                    let mut src = regs.slot_map[tuple.idx()];
-                    debug_assert!(elems.count() > i);
-                    for skipped_elem in elems.iter().take(i as usize) {
-                        src += ir::slots::slot_count(types[skipped_elem], types);
-                    }
-                    let dst = regs.slot_map[r.idx()] as usize;
-                    let n = ir::slots::slot_count(types[elems.nth(i)], types) as usize;
-                    regs.slots.copy_within(src as usize..src as usize + n, dst);
-                }
-                Tuple::InsertMember => {
-                    let (tuple, i, value): (Ref, u32, Ref) = body.typed_args(&inst);
-                    let mut dst = regs.slot_map[r.idx()] as usize;
-                    let mut src = regs.slot_map[tuple.idx()] as usize;
-                    let Type::Tuple(elems) = types[body.get_ref_ty(r)] else {
-                        unreachable!()
-                    };
-                    for (ty, j) in elems.iter().zip(0..) {
-                        let elem_slot_count = ir::slots::slot_count(types[ty], types) as usize;
-                        if i == j {
-                            let value_src = regs.slot_map[value.idx()] as usize;
-                            regs.slots
-                                .copy_within(value_src..value_src + elem_slot_count, dst);
-                        } else {
-                            regs.slots.copy_within(src..src + elem_slot_count, dst);
-                        }
-                        src += elem_slot_count;
-                        dst += elem_slot_count;
-                    }
-                }
+        let mut regs = Slots::with_default(&body, types, self.tuple, MCReg::from_virt(0));
+        let mut stack_slots = DHashMap::default();
+        for r in body.refs() {
+            // allocate stack for Decls
+            if let Some(inst) = body.get_inst(r).as_module(self.mem)
+                && inst.op() == Mem::Decl
+            {
+                let decl_ty: TypeId = body.typed_args(&inst);
+                let layout = ir::type_layout(types[decl_ty], types, env.primitives());
+                stack_slots.insert(r, state.alloc_stack(layout));
             }
-            continue;
+            _ = regs.visit_primitive_slots_mut::<Infallible, _>(
+                r,
+                types[body.get_ref_ty(r)],
+                types,
+                env.primitives(),
+                |regs, p, _offset| {
+                    use Primitive as P;
+                    match p {
+                        P::I1 | P::I8 | P::U8 => regs[0] = body.new_reg::<Reg>(RegClass::GP8),
+                        P::I16 | P::U16 => regs[0] = body.new_reg::<Reg>(RegClass::GP16),
+                        P::I32 | P::U32 => regs[0] = body.new_reg::<Reg>(RegClass::GP32),
+                        P::I64 | P::U64 | P::Ptr => regs[0] = body.new_reg::<Reg>(RegClass::GP64),
+                        P::F32 => regs[0] = body.new_reg::<Reg>(RegClass::F32),
+                        P::F64 => regs[0] = body.new_reg::<Reg>(RegClass::F64),
+                        P::I128 | P::U128 => todo!(),
+                    };
+                    Ok(())
+                },
+            );
         }
-        _ = regs.visit_primitive_slots_mut::<Infallible, _>(
-            r,
-            types[body.get_ref_ty(r)],
-            types,
-            env.primitives(),
-            |regs, p, _offset| {
-                use Primitive as P;
-                match p {
-                    P::I1 | P::I8 | P::U8 => regs[0] = body.new_reg::<Reg>(RegClass::GP8),
-                    P::I16 | P::U16 => regs[0] = body.new_reg::<Reg>(RegClass::GP16),
-                    P::I32 | P::U32 => regs[0] = body.new_reg::<Reg>(RegClass::GP32),
-                    P::I64 | P::U64 | P::Ptr => regs[0] = body.new_reg::<Reg>(RegClass::GP64),
-                    P::F32 => regs[0] = body.new_reg::<Reg>(RegClass::F32),
-                    P::F64 => regs[0] = body.new_reg::<Reg>(RegClass::F64),
-                    P::I128 | P::U128 => todo!(),
-                };
-                Ok(())
-            },
+        let block_graph = BlockGraph::calculate(&body, env);
+
+        let mut ir = IrModify::new(body);
+        let args = ir.get_block_args(BlockId::ENTRY);
+        abi.implement_params(args, &mut ir, env, self.mc, self.x86, types, &regs);
+        let mut ctx = IselCtx::new(
+            main_module,
+            env,
+            &ir,
+            regs,
+            self.mc,
+            abi,
+            state,
+            &block_graph,
+            &stack_slots,
         );
-    }
-    let mut types = types.clone();
-    let block_graph = BlockGraph::calculate(&body, env);
-    let unit = types.add(Type::Tuple(ir::TypeIds::EMPTY));
 
-    let mut ir = IrModify::new(body);
-    let args = ir.get_block_args(BlockId::ENTRY);
-    abi.implement_params(args, &mut ir, env, isel.mc, isel.x86, &types, &regs);
-    let mut ctx = IselCtx::new(
-        main_module,
-        env,
-        &ir,
-        regs,
-        isel.mc,
-        unit,
-        abi,
-        state,
-        &block_graph,
-        &stack_slots,
-    );
+        ir::rewrite::rewrite_in_place(
+            &mut ir,
+            types,
+            env,
+            &mut ctx,
+            self,
+            ReverseRewriteOrder::new(&block_graph),
+        );
 
-    ir::rewrite::rewrite_in_place(
-        &mut ir,
-        &types,
-        env,
-        &mut ctx,
-        isel,
-        ReverseRewriteOrder::new(&block_graph),
-    );
-
-    (ir.finish_and_compress(env), types)
-}
-
-fn primitive_of_ref(r: Ref, ir: &IrModify, types: &Types) -> Primitive {
-    let Type::Primitive(p) = types[ir.get_ref_ty(r)] else {
-        unreachable!()
-    };
-    p.try_into().expect("Invalid primitive encountered")
-}
-
-fn int_size_of_ref(r: Ref, ir: &IrModify, types: &Types) -> Size {
-    arith_class(r, ir, types).1
-}
-
-enum ArithClass {
-    Signed,
-    Unsigned,
-    Float,
-}
-
-fn arith_class(r: Ref, ir: &IrModify, types: &Types) -> (ArithClass, Size) {
-    match primitive_of_ref(r, ir, types) {
-        Primitive::I1 | Primitive::I8 => (ArithClass::Signed, Size::S8),
-        Primitive::I16 => (ArithClass::Signed, Size::S16),
-        Primitive::I32 => (ArithClass::Signed, Size::S32),
-        Primitive::I64 => (ArithClass::Signed, Size::S64),
-        Primitive::I128 => (ArithClass::Signed, Size::S128),
-        Primitive::U8 => (ArithClass::Unsigned, Size::S8),
-        Primitive::U16 => (ArithClass::Unsigned, Size::S16),
-        Primitive::U32 => (ArithClass::Unsigned, Size::S32),
-        Primitive::U64 => (ArithClass::Unsigned, Size::S64),
-        Primitive::U128 => (ArithClass::Unsigned, Size::S128),
-        Primitive::F32 => (ArithClass::Float, Size::S32),
-        Primitive::F64 => (ArithClass::Float, Size::S64),
-        Primitive::Ptr => unreachable!("unsupported type Ptr for arithmetic"),
+        ir.finish_and_compress(env)
     }
 }
 
@@ -1021,14 +936,22 @@ fn int_bin_op(
             ir.replace(
                 env,
                 r,
-                (FunctionId::new(x86.id(), op_ri.id()), (out, c), ctx.unit),
+                (
+                    FunctionId::new(x86.id(), op_ri.id()),
+                    (out, c),
+                    TypeId::UNIT,
+                ),
             );
         } else {
             let b = ctx.regs.get_one(b);
             ir.replace(
                 env,
                 r,
-                (FunctionId::new(x86.id(), op_rr.id()), (out, b), ctx.unit),
+                (
+                    FunctionId::new(x86.id(), op_rr.id()),
+                    (out, b),
+                    TypeId::UNIT,
+                ),
             );
         }
     }
