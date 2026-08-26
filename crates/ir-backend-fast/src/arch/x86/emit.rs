@@ -7,7 +7,7 @@ use super::isa::{Reg, X86};
 impl Emit for X86 {
     const TMP: Self::Reg = super::TMP_REGISTER;
 
-    fn implement_copy(e: &mut Emitter<Reg>, to: Self::Reg, from: Self::Reg) {
+    fn implement_copy(text: &mut Vec<u8>, to: Self::Reg, from: Self::Reg) {
         let checked_reg = if to == super::TMP_REGISTER { from } else { to };
         let size = match checked_reg.class() {
             RegClass::GP8 | RegClass::GP8I => Size::S8,
@@ -27,7 +27,7 @@ impl Emit for X86 {
         // register size might be wrong after regalloc so only the encoded
         // registers will be equal.
         if ra != rb {
-            mov_rr(e, size, (to, from));
+            mov_rr(text, size, (to, from));
         }
     }
 
@@ -102,7 +102,7 @@ impl Emit for X86 {
             }
             I::mov_ri64 => inst_ri32(e.text, &[0xC7], e.ir.typed_args(&inst), true, 0),
             I::mov_rr8 | I::mov_rr16 | I::mov_rr32 | I::mov_rr64 => {
-                mov_rr(e, op.size(), e.ir.typed_args(&inst));
+                mov_rr(e.text, op.size(), e.ir.typed_args(&inst));
             }
             I::mov_rm8 | I::mov_rm16 | I::mov_rm32 | I::mov_rm64 => {
                 inst_rm(e.text, op.size(), &[0x8A], &[0x8B], e.ir.typed_args(&inst))
@@ -354,8 +354,8 @@ fn swap((a, b): (Reg, Reg)) -> (Reg, Reg) {
     (b, a)
 }
 
-fn mov_rr(e: &mut Emitter<Reg>, size: Size, (a, b): (Reg, Reg)) {
-    inst_rr_generic_inner(e.text, size, &[0x88], &[0x89], (a, b))
+fn mov_rr(text: &mut Vec<u8>, size: Size, (a, b): (Reg, Reg)) {
+    inst_rr_generic_inner(text, size, &[0x88], &[0x89], (a, b))
 }
 
 /// emits an instruction with a placeholder disp32 (rip-relative address) and returns the offset

@@ -7,7 +7,7 @@ type Emitter<'a> = crate::emit::Emitter<'a, Reg>;
 impl crate::Emit for Arm {
     const TMP: Self::Reg = super::isa::TMP_REGISTER;
 
-    fn implement_copy(e: &mut Emitter, to: Self::Reg, from: Self::Reg) {
+    fn implement_copy(text: &mut Vec<u8>, to: Self::Reg, from: Self::Reg) {
         let checked_reg = if to == super::isa::TMP_REGISTER {
             from
         } else {
@@ -21,10 +21,10 @@ impl crate::Emit for Arm {
             RegClass::ZR => unreachable!("shouldn't emit copy with ZR"),
         };
         if fp {
-            e.text.extend(fmov_reg((to, from), sf).to_le_bytes());
+            text.extend(fmov_reg((to, from), sf).to_le_bytes());
         } else {
             let zr = if sf { Reg::xzr } else { Reg::wzr };
-            e.text.extend(orr((to, from, zr), sf).to_le_bytes());
+            text.extend(orr((to, from, zr), sf).to_le_bytes());
         }
     }
 

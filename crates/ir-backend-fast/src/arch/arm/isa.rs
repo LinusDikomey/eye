@@ -90,7 +90,6 @@ impl Reg {
 }
 
 pub const TMP_REGISTER: Reg = Reg::x16; // IP0
-pub const PREOCCUPIED: RegBits = RegBits(Reg::sp.bit().0 | Reg::x29.bit().0 | TMP_REGISTER.bit().0);
 
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -150,8 +149,8 @@ ir::instructions! {
     // shift = hw * 16
     movz32 dst: MCReg(Usage::Def) hw: Int32 imm16: Int32;
     movz64 dst: MCReg(Usage::Def) hw: Int32 imm16: Int32;
-    movk32 dst: MCReg(Usage::Def) hw: Int32 imm16: Int32;
-    movk64 dst: MCReg(Usage::Def) hw: Int32 imm16: Int32;
+    movk32 dst: MCReg(Usage::DefUse) hw: Int32 imm16: Int32;
+    movk64 dst: MCReg(Usage::DefUse) hw: Int32 imm16: Int32;
 
     ldr8  dst: MCReg(Usage::Def) ptr: MCReg(Usage::Use) offset: Int32;
     ldr16 dst: MCReg(Usage::Def) ptr: MCReg(Usage::Use) offset: Int32;

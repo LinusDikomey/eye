@@ -1031,6 +1031,10 @@ impl Instruction {
         self.function.function
     }
 
+    pub fn function_id(&self) -> FunctionId {
+        self.function
+    }
+
     pub fn ty(&self) -> TypeId {
         self.ty
     }

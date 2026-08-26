@@ -4,14 +4,13 @@ use dmap::DHashMap;
 use ir::{
     BlockGraph, BlockId, Environment, MCReg, ModuleOf, Ref, Type, TypeId, Types,
     dialect::Mem,
-    mc::IselCtx,
     modify::{Insert, IrModify},
     rewrite::{ReverseRewriteOrder, Rewrite},
     slots::Slots,
 };
 
 use crate::{
-    Size,
+    IselCtx, Size,
     arch::arm::isa::{Arm, Reg, RegClass},
     int_size_of_ref,
 };
@@ -24,7 +23,8 @@ impl crate::InstructionSelector<Arm> for InstructionSelector {
         types: &ir::Types,
         main_module: ir::ModuleId,
         abi: &'static dyn ir::mc::Abi<Arm>,
-        state: &mut ir::mc::BackendState,
+        target: &target::Target,
+        state: &mut crate::BackendState,
     ) -> ir::FunctionIr {
         let mut body = body.clone();
         let mut regs = Slots::with_default(&body, types, self.tuple, MCReg::from_virt(0));
@@ -67,6 +67,7 @@ impl crate::InstructionSelector<Arm> for InstructionSelector {
             regs,
             self.mc,
             abi,
+            target,
             state,
             &block_graph,
             &stack_slots,
@@ -150,25 +151,27 @@ ir::visitor! {
             Size::S16 => {
                 ir.replace(env, r, arm.movz32(regs[0], 0, x as i16 as u32));
             }
-            Size::S32 => {
-                let value = x as i32 as u32;
-                let lower = value as u16;
-                let upper = value >> 16;
-                ir.replace(env, r, arm.movz32(regs[0], 0, lower.into()));
-                if upper != 0 {
-                    ir.add_after(env, r, arm.movk32(regs[0], 1, upper));
-                }
-            }
-            Size::S64 => {
-                let mut value = x;
-                let lower = value as u16;
-                let mut hw = 0;
-                ir.replace(env, r, arm.movz64(regs[0], hw, lower.into()));
-                loop {
-                    value >>= 16;
-                    if value == 0 { break }
-                    hw += 1;
-                    ir.add_after(env, r, arm.movk64(regs[0], hw, u32::from(value as u16)));
+            size @ (Size::S32 | Size::S64) => {
+                let hws = if size == Size::S64 { 4 } else { 2 };
+                let value = x;
+                let mut first = true;
+                for hw in 0..hws {
+                    let imm = (value >> (16 * hw)) as u16;
+                    if imm == 0 && value != 0 { continue }
+                    match (first, size) {
+                        (true, Size::S64) => ir.replace(env, r, arm.movz64(regs[0], hw, imm.into())),
+                        (true, _) => ir.replace(env, r, arm.movz32(regs[0], hw, imm.into())),
+                        (false, Size::S64) => {
+                            ir.add_after(env, r, arm.movk64(regs[0], hw, imm.into()));
+                        }
+                        (false, _) => {
+                            ir.add_after(env, r, arm.movk32(regs[0], hw, imm.into()));
+                        }
+                    }
+                    if value == 0 {
+                        break;
+                    }
+                    first = false;
                 }
             }
             Size::S128 => todo!("128 bit ints")

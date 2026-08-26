@@ -5,14 +5,14 @@ use ir::{
     BlockGraph, BlockId, Environment, FunctionId, FunctionIr, IntoArgs, Layout, MCReg, ModuleId,
     ModuleOf, Primitive, Ref, Type, TypeId, Types,
     dialect::{Arith, Mem},
-    mc::{Abi, BackendState, IselCtx, Mc, parallel_copy},
+    mc::{Abi, Mc, parallel_copy},
     modify::IrModify,
     rewrite::{ReverseRewriteOrder, Rewrite},
     slots::Slots,
 };
 
 use crate::{
-    ArithClass, Size,
+    ArithClass, BackendState, IselCtx, Size,
     arch::x86::{Reg, X86, isa::RegClass},
     arith_class, int_size_of_ref, primitive_of_ref,
 };
@@ -28,6 +28,7 @@ impl crate::InstructionSelector<X86> for InstructionSelector {
         types: &ir::Types,
         main_module: ModuleId,
         abi: &'static dyn Abi<X86>,
+        target: &target::Target,
         state: &mut BackendState,
     ) -> FunctionIr {
         let mut body = body.clone();
@@ -75,6 +76,7 @@ impl crate::InstructionSelector<X86> for InstructionSelector {
             regs,
             self.mc,
             abi,
+            target,
             state,
             &block_graph,
             &stack_slots,

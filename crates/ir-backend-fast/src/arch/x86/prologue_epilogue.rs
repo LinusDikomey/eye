@@ -1,13 +1,11 @@
 use std::fmt;
 
-use ir::{
-    BlockId, MCReg, ModuleOf,
-    mc::{Abi, BackendState},
-    modify::IrModify,
-    pipeline::FunctionPass,
-};
+use ir::{BlockId, MCReg, ModuleOf, mc::Abi, modify::IrModify, pipeline::FunctionPass};
 
-use crate::arch::x86::{Reg, X86};
+use crate::{
+    BackendState,
+    arch::x86::{Reg, X86},
+};
 
 pub struct PrologueEpilogueInsertion {
     pub x86: ModuleOf<X86>,

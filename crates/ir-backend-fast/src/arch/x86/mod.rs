@@ -10,7 +10,11 @@ use prologue_epilogue::PrologueEpilogueInsertion;
 
 use crate::CodegenFn;
 
-pub fn init_codegen(env: &mut ir::Environment, module_id: ir::ModuleId) -> CodegenFn {
+pub fn init_codegen(
+    env: &mut ir::Environment,
+    module_id: ir::ModuleId,
+    target: &target::Target,
+) -> CodegenFn {
     let isel = isel::InstructionSelector::new(env);
     let mc = isel.mc;
     let x86 = isel.x86;
@@ -21,6 +25,7 @@ pub fn init_codegen(env: &mut ir::Environment, module_id: ir::ModuleId) -> Codeg
         isel,
         module_id,
         abi,
+        target: target.clone(),
     }));
     pipeline.add_function_pass(Box::new(ir::mc::Regalloc::<X86> {
         mc,

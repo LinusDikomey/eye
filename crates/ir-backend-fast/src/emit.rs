@@ -11,7 +11,7 @@ use crate::Relocation;
 pub trait Emit: McInst {
     const TMP: Self::Reg;
 
-    fn implement_copy(e: &mut Emitter<Self::Reg>, to: Self::Reg, from: Self::Reg);
+    fn implement_copy(text: &mut Vec<u8>, to: Self::Reg, from: Self::Reg);
     fn emit(e: &mut Emitter<Self::Reg>, inst: TypedInstruction<Self>);
 }
 
@@ -40,6 +40,14 @@ impl<'a, R: Register> Emitter<'a, R> {
     pub fn block_offset(&self, block: BlockId) -> Option<u32> {
         self.block_offsets[block.idx()]
     }
+
+    pub fn parcopy<I: Emit<Reg = R>>(&mut self, args: impl Clone + IntoIterator<Item = R>) {
+        self.parcopy.parcopy(
+            args,
+            |to, from| I::implement_copy(self.text, to, from),
+            I::TMP,
+        );
+    }
 }
 
 pub fn emit<I: Emit>(
@@ -50,8 +58,6 @@ pub fn emit<I: Emit>(
     text: &mut Vec<u8>,
     relocations: &mut Vec<Relocation>,
 ) {
-    let mut parcopy = ParcopySolver::new();
-
     let mut emitter = Emitter {
         ir,
         start: text.len(),
@@ -91,13 +97,7 @@ pub fn emit<I: Emit>(
                             };
                             r.phys::<I::Reg>().expect("need physical registers")
                         });
-                        parcopy.parcopy(
-                            args,
-                            |to, from| {
-                                I::implement_copy(&mut emitter, to, from);
-                            },
-                            I::TMP,
-                        );
+                        emitter.parcopy::<I>(args);
                     }
                 }
                 continue;

@@ -10,6 +10,7 @@ pub use abi::ArmAbi;
 pub fn init_codegen(
     env: &mut ir::Environment,
     module_id: ir::ModuleId,
+    target: &target::Target,
     abi: &'static ArmAbi,
 ) -> CodegenFn {
     let isel = isel::InstructionSelector::new(env);
@@ -21,10 +22,11 @@ pub fn init_codegen(
         isel,
         module_id,
         abi,
+        target: target.clone(),
     }));
     pipeline.add_function_pass(Box::new(ir::mc::Regalloc::<isa::Arm> {
         mc,
-        preoccupied: isa::PREOCCUPIED, // TODO: this depends on the exact abi
+        preoccupied: abi.preoccupied_regs(),
         isa: arm,
         abi,
     }));

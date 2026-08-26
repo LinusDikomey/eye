@@ -164,6 +164,12 @@ impl<State: Default> Pipeline<State> {
 
         let mut state = State::default();
         for pass in &self.final_step {
+            let _enter = tracing::span!(
+                target: "passes", tracing::Level::INFO, "Running function pass",
+                function = name,
+                pass = ?pass,
+            )
+            .entered();
             let new_types;
             (ir, new_types) = pass.run(env, types, ir, name, &mut state);
             if let Some(new_types) = new_types {

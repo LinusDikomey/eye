@@ -8,12 +8,11 @@ use ir::{
 };
 
 use crate::arch::arm::{
-    isa::{Arm, Reg, RegBits},
+    isa::{Arm, Reg, RegBits, TMP_REGISTER},
     isel,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-#[allow(unused)] // TODO: remove this allow when they are used
 pub enum ArmAbi {
     Arm32,
     Arm64,
@@ -105,6 +104,16 @@ impl Abi<Arm> for ArmAbi {
             .fold(RegBits::new(), |a, b| a | b[0].bit())
     }
 }
+impl ArmAbi {
+    pub fn preoccupied_regs(self) -> RegBits {
+        let mut bits = Reg::sp.bit() | FRAME_POINTER.bit() | TMP_REGISTER.bit();
+        if self == Self::Darwin64 {
+            // reserved on darwin
+            bits = bits | Reg::x18.bit();
+        }
+        bits
+    }
+}
 
 const CALL_STACK_ALIGN: u64 = 16;
 
@@ -130,8 +139,7 @@ const ABI_PARAM_REGISTERS_SIMD: [[Reg; 2]; 8] = [
     [Reg::d7, Reg::s7],
 ];
 
-const RESERVED: Reg = Reg::x18;
-const FRAME_POINTER: Reg = Reg::x29;
+pub const FRAME_POINTER: Reg = Reg::x29;
 
 const RETURN_REGS: [[Reg; 2]; 2] = [[Reg::x0, Reg::w0], [Reg::x1, Reg::w1]];
 
