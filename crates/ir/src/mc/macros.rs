@@ -143,6 +143,19 @@ macro_rules! registers {
             }
         }
 
+        pub struct RegOffset(pub Reg, pub u32);
+        impl ::core::convert::TryFrom<$crate::Argument<'_>> for RegOffset {
+            type Error = $crate::ArgError;
+            fn try_from(value: $crate::Argument<'_>) -> Result<Self, Self::Error> {
+                let $crate::Argument::MCRegOffset(value) = value else {
+                    return Err($crate::ArgError {
+                        expected: $crate::Parameter::MCRegOffset($crate::Usage::Use, $crate::Imm::I32),
+                        found: value.parameter_ty(),
+                    });
+                };
+                Ok(RegOffset(value.0.phys().expect("expected physical register, found virtual"), value.1))
+            }
+        }
     };
 }
 pub use crate::registers;

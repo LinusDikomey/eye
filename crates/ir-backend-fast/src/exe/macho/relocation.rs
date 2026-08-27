@@ -62,3 +62,13 @@ impl RelocationType for RelocationTypeX86_64 {
         self as u8
     }
 }
+
+#[repr(u8)]
+pub enum RelocationTypeArm64 {
+    Branch26 = 2,
+}
+impl RelocationType for RelocationTypeArm64 {
+    fn into_bits(self) -> u8 {
+        self as u8
+    }
+}

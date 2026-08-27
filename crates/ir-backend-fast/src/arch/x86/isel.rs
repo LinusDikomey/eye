@@ -42,7 +42,7 @@ impl crate::InstructionSelector<X86> for InstructionSelector {
             {
                 let decl_ty: TypeId = body.typed_args(&inst);
                 let layout = ir::type_layout(types[decl_ty], types, env.primitives());
-                stack_slots.insert(r, state.alloc_stack(layout));
+                stack_slots.insert(r, state.legacy_alloc_stack(layout));
             }
             _ = regs.visit_primitive_slots_mut::<Infallible, _>(
                 r,
@@ -639,7 +639,7 @@ ir::visitor! {
             ir.replace(env, r, x86.call_function(function_id));
         } else if inst.module() != dialects.x86.id() {
             // all instructions should be handled
-            unreachable!("unhandled instruction at {r}: {}", env.get_inst_name(ir.get_inst(r)));
+            unreachable!("unhandled instruction at {r}: {}", env.get_inst_name(inst));
         }
     };
 }

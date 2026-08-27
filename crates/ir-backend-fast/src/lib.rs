@@ -6,7 +6,7 @@ use std::path::Path;
 use dmap::DHashMap;
 use ir::{
     Argument, BlockGraph, BlockId, Environment, FunctionId, FunctionIr, Layout, LocalFunctionId,
-    MCReg, ModuleId, ModuleOf, Primitive, Ref, Type, TypeId, Types,
+    MCReg, ModuleId, ModuleOf, Primitive, Ref, StackSlot, Type, TypeId, Types,
     mc::{Abi, Mc, McInst, parallel_copy, parallel_copy_args},
     modify::IrModify,
     pipeline::FunctionPass,
@@ -178,16 +178,44 @@ pub fn arith_class(r: Ref, ir: &IrModify, types: &Types) -> (ArithClass, Size) {
 #[derive(Default)]
 pub struct BackendState {
     pub stack_size: u32,
+    stack_slots: Vec<StackAlloc>,
 }
 impl BackendState {
+    /// NOTE: This is a legacy functions that should be phased out once everything is ported to the
+    /// new stack slot system.
+    ///
     /// creates a properly aligned stack index assuming the stack frame's total alignment is at least
     /// as large as the one from the Layout.
     /// Assumes a stack growing down, subtract layout.size if the stack should grow up.
-    pub fn alloc_stack(&mut self, layout: Layout) -> u32 {
+    pub fn legacy_alloc_stack(&mut self, layout: Layout) -> u32 {
         let align = layout.align.get() as u32;
         self.stack_size = self.stack_size.next_multiple_of(align);
         self.stack_size += layout.size as u32;
         self.stack_size
+    }
+
+    /// returns a fresh stack slot holding the supplied layout
+    pub fn new_stack_slot(&mut self, layout: Layout) -> StackSlot {
+        let slot = StackSlot::new(self.stack_slots.len() as u32);
+        self.stack_slots.push(StackAlloc { layout });
+        slot
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct StackAlloc {
+    pub layout: Layout,
+}
+impl StackAlloc {
+    /// returns a new StackAlloc that can fit both of the supplied
+    #[must_use]
+    pub fn merge(self, other: Self) -> Self {
+        Self {
+            layout: Layout {
+                size: self.layout.size.max(other.layout.size),
+                align: self.layout.align.max(other.layout.align),
+            },
+        }
     }
 }
 

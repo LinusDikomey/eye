@@ -1,6 +1,6 @@
-use ir::parameter_types::Int32;
+use ir::{FunctionId, parameter_types::Int32};
 
-use crate::arch::arm::isa::{Arm, Reg, RegClass};
+use crate::arch::arm::isa::{Arm, Reg, RegClass, RegOffset};
 
 type Emitter<'a> = crate::emit::Emitter<'a, Reg>;
 
@@ -24,8 +24,12 @@ impl crate::Emit for Arm {
             text.extend(fmov_reg((to, from), sf).to_le_bytes());
         } else {
             let zr = if sf { Reg::xzr } else { Reg::wzr };
-            text.extend(orr((to, from, zr), sf).to_le_bytes());
+            text.extend(orr((to, zr, from), sf).to_le_bytes());
         }
+    }
+
+    fn implement_stack_addr(_text: &mut Vec<u8>, _to: Self::Reg, _slot: ir::StackSlot) {
+        todo!()
     }
 
     fn emit(e: &mut Emitter, inst: ir::TypedInstruction<Self>) {
@@ -35,32 +39,78 @@ impl crate::Emit for Arm {
             I::orr64 => orr(e.ir.typed_args(&inst), true),
             I::movz32 | I::movz64 => mov_imm(0b10, e.ir.typed_args(&inst), inst.op() == I::movz64),
             I::movk32 | I::movk64 => mov_imm(0b11, e.ir.typed_args(&inst), inst.op() == I::movk64),
-            I::ldr8 | I::ldr16 | I::ldr32 | I::ldr64 => {
+            I::ldrb32
+            | I::ldrh32
+            | I::ldr32
+            | I::ldr64
+            | I::strb32
+            | I::strh32
+            | I::str32
+            | I::str64 => {
+                let is_load = matches!(inst.op(), I::ldrb32 | I::ldrh32 | I::ldr32 | I::ldr64);
+                let (dst, mem): (Reg, RegOffset) = e.ir.typed_args(&inst);
+                let mut offset = mem.1;
                 let size = match inst.op() {
-                    I::ldr8 => Size::S1,
-                    I::ldr16 => Size::S2,
-                    I::ldr32 => Size::S4,
-                    I::ldr64 => Size::S8,
+                    I::ldrb32 | I::strb32 => Size::S1,
+                    I::ldrh32 | I::strh32 => {
+                        offset >>= 1;
+                        Size::S2
+                    }
+                    I::ldr32 | I::str32 => {
+                        offset >>= 2;
+                        Size::S4
+                    }
+                    I::ldr64 | I::str64 => {
+                        offset >>= 3;
+                        Size::S8
+                    }
                     _ => unreachable!(),
                 };
-                let (dst, src, offset): (Reg, Reg, Int32) = e.ir.typed_args(&inst);
-                if offset > (1 << 12) {
+                if mem.1 > (1 << 12) {
                     panic!("ldr offset too large");
                 }
-                load_store_unsigned_imm(size, offset as u16, src, dst)
+                load_store_unsigned_imm(is_load, size, offset as u16, mem.0, dst)
             }
-            I::ldp32 | I::ldp64 => {
-                let (dst1, dst2, ptr, imm): (Reg, Reg, Reg, Int32) = e.ir.typed_args(&inst);
+            I::ldp32 | I::ldp64 | I::stp32 | I::stp64 => {
+                let is_load = matches!(inst.op(), I::ldp32 | I::ldp64);
+                let (dst1, dst2, mem): (Reg, Reg, RegOffset) = e.ir.typed_args(&inst);
                 load_store_pair_signed_imm(
-                    if inst.op() == I::ldp64 { 0b10 } else { 0b00 },
-                    true,
-                    imm as i8,
+                    if matches!(inst.op(), I::ldp64 | I::stp64) {
+                        0b10
+                    } else {
+                        0b00
+                    },
+                    is_load,
+                    mem.1 as i8,
                     dst2,
-                    ptr,
+                    mem.0,
                     dst1,
                 )
             }
             I::ret0 | I::ret64 | I::ret128 => ret(e.ir.typed_args(&inst)),
+
+            I::add_i32 | I::add_i64 => add_sub_imm(
+                inst.op() == I::add_i64,
+                false,
+                false,
+                false,
+                e.ir.typed_args(&inst),
+            ),
+            I::sub_i32 | I::sub_i64 => add_sub_imm(
+                inst.op() == I::sub_i64,
+                true,
+                false,
+                false,
+                e.ir.typed_args(&inst),
+            ),
+            I::bl_function => {
+                let function: FunctionId = e.ir.typed_args(&inst);
+                e.relocations.push(crate::Relocation::FunctionCall(
+                    function.function,
+                    e.text.len() as u64,
+                ));
+                0b100101 << 26
+            }
         };
         e.text.extend(op.to_le_bytes());
     }
@@ -144,14 +194,16 @@ enum Size {
     S8 = 0b11,
 }
 
-fn load_store_unsigned_imm(size: Size, imm12: u16, rn: Reg, rt: Reg) -> u32 {
-    debug_assert!(imm12 < 1 << 12);
-    ((size as u32) << 30)
-        | (0b111001 << 24)
-        | (0b01 << 22)
-        | ((imm12 as u32) << 10)
-        | ((rn.index() as u32) << 5)
-        | rt.index() as u32
+fn load_store_unsigned_imm(load: bool, size: Size, imm12: u16, rn: Reg, rt: Reg) -> u32 {
+    encode! {
+        31..30 size as u32,
+        29..24 0b111001,
+        23     false,
+        22     load,
+        21..10 imm12,
+        9..5 rn.index(),
+        4..0 rt.index(),
+    }
 }
 
 fn load_store_pair_signed_imm(opc: u8, load: bool, imm7: i8, rt2: Reg, rn: Reg, rt: Reg) -> u32 {
@@ -182,5 +234,26 @@ fn ret(rn: Reg) -> u32 {
         31..10 0b1101011001011111000000,
          9..5  rn.index(),
          4..0 0b00000,
+    }
+}
+
+fn add_sub_imm(
+    sf: bool,
+    sub: bool,
+    set_flags: bool,
+    shift: bool,
+    (rd, rn, imm12): (Reg, Reg, u32),
+) -> u32 {
+    debug_assert!(imm12 < (1 << 12));
+
+    encode! {
+        31 sf,
+        30 sub,
+        29 set_flags,
+        28..23 0b100010,
+        22 shift,
+        21..10 imm12,
+        9..5 rn.index(),
+        4..0 rd.index(),
     }
 }

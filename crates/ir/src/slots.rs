@@ -106,6 +106,20 @@ impl<V: Copy> Slots<V> {
         self.slots[slot]
     }
 
+    pub fn get_one_mut(&mut self, r: Ref) -> &mut V {
+        let r = r.into_ref().expect("Can't get slot for value ref") as usize;
+        let slot = self.slot_map[r] as usize;
+        debug_assert_eq!(
+            self.slot_map
+                .get(r + 1)
+                .map(|i| *i as usize)
+                .unwrap_or(self.slots.len()),
+            slot + 1,
+            "Tried to get_one a Value in a slot not containing a single value"
+        );
+        &mut self.slots[slot]
+    }
+
     // gets an exclusive range of values
     pub fn get_range(&self, start: Ref, end: Ref) -> &[V] {
         let start = self.slot_map[start.into_ref().expect("Can't get slots for value ref") as usize]

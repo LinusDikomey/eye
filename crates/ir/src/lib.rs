@@ -147,6 +147,7 @@ pub struct TypeId(u32);
 impl TypeId {
     pub const UNIT: Self = Self(0);
     pub const I1: Self = Self(1);
+    pub const PTR: Self = Self(2);
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -278,20 +279,13 @@ impl BlockTarget<'static> {
 pub struct MCReg(u32);
 impl fmt::Debug for MCReg {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.is_dead() {
-            write!(f, "!")?;
-        }
-        if let Some(i) = self.virt() {
-            write!(f, "${i}")
-        } else {
-            let i: mc::UnknownRegister = self.phys().unwrap();
-            write!(f, "%{}", i.encode())
-        }
+        write!(f, "{self}")
     }
 }
 impl MCReg {
-    const VIRT_BIT: u32 = 1 << 31;
-    const DEAD_BIT: u32 = 1 << 30;
+    const STACK_SLOT_BIT: u32 = 1 << 31;
+    const VIRT_BIT: u32 = 1 << 30;
+    const DEAD_BIT: u32 = 1 << 29;
 
     pub const fn from_inner(inner: u32) -> Self {
         Self(inner)
@@ -304,6 +298,10 @@ impl MCReg {
             "highest bit shouldn't be set for physical register encoding"
         );
         Self(v)
+    }
+
+    pub fn is_stack_slot(self) -> bool {
+        self.0 & Self::STACK_SLOT_BIT != 0
     }
 
     pub fn is_virt(self) -> bool {
@@ -331,12 +329,42 @@ impl MCReg {
             .then_some(self.0 & !(Self::VIRT_BIT | Self::DEAD_BIT))
     }
 
+    pub fn stack_slot(self) -> Option<StackSlot> {
+        self.is_stack_slot()
+            .then_some(StackSlot(self.0 & !Self::STACK_SLOT_BIT))
+    }
+
     pub const fn from_virt(r: u32) -> MCReg {
         assert!(
-            r & (Self::VIRT_BIT | Self::DEAD_BIT) == 0,
+            r & (Self::VIRT_BIT | Self::DEAD_BIT | Self::STACK_SLOT_BIT) == 0,
             "virtual register value too high"
         );
         Self(r | Self::VIRT_BIT)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct MCRegOffset(pub MCReg, pub u32);
+impl MCRegOffset {}
+
+pub struct StackSlot(u32);
+impl StackSlot {
+    pub fn new(value: u32) -> Self {
+        debug_assert!(value < (1 << 31));
+        Self(value)
+    }
+
+    pub fn into_inner(self) -> u32 {
+        self.0
+    }
+
+    pub fn idx(self) -> usize {
+        self.0 as usize
+    }
+}
+impl From<StackSlot> for MCReg {
+    fn from(value: StackSlot) -> Self {
+        Self(value.0 | Self::STACK_SLOT_BIT)
     }
 }
 
@@ -500,13 +528,24 @@ pub struct Types {
 impl Types {
     pub fn new() -> Self {
         Self {
-            types: vec![Type::UNIT, Type::Primitive(Primitive::I1.into())],
+            types: vec![
+                Type::UNIT,
+                Type::Primitive(Primitive::I1.into()),
+                Type::Primitive(Primitive::Ptr.into()),
+            ],
         }
     }
 
     pub fn add(&mut self, ty: impl Into<Type>) -> TypeId {
+        let ty = ty.into();
+        match ty {
+            Type::Tuple(ids) if ids.is_empty() => return TypeId::UNIT,
+            Type::Primitive(p) if p == Primitive::I1.id() => return TypeId::I1,
+            Type::Primitive(p) if p == Primitive::Ptr.id() => return TypeId::PTR,
+            _ => {}
+        }
         let id = TypeId(self.types.len() as _);
-        self.types.push(ty.into());
+        self.types.push(ty);
         id
     }
 
@@ -1082,6 +1121,7 @@ pub enum ArgumentMut<'a> {
         idx: &'a mut u32,
     },
     MCReg(Usage, &'a mut MCReg),
+    MCRegOffset(Usage, Imm, &'a mut MCReg, &'a mut u32),
 }
 
 /// how many arguments are stored inline with each instruction.
@@ -1127,6 +1167,7 @@ impl<'a, 'args> Iterator for ArgsIter<'a, 'args> {
                 idx: arg(),
             }),
             Parameter::MCReg(_) => Argument::MCReg(MCReg(arg())),
+            Parameter::MCRegOffset(_, _) => Argument::MCRegOffset(MCRegOffset(MCReg(arg()), arg())),
         })
     }
 }
@@ -1168,7 +1209,8 @@ pub fn update_inst_refs(
             | Parameter::TypeId
             | Parameter::FunctionId
             | Parameter::GlobalId
-            | Parameter::MCReg(_) => idx += param.slot_count(),
+            | Parameter::MCReg(_)
+            | Parameter::MCRegOffset(_, _) => idx += param.slot_count(),
         };
         for &param in func.params() {
             visit_param(param);
@@ -1206,7 +1248,8 @@ pub fn update_inst_refs(
                 | Parameter::TypeId
                 | Parameter::FunctionId
                 | Parameter::GlobalId
-                | Parameter::MCReg(_) => idx += param.slot_count(),
+                | Parameter::MCReg(_)
+                | Parameter::MCRegOffset(_, _) => idx += param.slot_count(),
             }
         }
     }
@@ -1352,6 +1395,12 @@ impl<'a> Iterator for ArgIterMut<'a> {
             Parameter::MCReg(usage) => {
                 ArgumentMut::MCReg(usage, unsafe { transmute(self.storage.next().unwrap()) })
             }
+            Parameter::MCRegOffset(usage, imm) => ArgumentMut::MCRegOffset(
+                usage,
+                imm,
+                unsafe { transmute(self.storage.next().unwrap()) },
+                self.storage.next().unwrap(),
+            ),
         })
     }
 
@@ -1393,6 +1442,11 @@ impl DoubleEndedIterator for ArgIterMut<'_> {
             Parameter::MCReg(usage) => ArgumentMut::MCReg(usage, unsafe {
                 transmute(self.storage.next_back().unwrap())
             }),
+            Parameter::MCRegOffset(usage, imm) => {
+                let imm_val = self.storage.next_back().unwrap();
+                let reg = unsafe { transmute(self.storage.next_back().unwrap()) };
+                ArgumentMut::MCRegOffset(usage, imm, reg, imm_val)
+            }
         })
     }
 }
@@ -1449,7 +1503,7 @@ macro_rules! primitives {
 }
 
 pub mod parameter_types {
-    pub use super::{BlockId, BlockTarget, FunctionId, GlobalId, MCReg, Ref, TypeId};
+    pub use super::{BlockId, BlockTarget, FunctionId, GlobalId, MCReg, MCRegOffset, Ref, TypeId};
     pub type Int = u64;
     pub type Float = f64;
     pub type Int32 = u32;
@@ -1468,6 +1522,8 @@ pub enum Parameter {
     FunctionId,
     GlobalId,
     MCReg(Usage),
+    /// `[register + offset]` usually for memory operands
+    MCRegOffset(Usage, Imm),
 }
 impl Parameter {
     pub fn slot_count(self) -> usize {
@@ -1482,8 +1538,64 @@ impl Parameter {
             | Parameter::Float
             | Parameter::BlockTarget
             | Parameter::FunctionId
-            | Parameter::GlobalId => 2,
+            | Parameter::GlobalId
+            | Parameter::MCRegOffset(_, _) => 2,
         }
+    }
+}
+
+/// number of bits and signedness that an immediate value allows
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Imm {
+    pub bits: u8,
+    pub signed: bool,
+    pub align: u8,
+}
+impl Imm {
+    pub const fn new(bits: u8, signed: bool, align: u8) -> Self {
+        Self {
+            bits,
+            signed,
+            align,
+        }
+    }
+    pub const U32: Self = Self::new(32, false, 1);
+    pub const I32: Self = Self::new(32, true, 1);
+
+    pub fn fits(self, n: u32) -> bool {
+        if !n.is_multiple_of(u32::from(self.align)) {
+            return false;
+        }
+        if self.bits >= 32 {
+            return true;
+        }
+        if self.signed {
+            let min = -(1i32 << (self.bits - 1));
+            let max = (1i32 << (self.bits - 1)) - 1;
+            (min..=max).contains(&(n as i32))
+        } else {
+            n < (1u32 << self.bits as u32)
+        }
+    }
+
+    /// Validates that the number fits, then divides by align
+    /// and shifts the sign bit to the correct position
+    pub fn encode(self, n: u32) -> Option<u32> {
+        self.fits(n).then(|| {
+            let n = n / u32::from(self.align);
+            let final_bits = self.bits - self.align.ilog2() as u8;
+            if self.signed && final_bits < 32 {
+                let mask = (1u32 << final_bits) - 1;
+                n & mask
+            } else {
+                n
+            }
+        })
+    }
+}
+impl fmt::Display for Imm {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}{}", if self.signed { "i" } else { "u" }, self.bits)
     }
 }
 
@@ -1570,7 +1682,6 @@ macro_rules! instruction {
         $(
             $arg_name: ident: $arg: ident
             $(<$life: lifetime>)?
-            $(($arg_param: expr))?
         )*
         $(!$attr: ident $(= $attr_value: expr)?),*
         ;
@@ -1602,7 +1713,6 @@ macro_rules! instruction {
         $(
             $arg_name: ident: $arg: ident
             $(<$life: lifetime>)?
-            $(($arg_param: expr))?
         )*
         $(!$attr: ident $(= $attr_value: expr)?),*
         => unit;
@@ -1652,7 +1762,7 @@ macro_rules! instructions_inner {
             $(
                 $arg_name: ident: $arg: ident
                 $(<$life: lifetime>)?
-                $(($arg_param: expr))?
+                $(( $($arg_param: expr),* ))?
             )*
             $(!$attr: ident $(= $attr_value: expr)?),*
             $(=> $return: ident)?
@@ -1666,7 +1776,6 @@ macro_rules! instructions_inner {
                 $instruction $(<$inst_life>)?
                 $(
                   $arg_name: $arg $(<$life>)?
-                  $(($arg_param))?
                 )*
                 $(!$attr $(= $attr_value)?),*
                 => $all_return
@@ -1684,7 +1793,7 @@ macro_rules! instructions_inner {
             $(
                 $arg_name: ident: $arg: ident
                 $(<$life: lifetime>)?
-                $(($arg_param: expr))?
+                $(( $($arg_param: expr),* ))?
             )*
             $(!$attr: ident $(= $attr_value: expr)?),*
             $(=> $return: ident)?
@@ -1698,7 +1807,6 @@ macro_rules! instructions_inner {
                 $instruction $(<$inst_life>)?
                 $(
                   $arg_name: $arg $(<$life>)?
-                  $(($arg_param))?
                 )*
                 $(!$attr $(= $attr_value)?),*
                 $(=> $return)?
@@ -1723,7 +1831,7 @@ macro_rules! instructions {
             $(
                 $arg_name: ident: $arg: ident
                 $(<$life: lifetime>)?
-                $(($arg_param: expr))?
+                $(( $($arg_param: expr),* ))?
             )*
             $(!$attr: ident $(= $attr_value: expr)?),*
             $(=> $return: ident)?
@@ -1751,7 +1859,7 @@ macro_rules! instructions {
                 $(
                     $arg_name : $arg
                     $(<$life>)?
-                    $(($arg_param))?
+                    $(( $($arg_param),* ))?
                 )*
                 $(!$attr $(= $attr_value)?),*
                 $(=> $return)?
@@ -1782,7 +1890,7 @@ macro_rules! instructions {
                             $crate::Function::declare_inst(
                                  stringify!($instruction),
                                  $crate::Types::new(),
-                                 vec![ $( $crate::Parameter::$arg $(($arg_param))*, )* ],
+                                 vec![ $( $crate::Parameter::$arg $(( $($arg_param),* ))*, )* ],
                                  attrs,
                             )
                         },
@@ -1793,7 +1901,7 @@ macro_rules! instructions {
             fn params(self) -> &'static [$crate::Parameter] {
                 match self {
                     $(
-                        Self::$instruction => &[$( $crate::Parameter::$arg $(($arg_param))*, )*],
+                        Self::$instruction => &[$( $crate::Parameter::$arg $(( $($arg_param),* ))*, )*],
                     )*
                 }
             }

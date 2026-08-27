@@ -31,6 +31,10 @@ impl Emit for X86 {
         }
     }
 
+    fn implement_stack_addr(_text: &mut Vec<u8>, _to: Self::Reg, _slot: ir::StackSlot) {
+        unreachable!("x86 backend does not use mc.StackAddr for now")
+    }
+
     fn emit(e: &mut Emitter<Reg>, inst: TypedInstruction<Self>) {
         use X86 as I;
         let op = inst.op();

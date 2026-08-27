@@ -4,8 +4,8 @@ use std::marker::PhantomData;
 use color_format::{cwrite, cwriteln};
 
 use crate::{
-    Argument, Environment, Function, FunctionIr, Instruction, MCReg, Module, Parameter, Ref, Types,
-    builtins,
+    Argument, Environment, Function, FunctionIr, Instruction, MCReg, MCRegOffset, Module,
+    Parameter, Ref, Types, builtins,
     mc::{Register, UnknownRegister},
 };
 
@@ -28,6 +28,9 @@ impl fmt::Display for crate::BlockId {
 
 impl fmt::Display for MCReg {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(slot) = self.stack_slot() {
+            return cwrite!(f, "#g<s{}>", slot.into_inner());
+        }
         if self.is_dead() {
             write!(f, "!")?;
         }
@@ -68,6 +71,7 @@ impl fmt::Display for ParameterDisplay<'_> {
             crate::Parameter::FunctionId => cwrite!(f, "#g<function>"),
             crate::Parameter::GlobalId => cwrite!(f, "#g<global>"),
             crate::Parameter::MCReg(usage) => cwrite!(f, "#g<mcreg>({usage})"),
+            crate::Parameter::MCRegOffset(usage, imm) => cwrite!(f, "[#g<mcreg>({usage}) + {imm}]"),
         }
     }
 }
@@ -367,6 +371,31 @@ impl<'a, R: Register> fmt::Display for InstructionDisplay<'a, R> {
                         cwrite!(f, "#c<${}>", v)?;
                     } else {
                         cwrite!(f, "#c<%{}>", r.phys::<R>().unwrap().to_str())?;
+                    }
+                }
+                Argument::MCRegOffset(MCRegOffset(r, imm_val)) => {
+                    let Parameter::MCRegOffset(_, imm) = param else {
+                        unreachable!()
+                    };
+                    write!(f, " [")?;
+                    if let Some(stack) = r.stack_slot() {
+                        cwrite!(f, "#g<s{}>", stack.into_inner())?;
+                    } else {
+                        if r.is_dead() {
+                            write!(f, "!")?;
+                        }
+                        if let Some(v) = r.virt() {
+                            cwrite!(f, "#c<${}>", v)?;
+                        } else {
+                            cwrite!(f, "#c<%{}>", r.phys::<R>().unwrap().to_str())?;
+                        }
+                    }
+                    if imm_val == 0 {
+                        write!(f, "]")?;
+                    } else if imm.signed {
+                        write!(f, " + {}]", imm_val as i32)?;
+                    } else {
+                        write!(f, " + {}]", imm_val)?;
                     }
                 }
             }

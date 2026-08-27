@@ -1,7 +1,8 @@
 use std::collections::VecDeque;
 
 use ir::{
-    Argument, Bitmap, BlockId, Environment, FunctionIr, ModuleOf, TypedInstruction,
+    Argument, Bitmap, BlockId, Environment, FunctionIr, MCReg, ModuleOf, StackSlot,
+    TypedInstruction,
     block_graph::Blocks,
     mc::{Mc, McInst, ParcopySolver, Register},
 };
@@ -12,6 +13,7 @@ pub trait Emit: McInst {
     const TMP: Self::Reg;
 
     fn implement_copy(text: &mut Vec<u8>, to: Self::Reg, from: Self::Reg);
+    fn implement_stack_addr(text: &mut Vec<u8>, to: Self::Reg, slot: StackSlot);
     fn emit(e: &mut Emitter<Self::Reg>, inst: TypedInstruction<Self>);
 }
 
@@ -47,6 +49,10 @@ impl<'a, R: Register> Emitter<'a, R> {
             |to, from| I::implement_copy(self.text, to, from),
             I::TMP,
         );
+    }
+
+    pub fn materialize_stack_addr<I: Emit<Reg = R>>(&mut self, reg: MCReg, slot: StackSlot) {
+        I::implement_stack_addr(self.text, reg.phys().unwrap(), slot);
     }
 }
 
@@ -98,6 +104,11 @@ pub fn emit<I: Emit>(
                             r.phys::<I::Reg>().expect("need physical registers")
                         });
                         emitter.parcopy::<I>(args);
+                    }
+                    Mc::StackValue => {
+                        let (reg, slot): (MCReg, u32) = ir.typed_args(&inst);
+                        let slot = StackSlot::new(slot);
+                        emitter.materialize_stack_addr::<I>(reg, slot);
                     }
                 }
                 continue;

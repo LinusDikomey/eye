@@ -298,6 +298,14 @@ fn encode_arg(
         }
         (Argument::GlobalId(id), crate::Parameter::GlobalId) => (id.module.0, Some(id.idx)),
         (Argument::MCReg(r), crate::Parameter::MCReg(_)) => (r.0, None),
+        (Argument::MCRegOffset(ro), crate::Parameter::MCRegOffset(_, imm)) => {
+            debug_assert!(
+                imm.fits(ro.1),
+                "Written MCRegOffset immediate value {} doesn't fit into {imm}",
+                ro.1
+            );
+            (ro.0.0, Some(ro.1))
+        }
         _ => panic!("argument was of unexpected kind, expected {param:?}"),
     };
     std::iter::once(a).chain(b)

@@ -2,6 +2,7 @@ mod abi;
 mod emit;
 mod isa;
 mod isel;
+mod stack;
 
 use crate::CodegenFn;
 
@@ -30,6 +31,7 @@ pub fn init_codegen(
         isa: arm,
         abi,
     }));
+    pipeline.add_function_pass(Box::new(stack::StackFrameHandling { arm, abi }));
     // TODO: add PrologueEpilogueInsertion pass
     Box::new(move |env, ir, mut types, name, text, relocations| {
         let mir = pipeline.process_function_with_regs::<isa::Reg>(env, ir, &mut types, name);

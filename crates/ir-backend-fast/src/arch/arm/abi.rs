@@ -1,16 +1,13 @@
 use std::convert::Infallible;
 
 use ir::{
-    BlockId, Environment, MCReg, ModuleOf, Primitive, PrimitiveInfo, Ref, Type, Types,
+    Argument, BlockId, Environment, MCReg, ModuleOf, Primitive, PrimitiveInfo, Ref, Type, Types,
     mc::{Abi, Mc, parallel_copy},
     modify::{Insert, IrModify},
     slots::Slots,
 };
 
-use crate::arch::arm::{
-    isa::{Arm, Reg, RegBits, TMP_REGISTER},
-    isel,
-};
+use crate::arch::arm::isa::{Arm, Reg, RegBits, TMP_REGISTER};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ArmAbi {
@@ -50,16 +47,56 @@ impl Abi<Arm> for ArmAbi {
 
     fn implement_call(
         &self,
-        _call_inst: Ref,
-        _ir: &mut IrModify,
-        _env: &Environment,
-        _mc: ModuleOf<ir::mc::Mc>,
-        _i: ModuleOf<Arm>,
-        _types: &ir::Types,
-        _regs: &ir::slots::Slots<ir::MCReg>,
-        _skip_first_arg: bool,
+        call_inst: Ref,
+        ir: &mut IrModify,
+        env: &Environment,
+        mc: ModuleOf<ir::mc::Mc>,
+        arm: ModuleOf<Arm>,
+        types: &ir::Types,
+        regs: &ir::slots::Slots<ir::MCReg>,
+        skip_first_arg: bool,
     ) {
-        todo!()
+        let inst = ir.get_inst(call_inst);
+        let args = ir
+            .args_iter(inst, env)
+            .skip(skip_first_arg as usize)
+            .map(|arg| {
+                let Argument::Ref(r) = arg else {
+                    unreachable!()
+                };
+                r
+            });
+        // PERF: collecting here to not borrow ir
+        let args: Box<[Ref]> = args.collect();
+        let mut alloc = ParamAllocator::new();
+        for arg in args {
+            let location = classify(types, types[ir.get_ref_ty(arg)], env.primitives());
+            let storage = alloc.alloc(location, *self);
+            insert_regs(
+                ir,
+                env,
+                mc,
+                arm,
+                types,
+                regs,
+                Insert::Before(call_inst),
+                arg,
+                storage,
+            );
+        }
+        let ret_location = classify(types, types[ir.get_ref_ty(call_inst)], env.primitives());
+        let storage = ParamAllocator::new().alloc(ret_location, *self);
+        extract_regs(
+            ir,
+            env,
+            mc,
+            arm,
+            types,
+            regs,
+            Insert::After(call_inst),
+            call_inst,
+            storage,
+        );
     }
 
     fn implement_return(
@@ -115,7 +152,7 @@ impl ArmAbi {
     }
 }
 
-const CALL_STACK_ALIGN: u64 = 16;
+pub const CALL_STACK_ALIGN: u64 = 16;
 
 const ABI_PARAM_REGISTERS_INTEGER: [[Reg; 2]; 8] = [
     [Reg::x0, Reg::w0],
@@ -166,19 +203,19 @@ impl ParamAllocator {
             } => {
                 let reg = match class {
                     AbiClass::None => Reg::xzr,
-                    AbiClass::Core => {
+                    AbiClass::Core(width) => {
                         if self.ngrn == 8 {
                             todo!("stack params")
                         }
-                        let reg = ABI_PARAM_REGISTERS_INTEGER[self.ngrn as usize][0];
+                        let reg = ABI_PARAM_REGISTERS_INTEGER[self.ngrn as usize][width as usize];
                         self.ngrn += 1;
                         reg
                     }
-                    AbiClass::SimdFp => {
+                    AbiClass::SimdFp(width) => {
                         if self.nsrn == 8 {
                             todo!("stack params")
                         }
-                        let reg = ABI_PARAM_REGISTERS_SIMD[self.nsrn as usize][0];
+                        let reg = ABI_PARAM_REGISTERS_SIMD[self.nsrn as usize][width as usize];
                         self.nsrn += 1;
                         reg
                     }
@@ -189,8 +226,9 @@ impl ParamAllocator {
                 classes: [a, b],
                 align_16,
             } => {
-                debug_assert!(
-                    a == AbiClass::Core && b == AbiClass::Core,
+                std::debug_assert_matches!(
+                    (a, b),
+                    (AbiClass::Core(_), AbiClass::Core(_)),
                     "Should only have 2 core classes for larger types/aggregates"
                 );
                 if align_16 && target != ArmAbi::Darwin64 {
@@ -301,19 +339,6 @@ fn extract_regs(
             );
             ir.add_before_or_after(env, position, parallel_copy(mc, &copies));
         }
-        Storage::Pointer(reg) => {
-            isel::load(
-                ir,
-                env,
-                types,
-                position,
-                regs,
-                arm,
-                arg,
-                MCReg::from_phys(reg),
-                ty,
-            );
-        }
         Storage::Stack(_) => todo!(),
     }
 }
@@ -354,7 +379,7 @@ fn insert_regs(
         return;
     }
     let Storage::Registers([dst_a, dst_b]) = storage else {
-        unreachable!()
+        todo!()
     };
     let mut first_inserted_a = true;
     let mut first_inserted_b = true;
@@ -406,8 +431,8 @@ fn insert_regs(
 fn insert(
     ir: &mut IrModify,
     env: &Environment,
-    _mc: ModuleOf<Mc>,
-    arm: ModuleOf<Arm>,
+    mc: ModuleOf<Mc>,
+    _arm: ModuleOf<Arm>,
     position: Insert,
     dst: Reg,
     src: MCReg,
@@ -418,17 +443,12 @@ fn insert(
     if !first || reg_offset != 0 {
         todo!()
     }
-    ir.add_before_or_after(
-        env,
-        position,
-        arm.orr64(dst, MCReg::from_phys(Reg::xzr), src),
-    );
+    ir.add_before_or_after(env, position, parallel_copy(mc, &[dst, src]));
 }
 
 enum Storage {
     Registers([Reg; 2]),
     Hfa([Reg; 4]),
-    Pointer(Reg),
     Stack(u32),
 }
 
@@ -469,8 +489,15 @@ const CALLEE_SAVED: [Reg; 10] = [
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AbiClass {
     None,
-    Core,
-    SimdFp,
+    Core(RegWidth),
+    SimdFp(RegWidth),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// used to index into abi register lists to select the correct width
+enum RegWidth {
+    W64 = 0,
+    W32 = 1,
 }
 
 enum Location {
@@ -494,21 +521,26 @@ fn classify(types: &Types, ty: Type, primitives: &[PrimitiveInfo]) -> Location {
             | Primitive::I8
             | Primitive::I16
             | Primitive::I32
-            | Primitive::I64
             | Primitive::U8
             | Primitive::U16
-            | Primitive::U32
-            | Primitive::U64
-            | Primitive::Ptr => Location::Registers {
-                classes: [AbiClass::Core, AbiClass::None],
+            | Primitive::U32 => Location::Registers {
+                classes: [AbiClass::Core(RegWidth::W32), AbiClass::None],
+                align_16: false,
+            },
+            Primitive::I64 | Primitive::U64 | Primitive::Ptr => Location::Registers {
+                classes: [AbiClass::Core(RegWidth::W64), AbiClass::None],
                 align_16: false,
             },
             Primitive::I128 | Primitive::U128 => Location::Registers {
-                classes: [AbiClass::Core; 2],
+                classes: [AbiClass::Core(RegWidth::W64); 2],
                 align_16: true,
             },
-            Primitive::F32 | Primitive::F64 => Location::Registers {
-                classes: [AbiClass::SimdFp, AbiClass::None],
+            Primitive::F32 => Location::Registers {
+                classes: [AbiClass::SimdFp(RegWidth::W32), AbiClass::None],
+                align_16: false,
+            },
+            Primitive::F64 => Location::Registers {
+                classes: [AbiClass::SimdFp(RegWidth::W64), AbiClass::None],
                 align_16: false,
             },
         },
@@ -536,12 +568,16 @@ fn classify(types: &Types, ty: Type, primitives: &[PrimitiveInfo]) -> Location {
                             classes: [AbiClass::None; 2],
                             align_16: false,
                         },
-                        1..=8 => Location::Registers {
-                            classes: [AbiClass::Core, AbiClass::None],
+                        1..=4 => Location::Registers {
+                            classes: [AbiClass::Core(RegWidth::W32), AbiClass::None],
+                            align_16: false,
+                        },
+                        5..=8 => Location::Registers {
+                            classes: [AbiClass::Core(RegWidth::W64), AbiClass::None],
                             align_16: false,
                         },
                         9..=16 => Location::Registers {
-                            classes: [AbiClass::Core; 2],
+                            classes: [AbiClass::Core(RegWidth::W64); 2],
                             align_16: layout.align.get() > 8,
                         },
                         17.. => Location::Memory,

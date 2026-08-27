@@ -1,5 +1,6 @@
 use crate::{
-    ArgsIter, BlockId, BlockTarget, FunctionId, GlobalId, MCReg, Parameter, Ref, TypeId, Usage,
+    ArgsIter, BlockId, BlockTarget, FunctionId, GlobalId, MCReg, MCRegOffset, Parameter, Ref,
+    TypeId, Usage,
 };
 
 #[derive(Debug, Clone)]
@@ -13,8 +14,11 @@ pub enum Argument<'a> {
     FunctionId(FunctionId),
     GlobalId(GlobalId),
     MCReg(MCReg),
+    MCRegOffset(MCRegOffset),
 }
 impl Argument<'_> {
+    /// Gets the parameter type based on the value. Note that the exact type may differ
+    /// since integer width and usage metadata are not clear based on a single value
     pub fn parameter_ty(&self) -> Parameter {
         match self {
             Argument::Ref(_) => Parameter::Ref,
@@ -26,6 +30,7 @@ impl Argument<'_> {
             Argument::FunctionId(_) => Parameter::FunctionId,
             Argument::GlobalId(_) => Parameter::GlobalId,
             Argument::MCReg(_) => Parameter::MCReg(crate::Usage::Def), // TODO: setting def here ok?
+            Argument::MCRegOffset(_) => Parameter::MCRegOffset(crate::Usage::Use, crate::Imm::U32),
         }
     }
 }
@@ -203,6 +208,24 @@ impl TryFrom<Argument<'_>> for MCReg {
         Ok(value)
     }
 }
+impl From<MCRegOffset> for Argument<'_> {
+    fn from(value: MCRegOffset) -> Self {
+        Self::MCRegOffset(value)
+    }
+}
+impl TryFrom<Argument<'_>> for MCRegOffset {
+    type Error = ArgError;
+    fn try_from(value: Argument) -> Result<Self, Self::Error> {
+        let Argument::MCRegOffset(value) = value else {
+            return Err(ArgError {
+                expected: Parameter::MCRegOffset(Usage::Use, crate::Imm::I32),
+                found: value.parameter_ty(),
+            });
+        };
+        Ok(value)
+    }
+}
+
 pub trait IntoArgs<'a> {
     type Args: ExactSizeIterator<Item = Argument<'a>>;
 

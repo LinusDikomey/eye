@@ -17,6 +17,7 @@ use crate::Environment;
 use crate::FunctionId;
 use crate::Inst;
 use crate::MCReg;
+use crate::MCRegOffset;
 use crate::ModuleOf;
 use crate::Ref;
 use crate::TypeId;
@@ -107,11 +108,6 @@ pub enum OpUsage {
     DefUse = 0b11,
 }
 
-pub struct StackSlot {
-    pub offset: u32,
-    pub size: u32,
-}
-
 pub fn parallel_copy(
     mc: ModuleOf<Mc>,
     args: &[MCReg],
@@ -140,7 +136,7 @@ pub fn used_physical_registers<R: Register>(ir: &IrModify, env: &Environment) ->
     for i in 0..ir.inst_count() {
         let inst = ir.get_inst(Ref::index(i));
         for arg in ir.args_iter(inst, env) {
-            let Argument::MCReg(r) = arg else {
+            let (Argument::MCReg(r) | Argument::MCRegOffset(MCRegOffset(r, _))) = arg else {
                 continue;
             };
             let Some(phys) = r.phys::<R>() else {

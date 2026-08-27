@@ -2,8 +2,10 @@ use std::convert::Infallible;
 
 use dmap::DHashMap;
 use ir::{
-    BlockGraph, BlockId, Environment, MCReg, ModuleOf, Ref, Type, TypeId, Types,
+    BlockGraph, BlockId, Environment, MCReg, MCRegOffset, ModuleOf, Primitive, Ref, StackSlot,
+    TypeId, Types,
     dialect::Mem,
+    mc::Mc,
     modify::{Insert, IrModify},
     rewrite::{ReverseRewriteOrder, Rewrite},
     slots::Slots,
@@ -26,40 +28,52 @@ impl crate::InstructionSelector<Arm> for InstructionSelector {
         target: &target::Target,
         state: &mut crate::BackendState,
     ) -> ir::FunctionIr {
-        let mut body = body.clone();
+        let body = body.clone();
         let mut regs = Slots::with_default(&body, types, self.tuple, MCReg::from_virt(0));
-        let mut stack_slots = DHashMap::default();
-        for r in body.refs() {
-            if let Some(inst) = body.get_inst(r).as_module(self.mem)
+        let block_graph = BlockGraph::calculate(&body, env);
+        let mut ir = IrModify::new(body);
+        for r in ir.refs() {
+            if let Some(inst) = ir.get_inst(r).as_module(self.mem)
                 && inst.op() == Mem::Decl
             {
-                let decl_ty: TypeId = body.typed_args(&inst);
+                // legacy stack slots still need to be allocated here
+                let decl_ty: TypeId = ir.typed_args(&inst);
                 let layout = ir::type_layout(types[decl_ty], types, env.primitives());
-                stack_slots.insert(r, state.alloc_stack(layout));
+
+                let slot = state.new_stack_slot(layout);
+                let reg = regs.get_one_mut(r);
+                *reg = ir.new_reg::<Reg>(RegClass::GP32);
+                ir.replace(
+                    env,
+                    r,
+                    self.mc.StackValue(*reg, slot.into_inner(), TypeId::PTR),
+                );
+                continue;
             }
             _ = regs.visit_primitive_slots_mut::<Infallible, _>(
                 r,
-                types[body.get_ref_ty(r)],
+                types[ir.get_ref_ty(r)],
                 types,
                 env.primitives(),
                 |regs, p, _offset| {
                     use ir::Primitive as P;
                     match p {
                         P::I1 | P::I8 | P::U8 | P::I16 | P::U16 | P::I32 | P::U32 => {
-                            regs[0] = body.new_reg::<Reg>(RegClass::GP32)
+                            regs[0] = ir.new_reg::<Reg>(RegClass::GP32)
                         }
-                        P::I64 | P::U64 | P::Ptr => regs[0] = body.new_reg::<Reg>(RegClass::GP64),
+                        P::I64 | P::U64 | P::Ptr => regs[0] = ir.new_reg::<Reg>(RegClass::GP64),
                         P::F32 | P::F64 | P::I128 | P::U128 => todo!(),
                     }
                     Ok(())
                 },
             )
         }
-        let block_graph = BlockGraph::calculate(&body, env);
 
-        let mut ir = IrModify::new(body);
         let args = ir.get_block_args(BlockId::ENTRY);
         abi.implement_params(args, &mut ir, env, self.mc, self.arm, types, &regs);
+
+        // legacy stack slots not used by this isel
+        let stack_slots = DHashMap::default();
         let mut ctx = IselCtx::new(
             main_module,
             env,
@@ -83,44 +97,6 @@ impl crate::InstructionSelector<Arm> for InstructionSelector {
         );
         ir.finish_and_compress(env)
     }
-}
-
-pub fn load(
-    ir: &mut IrModify,
-    env: &Environment,
-    types: &Types,
-    position: Insert,
-    regs: &Slots<MCReg>,
-    arm: ModuleOf<Arm>,
-    dst: Ref,
-    ptr: MCReg,
-    ty: Type,
-) {
-    regs.visit_primitive_slots::<Infallible, _>(
-        dst,
-        ty,
-        types,
-        env.primitives(),
-        |regs, primitive, offset| {
-            let size = primitive.byte_size();
-            if size.get() == 16 {
-                assert!(offset % 16 == 0, "unaligned load");
-                let offset = offset / 8;
-                if offset > (1 << 7) {
-                    todo!("large offsets")
-                }
-                ir.add_before_or_after(
-                    env,
-                    position,
-                    arm.ldp64(regs[0], regs[1], ptr, offset as u32),
-                );
-            } else {
-                debug_assert!(size.get() <= 8);
-                todo!()
-            }
-            Ok(())
-        },
-    );
 }
 
 ir::visitor! {
@@ -177,7 +153,171 @@ ir::visitor! {
             Size::S128 => todo!("128 bit ints")
         }
     };
+    (%r = mem.Load ptr) => {
+        ctx.load_store(ir, env, types, Insert::Before(r), true, arm, r, ptr);
+        Rewrite::Rename(Ref::UNIT)
+    };
+    (%r = mem.Store ptr value) => {
+        ctx.load_store(ir, env, types, Insert::Before(r), false, arm, value, ptr);
+        Rewrite::Rename(Ref::UNIT)
+
+    };
     (%r = cf.Ret value) => {
         ctx.abi.implement_return(value, ir, env, mc, arm, types, &ctx.regs, r);
     };
+    (%r = _) => {
+        if inst.module() == ctx.main_module {
+            ctx.abi.implement_call(r, ir, env, mc, arm, types, &ctx.regs, false);
+            let function_id = inst.function_id();
+            ir.replace(env, r, arm.bl_function(function_id));
+        } else if inst.module() != dialects.arm.id() {
+            unreachable!("unhandled instruction at {r}: {}", env.get_inst_name(inst))
+        }
+    };
+}
+
+impl<'a> IselCtx<'a, Arm> {
+    fn load_store(
+        &mut self,
+        ir: &mut IrModify,
+        env: &Environment,
+        types: &Types,
+        position: Insert,
+        load: bool,
+        arm: ModuleOf<Arm>,
+        value: Ref,
+        ptr: Ref,
+    ) {
+        let ptr: MCReg = if let Some(inst) = ir.get_inst(ptr).as_module(self.mc)
+            && inst.inst == Mc::StackValue
+        {
+            self.remove_use(ptr, ir, env);
+            let (_, slot): (MCReg, u32) = ir.typed_args(&inst);
+            // stack slot reg will be part of a load/store with an MCRegOffset
+            StackSlot::new(slot).into()
+        } else {
+            self.regs.get_one(ptr)
+        };
+        load_store_reg(ir, env, types, position, load, &self.regs, arm, value, ptr);
+    }
+}
+
+pub fn load_store_reg(
+    ir: &mut IrModify,
+    env: &Environment,
+    types: &Types,
+    position: Insert,
+    load: bool,
+    regs: &Slots<MCReg>,
+    arm: ModuleOf<Arm>,
+    value: Ref,
+    ptr: MCReg,
+) {
+    regs.visit_primitive_slots::<Infallible, _>(
+        value,
+        types[ir.get_ref_ty(value)],
+        types,
+        env.primitives(),
+        |regs, primitive, offset| {
+            match primitive {
+                Primitive::I1 | Primitive::I8 | Primitive::U8 => {
+                    if offset >= (1 << 12) {
+                        todo!("irregular/large offsets")
+                    }
+                    if load {
+                        ir.add_before_or_after(
+                            env,
+                            position,
+                            arm.ldrb32(regs[0], MCRegOffset(ptr, offset as _)),
+                        );
+                    } else {
+                        ir.add_before_or_after(
+                            env,
+                            position,
+                            arm.strb32(regs[0], MCRegOffset(ptr, offset as _)),
+                        );
+                    }
+                }
+                Primitive::I16 | Primitive::U16 => {
+                    if offset % 2 != 0 || offset >= (1 << 13) {
+                        todo!("irregular/large offsets")
+                    }
+                    if load {
+                        ir.add_before_or_after(
+                            env,
+                            position,
+                            arm.ldrh32(regs[0], MCRegOffset(ptr, offset as _)),
+                        );
+                    } else {
+                        ir.add_before_or_after(
+                            env,
+                            position,
+                            arm.strh32(regs[0], MCRegOffset(ptr, offset as _)),
+                        );
+                    }
+                }
+                Primitive::I32 | Primitive::U32 => {
+                    if offset % 4 != 0 || offset >= (1 << 14) {
+                        todo!("irregular/large offsets")
+                    }
+                    if load {
+                        ir.add_before_or_after(
+                            env,
+                            position,
+                            arm.ldr32(regs[0], MCRegOffset(ptr, offset as _)),
+                        );
+                    } else {
+                        ir.add_before_or_after(
+                            env,
+                            position,
+                            arm.str32(regs[0], MCRegOffset(ptr, offset as _)),
+                        );
+                    }
+                }
+                Primitive::I64 | Primitive::U64 | Primitive::Ptr => {
+                    if offset % 8 != 0 || offset >= (1 << 15) {
+                        todo!("irregular/large offsets")
+                    }
+                    if load {
+                        ir.add_before_or_after(
+                            env,
+                            position,
+                            arm.ldr64(regs[0], MCRegOffset(ptr, offset as _)),
+                        );
+                    } else {
+                        ir.add_before_or_after(
+                            env,
+                            position,
+                            arm.str64(regs[0], MCRegOffset(ptr, offset as _)),
+                        );
+                    }
+                }
+                Primitive::I128 | Primitive::U128 => {
+                    if offset % 8 != 0 || offset >= (1 << 10) {
+                        todo!("irregular/large offsets")
+                    }
+                    if load {
+                        ir.add_before_or_after(
+                            env,
+                            position,
+                            arm.ldp64(regs[0], regs[1], MCRegOffset(ptr, offset as u32)),
+                        );
+                    } else {
+                        ir.add_before_or_after(
+                            env,
+                            position,
+                            arm.stp64(regs[0], regs[1], MCRegOffset(ptr, offset as u32)),
+                        );
+                    }
+                }
+                Primitive::F32 | Primitive::F64 => todo!("floats"),
+            }
+            let size = primitive.byte_size();
+            if size.get() == 16 {
+            } else {
+                debug_assert!(size.get() <= 8);
+            }
+            Ok(())
+        },
+    );
 }

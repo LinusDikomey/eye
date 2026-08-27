@@ -50,7 +50,8 @@ impl UseCounts {
                     | crate::Argument::TypeId(_)
                     | crate::Argument::FunctionId(_)
                     | crate::Argument::GlobalId(_)
-                    | crate::Argument::MCReg(_) => {}
+                    | crate::Argument::MCReg(_)
+                    | crate::Argument::MCRegOffset(_) => {}
                 }
             }
         }

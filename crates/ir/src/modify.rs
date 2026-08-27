@@ -3,10 +3,10 @@ use std::cmp::Ordering;
 use dmap::{DHashMap, DHashSet};
 
 use crate::{
-    Argument, Bitmap, BlockGraph, BlockId, BlockInfo, BlockTarget, Builtin, Environment,
-    FunctionId, FunctionIr, INLINE_ARGS, Inst, Instruction, IntoArgs, MCReg, Parameter, Ref, Refs,
-    TypeId, TypedInstruction, argument, builder::write_args, decode_args, dialect::Cf,
-    mc::Register, rewrite::RenameTable,
+    ArgIterMut, Argument, Bitmap, BlockGraph, BlockId, BlockInfo, BlockTarget, Builtin,
+    Environment, FunctionId, FunctionIr, INLINE_ARGS, Inst, Instruction, IntoArgs, MCReg,
+    Parameter, Ref, Refs, TypeId, TypedInstruction, argument, builder::write_args, decode_args,
+    dialect::Cf, mc::Register, rewrite::RenameTable,
 };
 
 #[derive(Debug)]
@@ -78,10 +78,6 @@ impl IrModify {
     }
 
     pub(crate) fn try_get_inst(&self, r: Ref) -> Result<&Instruction, ()> {
-        debug_assert!(
-            r.is_ref(),
-            "Tried to get an instruction from a Ref value: {r}"
-        );
         if !r.is_ref() {
             return Err(());
         }
@@ -885,6 +881,38 @@ impl IrModify {
         self.ir.args_iter(inst, env)
     }
 
+    pub fn args_mut<'a>(&'a mut self, r: Ref, env: &'a Environment) -> ArgIterMut<'a> {
+        debug_assert!(r.is_ref());
+        let i = r.0 as usize;
+        let inst = if i < self.ir.insts.len() {
+            &mut self.ir.insts[i]
+        } else {
+            &mut self.additional[i - self.ir.insts.len()].inst
+        };
+        let func = &env[inst.function];
+        let params = func.params();
+        let param_count = params.iter().map(|p| p.slot_count()).sum();
+        let (storage, vararg_count) = if param_count <= INLINE_ARGS && func.varargs.is_none() {
+            (&mut inst.args[..param_count], 0)
+        } else {
+            let vararg_count = if func.varargs.is_some() {
+                inst.args[1]
+            } else {
+                0
+            };
+            (
+                &mut self.ir.extra[inst.args[0] as usize..][..param_count
+                    + vararg_count as usize * func.varargs.map_or(0, |p| p.slot_count())],
+                vararg_count,
+            )
+        };
+        ArgIterMut {
+            params: params.iter(),
+            storage: storage.iter_mut(),
+            vararg_count,
+            vararg_param: func.varargs.unwrap_or(Parameter::Ref),
+        }
+    }
     /// Splits a block into two before at the specified instruction Ref. Converts the given
     /// instruction into the single block arg of the new block.
     /// Returns the id of the new block as well as the insert point at the end of the existing

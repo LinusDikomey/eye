@@ -1,8 +1,8 @@
 use std::{collections::VecDeque, fmt};
 
 use crate::{
-    Argument, ArgumentMut, Bitmap, BlockGraph, BlockId, Environment, FunctionIr, MCReg, ModuleOf,
-    Ref, Types, Usage,
+    Argument, ArgumentMut, Bitmap, BlockGraph, BlockId, Environment, FunctionIr, MCReg,
+    MCRegOffset, ModuleOf, Ref, Types, Usage,
     mc::{Abi, McInst},
     pipeline::FunctionPass,
 };
@@ -146,7 +146,7 @@ fn analyze_inst_liveness<I: McInst>(
 ) {
     if let Some(inst) = ir.get_inst(inst_r).as_module(mc) {
         match inst.op() {
-            Mc::IncomingBlockArgs => {}
+            Mc::IncomingBlockArgs | Mc::StackValue => {}
             Mc::Copy | Mc::AssignBlockArgs => {
                 // to
                 for arg in ir.args_mut(inst_r, env).step_by(2) {
@@ -181,9 +181,12 @@ fn analyze_inst_liveness<I: McInst>(
     }
 
     for arg in ir.args_mut(inst_r, env) {
-        let ArgumentMut::MCReg(usage, r) = arg else {
+        let (ArgumentMut::MCReg(usage, r) | ArgumentMut::MCRegOffset(usage, _, r, _)) = arg else {
             continue;
         };
+        if r.is_stack_slot() {
+            continue;
+        }
         if let Some(p) = r.phys::<I::Reg>() {
             if !p.get_bit(live_precolored) {
                 r.set_dead();
@@ -257,7 +260,7 @@ fn perform_regalloc<R: Register>(
             "Block does not begin with IncomingBlockArgs"
         );
         for arg in ir.args_iter(incoming, env) {
-            let Argument::MCReg(r) = arg else {
+            let (Argument::MCReg(r) | Argument::MCRegOffset(MCRegOffset(r, _))) = arg else {
                 unreachable!()
             };
             let i = r.virt().unwrap() as usize;
@@ -278,12 +281,14 @@ fn perform_regalloc<R: Register>(
         for block_ref in ir.block_body_refs(block).iter() {
             if let Some(inst) = ir.get_inst(block_ref).as_module(mc) {
                 match inst.op() {
-                    Mc::IncomingBlockArgs => {}
+                    Mc::IncomingBlockArgs | Mc::StackValue => {}
                     Mc::Copy | Mc::AssignBlockArgs => {
                         let is_block_args = inst.op() == Mc::AssignBlockArgs;
                         // handle source arguments first
                         for arg in ir.args_mut(block_ref, env).skip(1).step_by(2) {
-                            let ArgumentMut::MCReg(_, r) = arg else {
+                            let (ArgumentMut::MCReg(_, r) | ArgumentMut::MCRegOffset(_, _, r, _)) =
+                                arg
+                            else {
                                 unreachable!();
                             };
                             if let Some(i) = r.virt() {
@@ -303,7 +308,9 @@ fn perform_regalloc<R: Register>(
                         // TODO: could try to fill in trivial copies (dest = dead src) first to
                         // always maximize reusing registers
                         for arg in ir.args_mut(block_ref, env).step_by(2) {
-                            let ArgumentMut::MCReg(_, r) = arg else {
+                            let (ArgumentMut::MCReg(_, r) | ArgumentMut::MCRegOffset(_, _, r, _)) =
+                                arg
+                            else {
                                 unreachable!();
                             };
                             if let Some(i) = r.virt() {
@@ -341,8 +348,9 @@ fn perform_regalloc<R: Register>(
 
             for arg in ir.args_mut(block_ref, env) {
                 match arg {
-                    ArgumentMut::MCReg(Usage::Def, _) => {}
-                    ArgumentMut::MCReg(_, reg) => {
+                    ArgumentMut::MCReg(Usage::Def, _)
+                    | ArgumentMut::MCRegOffset(Usage::Def, _, _, _) => {}
+                    ArgumentMut::MCReg(_, reg) | ArgumentMut::MCRegOffset(_, _, reg, _) => {
                         if let Some(r) = reg.virt() {
                             // Update Def/DefUse with the chosen register and set the free bit if it's dead.
                             let dead = reg.is_dead();
@@ -359,7 +367,11 @@ fn perform_regalloc<R: Register>(
                 }
             }
             for arg in ir.args_mut(block_ref, env).rev() {
-                if let ArgumentMut::MCReg(usage, r) = arg {
+                if let ArgumentMut::MCReg(usage, r) | ArgumentMut::MCRegOffset(usage, _, r, _) = arg
+                {
+                    if r.is_stack_slot() {
+                        continue;
+                    }
                     if let Some(phys) = r.phys::<R>() {
                         phys.set_bit(&mut free, r.is_dead());
                     } else if usage == Usage::Def {

@@ -1,7 +1,7 @@
 use std::ops;
 
 use ir::{
-    Usage,
+    Imm, Usage,
     mc::{McInst, Register},
 };
 
@@ -138,6 +138,14 @@ impl RegBits {
     }
 }
 
+const U12: Imm = Imm::new(12, false, 1);
+const U13A2: Imm = Imm::new(13, false, 2);
+const U14A4: Imm = Imm::new(14, false, 4);
+const U15A8: Imm = Imm::new(15, false, 8);
+
+const I9A4: Imm = Imm::new(9, true, 4);
+const I10A8: Imm = Imm::new(10, true, 8);
+
 ir::instructions! {
     Arm "arm" ArmInsts
 
@@ -152,17 +160,33 @@ ir::instructions! {
     movk32 dst: MCReg(Usage::DefUse) hw: Int32 imm16: Int32;
     movk64 dst: MCReg(Usage::DefUse) hw: Int32 imm16: Int32;
 
-    ldr8  dst: MCReg(Usage::Def) ptr: MCReg(Usage::Use) offset: Int32;
-    ldr16 dst: MCReg(Usage::Def) ptr: MCReg(Usage::Use) offset: Int32;
-    ldr32 dst: MCReg(Usage::Def) ptr: MCReg(Usage::Use) offset: Int32;
-    ldr64 dst: MCReg(Usage::Def) ptr: MCReg(Usage::Use) offset: Int32;
+    ldrb32 dst: MCReg(Usage::Def) addr: MCRegOffset(Usage::Use, U12);
+    ldrh32 dst: MCReg(Usage::Def) addr: MCRegOffset(Usage::Use, U13A2);
+    ldr32  dst: MCReg(Usage::Def) addr: MCRegOffset(Usage::Use, U14A4);
+    ldr64  dst: MCReg(Usage::Def) addr: MCRegOffset(Usage::Use, U15A8);
 
-    ldp32 dst1: MCReg(Usage::Def) dst2: MCReg(Usage::Def) ptr: MCReg(Usage::Use) imm7: Int32;
-    ldp64 dst1: MCReg(Usage::Def) dst2: MCReg(Usage::Def) ptr: MCReg(Usage::Use) imm7: Int32;
+    strb32 src: MCReg(Usage::Use) addr: MCRegOffset(Usage::Use, U12);
+    strh32 src: MCReg(Usage::Use) addr: MCRegOffset(Usage::Use, U13A2);
+    str32  src: MCReg(Usage::Use) addr: MCRegOffset(Usage::Use, U14A4);
+    str64  src: MCReg(Usage::Use) addr: MCRegOffset(Usage::Use, U15A8);
+
+    ldp32 dst1: MCReg(Usage::Def) dst2: MCReg(Usage::Def) addr: MCRegOffset(Usage::Use, I9A4);
+    ldp64 dst1: MCReg(Usage::Def) dst2: MCReg(Usage::Def) addr: MCRegOffset(Usage::Use, I10A8);
+
+    stp32 dst1: MCReg(Usage::Def) dst2: MCReg(Usage::Def) addr: MCRegOffset(Usage::Use, I9A4);
+    stp64 dst1: MCReg(Usage::Def) dst2: MCReg(Usage::Def) addr: MCRegOffset(Usage::Use, I10A8);
 
     ret0   target: MCReg(Usage::Use);
     ret64  target: MCReg(Usage::Use);
     ret128 target: MCReg(Usage::Use);
+
+    add_i32 dst: MCReg(Usage::Def) a: MCReg(Usage::Use) imm12: Int32;
+    add_i64 dst: MCReg(Usage::Def) a: MCReg(Usage::Use) imm12: Int32;
+
+    sub_i32 dst: MCReg(Usage::Def) a: MCReg(Usage::Use) imm12: Int32;
+    sub_i64 dst: MCReg(Usage::Def) a: MCReg(Usage::Use) imm12: Int32;
+
+    bl_function function: FunctionId;
 }
 
 impl McInst for Arm {
@@ -180,5 +204,14 @@ impl McInst for Arm {
         _abi: &'static dyn ir::mc::Abi<Self>,
     ) -> <Self::Reg as ir::mc::Register>::RegisterBits {
         Reg::NO_BITS
+    }
+}
+impl Arm {
+    pub fn is_ret(&self) -> bool {
+        matches!(self, Self::ret0 | Self::ret64 | Self::ret128)
+    }
+
+    pub fn is_call(&self) -> bool {
+        matches!(self, Self::bl_function)
     }
 }

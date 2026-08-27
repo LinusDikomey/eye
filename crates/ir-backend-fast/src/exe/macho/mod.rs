@@ -8,6 +8,8 @@ use std::{
     path::Path,
 };
 
+use ir::Imm;
+
 use crate::{Error, Relocation, exe::macho::symtab::SymTab};
 
 pub fn emit(
@@ -101,31 +103,66 @@ pub fn emit(
         .filter_map(|relocation| match *relocation {
             Relocation::FunctionCall(id, offset) | Relocation::FunctionAddr(id, offset) => {
                 let (target_offset, symbol) = function_symbols[id.idx()];
-                let ty = if matches!(relocation, Relocation::FunctionCall(_, _)) {
-                    relocation::RelocationTypeX86_64::Branch
-                } else {
-                    relocation::RelocationTypeX86_64::Signed
-                };
-                if let Some(target_offset) = target_offset {
-                    let offset = target_offset
-                        .checked_signed_diff(offset)
-                        .and_then(|i| i.checked_sub(4))
-                        .and_then(|i| i32::try_from(i).ok())
-                        .expect("Function call is out of range for i32 offset");
+                match arch {
+                    target::Arch::X86_64 => {
+                        if let Some(target_offset) = target_offset {
+                            let target_offset = target_offset
+                                .checked_signed_diff(offset)
+                                .and_then(|i| i.checked_sub(4))
+                                .and_then(|i| i32::try_from(i).ok())
+                                .expect("Function call is out of range for i32 offset");
 
-                    text[offset as usize..offset as usize + 4]
-                        .copy_from_slice(&offset.to_le_bytes());
-                    None
-                } else {
-                    let offset = u32::try_from(offset).unwrap();
-                    Some(relocation::RelocationInfo::new(
-                        offset,
-                        symbol,
-                        true,
-                        relocation::RelocationLength::L4,
-                        true,
-                        ty,
-                    ))
+                            text[offset as usize..offset as usize + 4]
+                                .copy_from_slice(&target_offset.to_le_bytes());
+                            None
+                        } else {
+                            let ty = if matches!(relocation, Relocation::FunctionCall(_, _)) {
+                                relocation::RelocationTypeX86_64::Branch
+                            } else {
+                                relocation::RelocationTypeX86_64::Signed
+                            };
+                            let offset = u32::try_from(offset).unwrap();
+                            Some(relocation::RelocationInfo::new(
+                                offset,
+                                symbol,
+                                true,
+                                relocation::RelocationLength::L4,
+                                true,
+                                ty,
+                            ))
+                        }
+                    }
+                    target::Arch::Aarch64 => {
+                        if let Some(target_offset) = target_offset {
+                            let encoded_offset = target_offset
+                                .checked_signed_diff(offset)
+                                .and_then(|i| i32::try_from(i).ok())
+                                .and_then(|i| Imm::new(28, true, 4).encode(i as u32))
+                                .expect("Function call is out of range for imm26 offset");
+
+                            let inst_bytes = &mut text[offset as usize..offset as usize + 4];
+                            let inst = u32::from_le_bytes(inst_bytes.try_into().unwrap());
+                            inst_bytes.copy_from_slice(&(inst | encoded_offset).to_le_bytes());
+
+                            None
+                        } else {
+                            let ty = if matches!(relocation, Relocation::FunctionCall(_, _)) {
+                                relocation::RelocationTypeArm64::Branch26
+                            } else {
+                                todo!()
+                            };
+                            let offset = u32::try_from(offset).unwrap();
+                            Some(relocation::RelocationInfo::new(
+                                offset,
+                                symbol,
+                                true,
+                                relocation::RelocationLength::L4,
+                                true,
+                                ty,
+                            ))
+                        }
+                    }
+                    _ => todo!("unhandled arch for mach-o relocation"),
                 }
             }
             Relocation::GlobalAddr(id, offset) => Some(relocation::RelocationInfo::new(
