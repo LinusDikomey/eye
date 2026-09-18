@@ -337,6 +337,13 @@ pub enum Node {
         generics: LocalTypeIds,
         ty: LocalTypeId,
     },
+    ClosureItem {
+        function: (ModuleId, FunctionId),
+        generics: LocalTypeIds,
+        ty: LocalTypeId,
+        captures: NodeIds,
+        capture_types: LocalTypeIds,
+    },
     Capture(CaptureId),
     Break(u32),
     Continue(u32),

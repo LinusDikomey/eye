@@ -402,6 +402,30 @@ impl<'a> fmt::Display for HirDisplay<'a> {
                 }
                 cwrite!(f, "]): {}", display_ty(hir[ty]))?;
             }
+            &Node::ClosureItem {
+                function,
+                generics,
+                ty,
+                captures,
+                capture_types,
+            } => {
+                let name = compiler.get_function_name(function.0, function.1);
+                cwrite!(f, "(#b<{name}>[")?;
+                for (i, generic) in generics.iter().enumerate() {
+                    if i != 0 {
+                        cwrite!(f, " ")?;
+                    }
+                    cwrite!(f, "{}", display_ty(hir[generic]))?;
+                }
+                cwrite!(f, "]) captures (")?;
+                for (i, (capture, ty)) in captures.iter().zip(capture_types.iter()).enumerate() {
+                    if i != 0 {
+                        cwrite!(f, " ")?;
+                    }
+                    cwrite!(f, "{}: {}", display(capture), display_ty(hir[ty]))?;
+                }
+                cwrite!(f, "): {}", display_ty(hir[ty]))?;
+            }
             &Node::Capture(id) => cwrite!(f, "(#b<capture> #y<{}>)", id.0)?,
             &Node::Break(n) => cwrite!(f, "(#b<break> #y<{n}>)")?,
             &Node::Continue(n) => cwrite!(f, "(#b<continue> #y<{n}>)")?,

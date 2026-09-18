@@ -996,9 +996,10 @@ fn lower_expr(ctx: &mut Ctx, node: NodeId) -> Result<ValueOrPlace> {
                 }
                 candidates => {
                     // FIXME: this trace could crash since Generics::EMPTY is passed which is not always correct
+                    let trait_name = ctx.compiler.get_trait_name(trait_id.0, trait_id.1);
                     tracing::debug!(
                         target: "irgen",
-                        "Failed to select a trait instance for {trait_id:?} with {}. Candidates: {candidates:?}",
+                        "Failed to select a trait instance for {trait_name} with {}. Candidates: {candidates:?}",
                         ctx.compiler.types.display(self_ty, &Generics::EMPTY),
                     );
                     crash_point!(ctx);
@@ -1043,6 +1044,47 @@ fn lower_expr(ctx: &mut Ctx, node: NodeId) -> Result<ValueOrPlace> {
                     ctx.builder.append(mem.FunctionPtr(id, ctx.ptr_ty))
                 } // function items have unit value
                 TypeFull::FunctionItem { .. } => Ref::UNIT,
+                _ => unreachable!(),
+            }
+        }
+        &Node::ClosureItem {
+            function,
+            generics,
+            ty,
+            captures,
+            capture_types,
+        } => {
+            match ctx.compiler.types.lookup(ctx.hir[ty]) {
+                TypeFull::Instance(BaseType::Invalid, _) => crash_point!(ctx),
+                TypeFull::Instance(BaseType::Function, _) => {
+                    debug_assert!(captures.is_empty());
+                    // type was coerced to function pointer, generate a pointer to the function
+                    let generics = generics
+                        .iter()
+                        .map(|generic| {
+                            ctx.compiler
+                                .types
+                                .instantiate(ctx.hir[generic], ctx.generics)
+                        })
+                        .collect();
+                    let Some(id) = ctx.get_ir_id(function.0, function.1, generics) else {
+                        crash_point!(ctx)
+                    };
+                    ctx.builder.append(mem.FunctionPtr(id, ctx.ptr_ty))
+                }
+                TypeFull::Instance(_, _) => {
+                    // still the closure base type
+                    let capture_types = ctx.get_multiple_type_ids(capture_types)?;
+                    let tuple_ty = ctx.builder.types.add(ir::Type::Tuple(capture_types));
+                    let mut tuple_val = ctx.builder.append_undef(tuple_ty);
+                    for (elem, i) in captures.iter().zip(0..) {
+                        let val = lower(ctx, elem)?;
+                        tuple_val = ctx
+                            .builder
+                            .append(tuple.InsertMember(tuple_val, i, val, tuple_ty));
+                    }
+                    tuple_val
+                }
                 _ => unreachable!(),
             }
         }

@@ -4,8 +4,10 @@ use crate::{
     check::Hooks,
     compiler::{Generics, LocalScope, LocalScopeParent, VarId},
     hir::{HIRBuilder, Node},
+    types::BaseType,
     typing::{LocalTypeId, LocalTypeIds, NamedMembers, TypeInfo, TypeInfoOrIdx},
 };
+use error::span::TSpan;
 use indexmap::IndexMap;
 
 use parser::ast::FunctionId;
@@ -23,7 +25,13 @@ pub struct CheckedClosure {
 }
 
 impl<'a, H: Hooks> Ctx<'a, H> {
-    pub fn closure(&mut self, id: FunctionId, closed_over: &mut LocalScope) -> (Node, TypeInfo) {
+    pub fn closure(
+        &mut self,
+        id: FunctionId,
+        expected: LocalTypeId,
+        closure_span: TSpan,
+        closed_over: &mut LocalScope,
+    ) -> Node {
         let _enter = tracing::info_span!("closure", id = ?id, module = ?self.module).entered();
         let function = &self.ast[id];
         let body = function
@@ -144,22 +152,6 @@ impl<'a, H: Hooks> Ctx<'a, H> {
             },
         );
 
-        let params = std::iter::once(("".into(), captures_param))
-            .chain(params)
-            .collect();
-
-        let checked = CheckedClosure {
-            id,
-            generics,
-            hir: closure_hir,
-            root,
-            params,
-            param_types,
-            return_type,
-        };
-        debug_assert_eq!(checked.params.len(), param_types.count as usize);
-        self.checked_closures.push(checked);
-
         // pass the inherited generics into the closure invocation
         // TODO: chain the closure's generic here as Unknown types
         let generics_instance = self
@@ -177,11 +169,55 @@ impl<'a, H: Hooks> Ctx<'a, H> {
             members: param_types.skip(1),
             named_members: NamedMembers::EMPTY,
         });
-        (
-            Node::TupleLiteral {
-                elems: capture_nodes,
-                elem_types: capture_types,
-            },
+        if capture_count == 0
+            && let Some(mut args_and_return) =
+                self.hir.types[expected].into_specific_base(self.compiler, BaseType::Function)
+            && args_and_return.len() == params.len() + 1
+        {
+            // expecting a fn type. Try to coerce the closure without captures to the fn type
+
+            // skip the captures param
+            let param_types = param_types.skip(1);
+            let checked = CheckedClosure {
+                id,
+                generics,
+                hir: closure_hir,
+                root,
+                params,
+                param_types,
+                return_type,
+            };
+            debug_assert_eq!(checked.params.len(), param_types.count as usize);
+            self.checked_closures.push(checked);
+
+            let expected_return_ty = args_and_return.next().unwrap();
+            for (info_or_idx, var) in args_and_return.zip(param_types.iter()) {
+                self.specify_or_unify(info_or_idx, TypeInfoOrIdx::Idx(var), |_| closure_span);
+            }
+            self.specify_or_unify(expected_return_ty, TypeInfoOrIdx::Idx(return_type), |_| {
+                closure_span
+            });
+            return Node::FunctionItem {
+                function: (self.module, id),
+                generics: generics_instance,
+                ty: expected,
+            };
+        }
+        let params = std::iter::once(("".into(), captures_param)).chain(params);
+        let checked = CheckedClosure {
+            id,
+            generics,
+            hir: closure_hir,
+            root,
+            params: params.collect(),
+            param_types,
+            return_type,
+        };
+        debug_assert_eq!(checked.params.len(), param_types.count as usize);
+        self.checked_closures.push(checked);
+        // TODO: could specify earlier to get more type inference inside the closure
+        self.specify(
+            expected,
             TypeInfo::Closure {
                 function: id,
                 captures: capture_types,
@@ -189,6 +225,14 @@ impl<'a, H: Hooks> Ctx<'a, H> {
                 params: params_tuple,
                 return_type,
             },
-        )
+            |_| closure_span,
+        );
+        Node::ClosureItem {
+            function: (self.module, id),
+            generics: generics_instance,
+            captures: capture_nodes,
+            capture_types: capture_types,
+            ty: expected,
+        }
     }
 }

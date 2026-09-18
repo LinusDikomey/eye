@@ -221,10 +221,8 @@ impl<'a, H: Hooks> Ctx<'a, H> {
                 span, ident, args, ..
             } => self.check_enum_literal(scope, expected, return_ty, span, ident, args, noreturn),
             &Expr::Function { id } => {
-                let function_span = self.ast[expr].span(self.ast);
-                let (node, info) = self.closure(id, scope);
-                self.specify(expected, info, |_| function_span);
-                node
+                let closure_span = self.ast[expr].span(self.ast);
+                self.closure(id, expected, closure_span, scope)
             }
             &Expr::Primitive { primitive, .. } => {
                 let ty = self.hir.types.add(TypeInfo::Known(primitive.into()));
