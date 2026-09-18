@@ -320,16 +320,19 @@ impl<'a> fmt::Display for TypeDisplay<'a> {
                     write!(f, "*{}", self.types.display(generics[0], self.generics))
                 }
                 BaseType::Function => {
-                    write!(f, "fn(")?;
-                    let mut first = true;
-                    for &arg in &generics[1..] {
-                        if !first {
-                            write!(f, ", ")?;
-                        }
-                        first = false;
-                        write!(f, "{}", self.types.display(arg, self.generics))?;
+                    write!(f, "fn")?;
+                    let &[params, return_ty] = generics else {
+                        unreachable!()
+                    };
+                    if !matches!(self.types.lookup(params), TypeFull::Tuple { .. }) {
+                        write!(f, " ")?;
                     }
-                    write!(f, ") -> {}", self.types.display(generics[0], self.generics))
+                    write!(
+                        f,
+                        "{} -> {}",
+                        self.types.display(params, self.generics),
+                        self.types.display(return_ty, self.generics)
+                    )
                 }
                 _ => {
                     let name = &self.types.get_base(base).name;

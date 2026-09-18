@@ -1168,18 +1168,12 @@ impl UnOp {
 
 #[derive(Debug, Clone)]
 pub enum UnresolvedType {
-    Primitive {
-        ty: Primitive,
-        span_start: u32,
-    },
+    Primitive { ty: Primitive, span_start: u32 },
     Unresolved(IdentPath, Option<(Box<[UnresolvedType]>, TSpan)>),
     Pointer(Box<(UnresolvedType, u32)>),
     Array(Box<(UnresolvedType, Option<u32>, TSpan)>),
     Tuple(Vec<UnresolvedType>, TSpan),
-    Function {
-        span_and_return_type: Box<(TSpan, UnresolvedType)>,
-        params: Box<[UnresolvedType]>,
-    },
+    Function(Box<UnresolvedFunctionType>),
     Infer(TSpan),
 }
 impl UnresolvedType {
@@ -1240,19 +1234,15 @@ impl UnresolvedType {
                 }
                 s.push(')');
             }
-            UnresolvedType::Function {
-                span_and_return_type,
-                params,
-            } => {
-                s.push_str("fn(");
-                for (i, ty) in params.iter().enumerate() {
-                    if i != 0 {
-                        s.push_str(", ");
-                    }
-                    ty.to_string(s, src);
-                }
+            UnresolvedType::Function(func) => {
+                s.push_str(if matches!(func.params, UnresolvedType::Tuple(_, _)) {
+                    "fn"
+                } else {
+                    "fn "
+                });
+                func.params.to_string(s, src);
                 s.push_str(") -> ");
-                span_and_return_type.1.to_string(s, src);
+                func.return_ty.to_string(s, src);
             }
             UnresolvedType::Infer(_) => s.push('_'),
         }
@@ -1273,10 +1263,14 @@ impl UnresolvedType {
                 let (inner, start) = &**ptr;
                 TSpan::new(*start, inner.span().end)
             }
-            UnresolvedType::Function {
-                span_and_return_type,
-                ..
-            } => span_and_return_type.0,
+            UnresolvedType::Function(func) => func.span,
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct UnresolvedFunctionType {
+    pub params: UnresolvedType,
+    pub return_ty: UnresolvedType,
+    pub span: TSpan,
 }

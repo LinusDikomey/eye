@@ -150,8 +150,8 @@ builtin_types! {
     ],
     Pointer = vec![("pointee".into(), Bounds::empty())],
     Function = vec![
+        ("args".into(), Bounds::empty()),
         ("return_type".into(), Bounds::empty()),
-        ("args".into(), Bounds::empty()), // TODO: vararg generics or handle function separately
     ],
 }
 
@@ -168,6 +168,11 @@ pub enum TypeFull<'a> {
     },
     Generic(u8),
     Const(u64),
+}
+impl<'a> TypeFull<'a> {
+    pub fn is_tuple(&self) -> bool {
+        matches!(self, Self::Tuple { .. })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]

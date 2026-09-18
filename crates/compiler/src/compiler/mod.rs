@@ -485,16 +485,12 @@ impl Compiler {
                     named_members: &[],
                 })
             }
-            UnresolvedType::Function {
-                span_and_return_type,
-                params,
-            } => {
-                let return_and_params: Box<[Type]> = std::iter::once(&span_and_return_type.1)
-                    .chain(params.iter())
-                    .map(|ty| self.resolve_type(ty, module, scope))
-                    .collect();
+            UnresolvedType::Function(func) => {
+                let params = self.resolve_type(&func.params, module, scope);
+                let return_ty = self.resolve_type(&func.return_ty, module, scope);
+
                 self.types
-                    .intern(TypeFull::Instance(BaseType::Function, &return_and_params))
+                    .intern(TypeFull::Instance(BaseType::Function, &[params, return_ty]))
             }
             &UnresolvedType::Infer(span) => {
                 self.errors
@@ -547,10 +543,7 @@ impl Compiler {
             |compiler: &Self| compiler.get_module_ast(func_id.0)[func_id.1].signature_span;
         match ty {
             UnresolvedType::Infer(_) => Ok(()),
-            UnresolvedType::Function {
-                span_and_return_type: _,
-                params: _,
-            } => todo!("check partial function type annotation"),
+            UnresolvedType::Function(_func) => todo!("check partial function type annotation"),
             UnresolvedType::Unresolved(path, generics) => {
                 match self.resolve_path(ty_module, scope, *path) {
                     Def::Invalid => Err(SignatureError),
@@ -562,7 +555,7 @@ impl Compiler {
                                 .emit(ty_module, Error::UnexpectedGenerics.at_span(*generics_span));
                             return Err(SignatureError);
                         }
-                        let TypeFull::Instance(BaseType::Function, return_and_params) =
+                        let TypeFull::Instance(BaseType::Function, &[params, return_ty]) =
                             self.types.lookup(ty)
                         else {
                             let span = func_signature_span(self);
@@ -579,7 +572,14 @@ impl Compiler {
                             );
                             return Err(SignatureError);
                         };
-                        match signature.fits_function_type(return_and_params) {
+                        let TypeFull::Tuple {
+                            members: params,
+                            named_members: &[],
+                        } = self.types.lookup(params)
+                        else {
+                            todo!("handle invalid function type")
+                        };
+                        match signature.fits_function_type(params, return_ty) {
                             Ok(true) => Ok(()),
                             Ok(false) => {
                                 let span = func_signature_span(self);
@@ -1731,7 +1731,11 @@ impl Signature {
         }
     }
 
-    pub fn fits_function_type(&self, return_and_params: &[Type]) -> Result<bool, InvalidTypeError> {
+    pub fn fits_function_type(
+        &self,
+        params: &[Type],
+        return_ty: Type,
+    ) -> Result<bool, InvalidTypeError> {
         if self.callconv != CallConv::default() {
             return Ok(false);
         }
@@ -1744,15 +1748,15 @@ impl Signature {
         if !self.named_params.is_empty() {
             return Ok(false);
         }
-        if self.params.len() != return_and_params.len() - 1 {
+        if self.params.len() != params.len() {
             return Ok(false);
         }
-        for ((_, arg), &ty_arg) in self.all_params().zip(&return_and_params[1..]) {
+        for ((_, arg), &ty_arg) in self.all_params().zip(params) {
             if !arg.is_same_as(ty_arg)? {
                 return Ok(false);
             }
         }
-        if !self.return_type.is_same_as(return_and_params[0])? {
+        if !self.return_type.is_same_as(return_ty)? {
             return Ok(false);
         }
         Ok(true)

@@ -106,23 +106,12 @@ impl Ast<()> {
                 };
                 a.len() == b.len() && a.iter().zip(b.iter()).all(|(a, b)| self.eq_ty(other, a, b))
             }
-            UnresolvedType::Function {
-                span_and_return_type: a_span_return,
-                params: a_params,
-            } => {
-                let UnresolvedType::Function {
-                    span_and_return_type: b_span_return,
-                    params: b_params,
-                } = b
-                else {
+            UnresolvedType::Function(a) => {
+                let UnresolvedType::Function(b) = b else {
                     return false;
                 };
-                self.eq_ty(other, &a_span_return.1, &b_span_return.1)
-                    && a_params.len() == b_params.len()
-                    && a_params
-                        .iter()
-                        .zip(b_params.iter())
-                        .all(|(a, b)| self.eq_ty(other, a, b))
+                self.eq_ty(other, &a.return_ty, &b.return_ty)
+                    && self.eq_ty(other, &a.params, &b.params)
             }
             UnresolvedType::Infer(_) => matches!(b, UnresolvedType::Infer(_)),
         }

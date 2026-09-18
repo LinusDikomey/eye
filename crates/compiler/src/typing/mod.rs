@@ -415,19 +415,11 @@ impl TypeTable {
                     named_members: NamedMembers::EMPTY,
                 }
             }
-            UnresolvedType::Function {
-                span_and_return_type,
-                params,
-            } => {
-                let return_and_param_ids = self.add_multiple_unknown(1 + params.len() as u32);
-                for (param, r) in params.iter().zip(return_and_param_ids.skip(1).iter()) {
-                    let info = self.from_annotation(param, compiler, module, scope);
-                    self.types[r.idx()] = TypeInfoOrIdx::TypeInfo(info);
-                }
-                let return_type =
-                    self.from_annotation(&span_and_return_type.1, compiler, module, scope);
-                self.replace(return_and_param_ids.nth(0).unwrap(), return_type);
-                TypeInfo::Instance(BaseType::Function, return_and_param_ids)
+            UnresolvedType::Function(func) => {
+                let params = self.from_annotation(&func.params, compiler, module, scope);
+                let return_type = self.from_annotation(&func.return_ty, compiler, module, scope);
+                let instance = self.add_multiple([params, return_type]);
+                TypeInfo::Instance(BaseType::Function, instance)
             }
             UnresolvedType::Infer(_) => TypeInfo::Unknown(Bounds::EMPTY),
         }
@@ -613,28 +605,76 @@ impl TypeTable {
 
     /// Specifies the base type with the supplied generic count. Returns the generics.
     /// Just returns the existing generics if the type was already correct
-    pub fn specify_base(
+    pub fn specify_base<'a>(
         &mut self,
         ty: LocalTypeId,
         base: BaseType,
         generic_count: u32,
         function_generics: &Generics,
-        compiler: &Compiler,
+        compiler: &'a Compiler,
         span: impl FnOnce() -> ModuleSpan,
         fresh_generics: impl FnOnce(&mut Self) -> LocalTypeIds,
-    ) -> LocalTypeIds {
+    ) -> LocalOrGlobalInstance<'a> {
         let (idx, info) = self.find_shorten(ty);
         // check if the type is already correct to avoid adding unnecessary variables
-        if let TypeInfo::Instance(existing_base, generics) = info
-            && existing_base == base
-            && generics.count == generic_count
-        {
-            return generics;
+        match info {
+            TypeInfo::Instance(existing_base, instance)
+                if existing_base == base && instance.count == generic_count =>
+            {
+                return LocalOrGlobalInstance::Local(instance);
+            }
+            TypeInfo::Known(ty)
+                if let TypeFull::Instance(existing_base, instance) = compiler.types.lookup(ty)
+                    && existing_base == base
+                    && instance.len() == generic_count as usize =>
+            {
+                return LocalOrGlobalInstance::Global(instance);
+            }
+            _ => {}
         }
-        let generics = fresh_generics(self);
-        let info = TypeInfo::Instance(base, generics);
+        let instance = fresh_generics(self);
+        let info = TypeInfo::Instance(base, instance);
         self.specify(idx, info, function_generics, compiler, span);
-        generics
+        LocalOrGlobalInstance::Local(instance)
+    }
+
+    pub fn specify_or_unify_unnamed_tuple<'a>(
+        &mut self,
+        mut ty: TypeInfoOrIdx,
+        member_count: u32,
+        function_generics: &Generics,
+        compiler: &'a Compiler,
+        span: impl FnOnce() -> ModuleSpan,
+    ) -> LocalOrGlobalInstance<'a> {
+        let info = match ty {
+            TypeInfoOrIdx::Idx(idx) => {
+                let (idx, info) = self.find_shorten(idx);
+                // use shortened path
+                ty = TypeInfoOrIdx::Idx(idx);
+                info
+            }
+            TypeInfoOrIdx::TypeInfo(info) => info,
+        };
+        if let Some(tuple) = info.into_tuple(compiler)
+            && tuple.members().elem_count() == member_count
+            && tuple.named_members(self).is_empty()
+        {
+            return tuple.members();
+        }
+        let members = self.add_multiple_unknown(member_count);
+        let info = TypeInfo::Tuple {
+            members,
+            named_members: NamedMembers::EMPTY,
+        };
+        match ty {
+            TypeInfoOrIdx::Idx(var) => {
+                self.specify(var, info, function_generics, compiler, span);
+            }
+            TypeInfoOrIdx::TypeInfo(existing_info) => {
+                self.unify_infos_or_error(existing_info, info, function_generics, compiler, span);
+            }
+        }
+        LocalOrGlobalInstance::Local(members)
     }
 
     pub fn try_specify_base(
@@ -1065,20 +1105,19 @@ impl TypeTable {
                     );
                 }
                 BaseType::Function => {
-                    s.push_str("fn(");
-                    for (i, param) in generics.skip(1).iter().enumerate() {
-                        if i != 0 {
-                            s.push_str(", ");
-                        }
-                        self.type_to_string_inner(compiler, function_generics, self[param], s);
-                    }
+                    debug_assert_eq!(generics.count, 2);
+                    let params = generics.nth(0).unwrap();
+                    let return_ty = generics.nth(1).unwrap();
+                    // would be nicer not to add a space here when the
+                    let is_tuple = match self[params] {
+                        TypeInfo::Tuple { .. } => true,
+                        TypeInfo::Known(ty) if compiler.types.lookup(ty).is_tuple() => true,
+                        _ => false,
+                    };
+                    s.push_str(if is_tuple { "fn" } else { "fn " });
+                    self.type_to_string_inner(compiler, function_generics, self[params], s);
                     s.push_str(") -> ");
-                    self.type_to_string_inner(
-                        compiler,
-                        function_generics,
-                        self[generics.nth(0).unwrap()],
-                        s,
-                    );
+                    self.type_to_string_inner(compiler, function_generics, self[return_ty], s);
                 }
                 _ => {
                     let name = &compiler.types.get_base(base).name;
@@ -1857,6 +1896,8 @@ impl TypeTable {
         Ok(match info {
             TypeInfo::Unknown(_) | TypeInfo::Integer | TypeInfo::Float => false,
             TypeInfo::Known(Type::Invalid) => return Err(InvalidTypeError),
+            // FIXME: passing an empty instance here is wrong for generic functions, need a
+            // is generic_uninhibited function or the ability to omit the outermost instance
             TypeInfo::Known(ty) => compiler.is_uninhabited(ty, &Instance::EMPTY)?,
             TypeInfo::Instance(base, instance) => match &compiler.get_base_type_def(base).def {
                 ResolvedTypeContent::Builtin(_) => false,
@@ -1937,6 +1978,10 @@ impl LocalOrGlobalInstance<'_> {
             LocalOrGlobalInstance::Local(ids) => ids.count,
             LocalOrGlobalInstance::Global(items) => items.len() as u32,
         }
+    }
+
+    pub fn elem_count(&self) -> u32 {
+        self.count()
     }
 
     pub(crate) fn make_local(&self, table: &mut TypeTable) -> LocalTypeIds {
@@ -2066,6 +2111,10 @@ pub struct NamedMembers {
 }
 impl NamedMembers {
     pub const EMPTY: Self = Self { start: 0, count: 0 };
+
+    pub fn count(&self) -> u32 {
+        self.count
+    }
 
     pub fn iter(self) -> impl ExactSizeIterator<Item = NamedMemberId> {
         (self.start..self.start + self.count).map(NamedMemberId)
@@ -2216,6 +2265,19 @@ impl TypeInfo {
         self.into_base(compiler)
             .and_then(|(ty_base, generics)| (ty_base == base).then_some(generics))
     }
+
+    pub fn into_function_instance(
+        &self,
+        compiler: &Compiler,
+    ) -> Option<(TypeInfoOrIdx, TypeInfoOrIdx)> {
+        self.into_specific_base(compiler, BaseType::Function)
+            .map(|instance| {
+                debug_assert_eq!(instance.count(), 2);
+                let params = instance.nth(0).unwrap();
+                let return_ty = instance.nth(1).unwrap();
+                (params, return_ty)
+            })
+    }
 }
 
 pub enum LocalOrGlobalTuple<'a> {
@@ -2237,10 +2299,7 @@ impl<'a> LocalOrGlobalTuple<'a> {
         }
     }
 
-    pub fn named_members(
-        &self,
-        table: &'a TypeTable,
-    ) -> impl Iterator<Item = (&'a str, TypeInfoOrIdx)> {
+    pub fn named_members(&self, table: &'a TypeTable) -> LocalOrGlobalNamedMembers<'_> {
         match self {
             &Self::Local(_, named) => LocalOrGlobalNamedMembers::Local(named, table),
             Self::Global(_, named) => LocalOrGlobalNamedMembers::Global(named),
@@ -2248,9 +2307,21 @@ impl<'a> LocalOrGlobalTuple<'a> {
     }
 }
 
-enum LocalOrGlobalNamedMembers<'a> {
+pub enum LocalOrGlobalNamedMembers<'a> {
     Local(NamedMembers, &'a TypeTable),
     Global(&'a [(Box<str>, Type)]),
+}
+impl<'a> LocalOrGlobalNamedMembers<'a> {
+    pub fn len(&self) -> u32 {
+        match self {
+            LocalOrGlobalNamedMembers::Local(named_members, _) => named_members.count,
+            LocalOrGlobalNamedMembers::Global(items) => items.len() as u32,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 impl<'a> Iterator for LocalOrGlobalNamedMembers<'a> {
     type Item = (&'a str, TypeInfoOrIdx);

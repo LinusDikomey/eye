@@ -298,7 +298,7 @@ impl<H: Hooks> Ctx<'_, H> {
         base: BaseType,
         generic_count: u32,
         span: impl FnOnce(&Ast) -> TSpan,
-    ) -> LocalTypeIds {
+    ) -> LocalOrGlobalInstance<'_> {
         self.hir.types.specify_base(
             ty,
             base,

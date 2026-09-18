@@ -4,7 +4,6 @@ use crate::{
     check::Hooks,
     compiler::{Generics, LocalScope, LocalScopeParent, VarId},
     hir::{HIRBuilder, Node},
-    types::BaseType,
     typing::{LocalTypeId, LocalTypeIds, NamedMembers, TypeInfo, TypeInfoOrIdx},
 };
 use error::span::TSpan;
@@ -170,14 +169,23 @@ impl<'a, H: Hooks> Ctx<'a, H> {
             named_members: NamedMembers::EMPTY,
         });
         if capture_count == 0
-            && let Some(mut args_and_return) =
-                self.hir.types[expected].into_specific_base(self.compiler, BaseType::Function)
-            && args_and_return.len() == params.len() + 1
+            && let Some((expected_params, expected_return_ty)) =
+                self.hir.types[expected].into_function_instance(self.compiler)
         {
             // expecting a fn type. Try to coerce the closure without captures to the fn type
 
             // skip the captures param
             let param_types = param_types.skip(1);
+            self.specify_or_unify(
+                expected_params,
+                TypeInfo::Tuple {
+                    members: param_types,
+                    named_members: NamedMembers::EMPTY,
+                }
+                .into(),
+                |_| closure_span,
+            );
+            self.specify_or_unify(expected_return_ty, return_type.into(), |_| closure_span);
             let checked = CheckedClosure {
                 id,
                 generics,
@@ -190,8 +198,17 @@ impl<'a, H: Hooks> Ctx<'a, H> {
             debug_assert_eq!(checked.params.len(), param_types.count as usize);
             self.checked_closures.push(checked);
 
-            let expected_return_ty = args_and_return.next().unwrap();
-            for (info_or_idx, var) in args_and_return.zip(param_types.iter()) {
+            let params = self.hir.types.specify_or_unify_unnamed_tuple(
+                expected_params,
+                param_types.count,
+                self.generics,
+                self.compiler,
+                || crate::ModuleSpan {
+                    module: self.module,
+                    span: closure_span,
+                },
+            );
+            for (info_or_idx, var) in params.zip(param_types.iter()) {
                 self.specify_or_unify(info_or_idx, TypeInfoOrIdx::Idx(var), |_| closure_span);
             }
             self.specify_or_unify(expected_return_ty, TypeInfoOrIdx::Idx(return_type), |_| {
@@ -231,7 +248,7 @@ impl<'a, H: Hooks> Ctx<'a, H> {
             function: (self.module, id),
             generics: generics_instance,
             captures: capture_nodes,
-            capture_types: capture_types,
+            capture_types,
             ty: expected,
         }
     }

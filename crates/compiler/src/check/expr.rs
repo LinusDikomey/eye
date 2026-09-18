@@ -140,13 +140,16 @@ impl<'a, H: Hooks> Ctx<'a, H> {
                         ])
                     },
                 );
-                let elem_ty = elem_ty_and_count.nth(0).unwrap();
+                let elem_ty = self
+                    .hir
+                    .types
+                    .add_info_or_idx(elem_ty_and_count.nth(0).unwrap());
                 let count = elem_ty_and_count.nth(1).unwrap();
                 let const_count = self
                     .compiler
                     .types
                     .intern(TypeFull::Const(elements.count as u64));
-                self.specify(count, TypeInfo::Known(const_count), |_| span);
+                self.specify_or_unify(count, TypeInfo::Known(const_count).into(), |_| span);
                 let nodes = self.hir.add_invalid_nodes(elements.count);
                 for (node, elem) in nodes.iter().zip(elements) {
                     let elem_node = self.check(elem, scope, elem_ty, return_ty, noreturn);
@@ -326,6 +329,7 @@ impl<'a, H: Hooks> Ctx<'a, H> {
                             .specify_base(expected, BaseType::Pointer, 1, |ast| ast[expr].span(ast))
                             .nth(0)
                             .unwrap();
+                        let pointee = self.hir.types.add_info_or_idx(pointee);
                         let value = self.check(inner, scope, pointee, return_ty, noreturn);
                         if let Some(lval) = LValue::try_from_node(&value, &mut self.hir) {
                             Node::AddressOf {
@@ -1047,17 +1051,25 @@ impl<'a, H: Hooks> Ctx<'a, H> {
         // a function item immediately becomes a fn() type only if it was expected to become one
         // already from the type, meaning passing to functions or assigning to an annotated variable
         // work without requiring subtyping.
-        if let Some(mut args_and_return) =
-            self.hir.types[expected].into_specific_base(self.compiler, BaseType::Function)
+        if let Some((params, return_ty)) =
+            self.hir.types[expected].into_function_instance(self.compiler)
             // TODO: emit more specific error when one of the following conditions fail
             && signature.named_params.is_empty()
             && !signature.varargs
-            && args_and_return.len() == signature.params.len() + 1
+        // && args_and_return.len() == signature.params.len() + 1
         {
-            let return_ty = args_and_return.next().unwrap();
             let signature_return_ty = self.from_type_instance(signature.return_type, generics);
-            self.specify_or_unify(signature_return_ty, return_ty, span);
-            let args = args_and_return;
+            self.specify_or_unify(return_ty, signature_return_ty, span);
+            let args = self.hir.types.specify_or_unify_unnamed_tuple(
+                params,
+                signature.params.len() as _,
+                self.generics,
+                self.compiler,
+                || ModuleSpan {
+                    module: self.module,
+                    span: span(self.ast),
+                },
+            );
             for (&(_, signature_ty), ty) in signature.params.iter().zip(args) {
                 let signature_ty = self.from_type_instance(signature_ty, generics);
                 self.specify_or_unify(signature_ty, ty, span);

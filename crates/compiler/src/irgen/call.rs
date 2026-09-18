@@ -2,10 +2,10 @@ use ir::{Ref, Refs};
 
 use crate::{
     callconv::CallConv,
-    compiler::{Dialects, builtins},
+    compiler::{Dialects, Instance, builtins},
     crash_point,
     hir::{Node, NodeId, NodeIds, Var},
-    irgen::{self, Ctx, NoReturn, Result, ValueOrPlace, lower},
+    irgen::{self, Ctx, NoReturn, Result, ValueOrPlace, build_crash_point, lower, types},
     types::TypeFull,
     typing::{LocalTypeId, LocalTypeIds},
 };
@@ -38,7 +38,7 @@ pub fn gen_call(
             let Node::StringLiteral(intrinsic) = &ctx.hir[args.iter().next().unwrap()] else {
                 panic!("expected string literal passed to intrinsic call");
             };
-            return irgen::intrinsics::call_intrinsic(ctx, intrinsic, &arg_refs);
+            return irgen::intrinsics::call_intrinsic(ctx, intrinsic, &arg_refs, return_ty);
         }
         // PERF: make it possible to write refs directly into the ir to avoid collecting here
         let mut arg_refs = Vec::new();
@@ -105,16 +105,27 @@ pub fn gen_args(
             let TypeFull::Tuple {
                 members: args_tuple_types,
                 named_members: &[],
-            } = ctx
-                .compiler
-                .types
-                .lookup(ctx.hir[arg_types.nth(1).unwrap()])
+            } = ctx.compiler.types.lookup(
+                ctx.compiler
+                    .types
+                    .instantiate(ctx.hir[arg_types.nth(1).unwrap()], ctx.generics),
+            )
             else {
                 unreachable!()
             };
             let args_tuple = lower(ctx, args.nth(1).unwrap())?;
             ir_args.reserve(args_tuple_types.len());
-            let args_tuple_types = ctx.get_multiple_types(args_tuple_types.iter().copied())?;
+            let args_tuple_types = types::get_multiple(
+                ctx.compiler,
+                ctx.builder.env,
+                &mut ctx.builder.types,
+                args_tuple_types.iter().copied(),
+                Instance::EMPTY, // already instantiated the generics
+            )
+            .ok_or_else(|| {
+                build_crash_point(ctx);
+                NoReturn
+            })?;
             for (ty, i) in args_tuple_types.iter().zip(0..) {
                 let arg = ctx
                     .builder
@@ -146,11 +157,24 @@ pub fn assign_args_to_vars(ctx: &mut Ctx, params: Refs, callconv: CallConv) -> R
             let TypeFull::Tuple {
                 members,
                 named_members: &[],
-            } = ctx.compiler.types.lookup(args_tuple_ty)
+            } = ctx
+                .compiler
+                .types
+                .lookup(ctx.compiler.types.instantiate(args_tuple_ty, ctx.generics))
             else {
                 unreachable!()
             };
-            let ir_members = ctx.get_multiple_types(members.iter().copied())?;
+            let ir_members = types::get_multiple(
+                ctx.compiler,
+                ctx.builder.env,
+                &mut ctx.builder.types,
+                members.iter().copied(),
+                Instance::EMPTY, // already instantiated the generics
+            )
+            .ok_or_else(|| {
+                build_crash_point(ctx);
+                NoReturn
+            })?;
             assert_eq!(ir_members.count() + 1, params.count());
             let args_tuple_ir_ty = ctx.builder.types.add(ir::Type::Tuple(ir_members));
             let mut args_tuple = ctx.builder.append_undef(args_tuple_ir_ty);

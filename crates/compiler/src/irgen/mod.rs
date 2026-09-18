@@ -89,10 +89,13 @@ pub fn declare_function(
             debug_assert_eq!(signature.params.len(), 2);
             debug_assert_eq!(signature.named_params.len(), 0);
             let args_ty = signature.params[1].1;
+            let self_ty = compiler.types.instantiate(signature.params[0].1, generics);
             let TypeFull::Tuple {
                 members,
                 named_members: &[],
-            } = compiler.types.lookup(args_ty)
+            } = compiler
+                .types
+                .lookup(compiler.types.instantiate(args_ty, generics))
             else {
                 unreachable!()
             };
@@ -100,11 +103,8 @@ pub fn declare_function(
                 compiler,
                 ir,
                 &mut types,
-                ExactOnceChain::new(signature.params[0].1, members.iter().copied()),
-                Instance {
-                    types: generics,
-                    outer: None,
-                },
+                ExactOnceChain::new(self_ty, members.iter().copied()),
+                Instance::EMPTY, // already instantiated the generics
             )
         }
     })

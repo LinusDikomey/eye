@@ -5,7 +5,8 @@ use std::collections::hash_map::Entry;
 use crate::ast::{
     self, Attribute, Attributes, Definition, EnumVariantDefinition, Expr, ExprId, ExprIdPairs,
     ExprIds, Function, FunctionContext, GenericDef, Generics, Global, Impl, InherentImpl, Item,
-    ItemValue, Method, StructMember, TraitDefinition, TreeToken, UnOp, UnresolvedType,
+    ItemValue, Method, StructMember, TraitDefinition, TreeToken, UnOp, UnresolvedFunctionType,
+    UnresolvedType,
 };
 
 use crate::unexpected;
@@ -1640,25 +1641,38 @@ impl<T: TreeToken> Parser<'_, T> {
             )))),
             TokenType::Keyword(Keyword::Fn) => {
                 let start = tok.start;
-                let mut params = Vec::new();
-                let end = if let Some(lparen) = self.toks.step_if(TokenType::LParen) {
-                    self.parse_delimited(lparen, TokenType::Comma, TokenType::RParen, |p| {
-                        params.push(p.parse_type()?);
-                        Ok(Delimit::OptionalIfNewLine)
-                    })?
-                    .end
-                } else {
-                    tok.end
-                };
-                let return_type = if self.toks.step_if(TokenType::Arrow).is_some() {
-                    self.parse_type()?
-                } else {
-                    UnresolvedType::Tuple(Vec::new(), TSpan::new(end, end))
-                };
-                Ok(UnresolvedType::Function {
-                    span_and_return_type: Box::new((TSpan::new(start, end), return_type)),
-                    params: params.into_boxed_slice(),
-                })
+                let (params, return_ty, end) =
+                    if let Some(arrow) = self.toks.step_if(TokenType::Arrow) {
+                        let return_ty = self.parse_type()?;
+                        let end = return_ty.span().end;
+                        (
+                            UnresolvedType::Tuple(
+                                Vec::new(),
+                                TSpan {
+                                    start: arrow.start,
+                                    end: arrow.start,
+                                },
+                            ),
+                            return_ty,
+                            end,
+                        )
+                    } else {
+                        let params = self.parse_type()?;
+                        let (return_ty, end) = if self.toks.step_if(TokenType::Arrow).is_some() {
+                            let return_ty = self.parse_type()?;
+                            let end = return_ty.span().end;
+                            (return_ty, end)
+                        } else {
+                            let end = params.span().end;
+                            (UnresolvedType::Tuple(Vec::new(), TSpan::new(end, end)), end)
+                        };
+                        (params, return_ty, end)
+                    };
+                Ok(UnresolvedType::Function(Box::new(UnresolvedFunctionType {
+                    params,
+                    return_ty,
+                    span: TSpan::new(start, end),
+                })))
             }
             TokenType::Underscore => Ok(UnresolvedType::Infer(tok.span())),
             _ => Err(unexpected(tok, ExpectedTokens::Type)),

@@ -1,7 +1,7 @@
 use crate::check::Hooks;
 use crate::types::{BaseType, BuiltinType};
 use crate::typing::{LocalOrGlobalInstance, NamedMembers};
-use crate::{InvalidTypeError, Type};
+use crate::{InvalidTypeError, ModuleSpan, Type};
 use crate::{
     compiler::{LocalScope, ResolvedStructDef, ResolvedTypeContent, builtins},
     eval::ConstValueId,
@@ -59,9 +59,7 @@ impl<'a, H: Hooks> Ctx<'a, H> {
         if called_info.is_invalid() {
             self.invalidate(expected);
             return Node::Invalid;
-        } else if let Some(function_instance) =
-            called_info.into_specific_base(self.compiler, BaseType::Function)
-        {
+        } else if let Some(function_instance) = called_info.into_function_instance(self.compiler) {
             return self.function_type_call(
                 function_instance,
                 call,
@@ -424,7 +422,7 @@ impl<'a, H: Hooks> Ctx<'a, H> {
 
     fn function_type_call(
         &mut self,
-        function_generics: LocalOrGlobalInstance,
+        (called_params, called_return_ty): (TypeInfoOrIdx, TypeInfoOrIdx),
         call: &Call,
         called_node: Node,
         call_span: TSpan,
@@ -433,27 +431,30 @@ impl<'a, H: Hooks> Ctx<'a, H> {
         return_ty: LocalTypeId,
         noreturn: &mut bool,
     ) -> Node {
-        let return_type = function_generics.nth(0).unwrap();
-        let params = match function_generics {
-            LocalOrGlobalInstance::Local(ids) => ids.skip(1),
-            LocalOrGlobalInstance::Global(items) => self
-                .hir
-                .types
-                .add_multiple(items.iter().copied().skip(1).map(TypeInfo::Known)),
-        };
-        // TODO: call noreturn checking
+        let params = self
+            .hir
+            .types
+            .specify_or_unify_unnamed_tuple(
+                called_params,
+                call.args.count,
+                self.generics,
+                self.compiler,
+                || ModuleSpan {
+                    module: self.module,
+                    span: call_span,
+                },
+            )
+            // PERF: check_call_args_inner could maybe handle a global instance
+            .make_local(&mut self.hir.types);
+        self.specify_or_unify(expected.into(), called_return_ty, |_| call_span);
+        // FIXME: should use call_noreturn checking here once is_uninhibited is fixed
+        // let call_noreturn = self
+        //     .hir
+        //     .types
+        //     .is_uninhabited(self.compiler, self.hir.types[expected])
+        //     .unwrap_or(false);
         let call_noreturn = false;
-        // let call_noreturn = matches!(
-        //     self.compiler.uninhabited(
-        //         &self.hir
-        //             .types
-        //             .to_generic_resolved(self.hir.types[return_type])
-        //             .unwrap_or(TypeOld::Invalid),
-        //         &[], // TODO: this will probably cause issues, need to be able to not pass in generics?
-        //     ),
-        //     Ok(true)
-        // );
-        self.specify_or_unify(expected.into(), return_type, |_| call_span);
+
         match self.check_call_args_inner(
             scope,
             return_ty,
