@@ -780,7 +780,11 @@ impl Compiler {
         trait_instance: impl Clone + ExactSizeIterator<Item = T>,
         mut type_fits: impl FnMut(Type, T, &Types, &mut [Option<T>]) -> bool,
     ) -> Candidates<'_, T> {
-        tracing::debug!(target: "traitsolve", "❓ Finding instance of {trait_id:?}");
+        tracing::debug!(
+            target: "traitsolve",
+            "❓ Finding instance of {}",
+            self.get_trait_name(trait_id.0, trait_id.1),
+        );
         // TODO: this is definitely wrong in some edge cases
         let mut impl_generics = Vec::new();
         let Some(checked_trait) = self.get_checked_trait(trait_id.0, trait_id.1) else {
