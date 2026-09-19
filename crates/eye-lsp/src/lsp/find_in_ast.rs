@@ -179,7 +179,11 @@ fn find_at_offset_expr(ast: &Ast, offset: u32, scope: ScopeId, expr: ExprId) -> 
                     )
                 }
             })
-            .or_else(|| def.methods.iter().find_map(|(_, m)| method(ast, offset, m)))
+            .or_else(|| {
+                def.methods
+                    .iter()
+                    .find_map(|(_, m)| method(ast, offset, scope, m))
+            })
             .or_else(|| {
                 def.impls.iter().find_map(|impl_| {
                     path(offset, scope, impl_.implemented_trait)
@@ -406,10 +410,9 @@ fn find_at_offset_ty(offset: u32, scope: ScopeId, ty: &UnresolvedType) -> Option
         UnresolvedType::Tuple(unresolved_types, _) => {
             return unresolved_types.iter().find_map(rec);
         }
-        UnresolvedType::Function {
-            span_and_return_type,
-            params,
-        } => return rec(&span_and_return_type.1).or_else(|| params.iter().find_map(rec)),
+        UnresolvedType::Function(func) => {
+            return rec(&func.params).or_else(|| rec(&func.return_ty));
+        }
         UnresolvedType::Infer(_) => Found {
             ty: FoundType::TypePlaceholder,
             span,
@@ -425,11 +428,22 @@ fn base_impl(ast: &Ast, offset: u32, scope: ScopeId, base: &BaseImpl) -> Option<
                 .iter()
                 .find_map(|ty| find_at_offset_ty(offset, scope, ty))
         })
-        .or_else(|| base.functions.iter().find_map(|m| method(ast, offset, m)))
+        .or_else(|| {
+            base.functions
+                .iter()
+                .find_map(|m| method(ast, offset, scope, m))
+        })
 }
 
-fn method(ast: &Ast, offset: u32, method: &Method<()>) -> Option<Found> {
+fn method(ast: &Ast, offset: u32, scope: ScopeId, method: &Method<()>) -> Option<Found> {
     // TODO: name of method
+    if method.name.contains(offset) {
+        return Some(Found {
+            ty: FoundType::Definition,
+            span: method.name,
+            scope,
+        });
+    }
     function(ast, offset, method.function)
 }
 
@@ -462,6 +476,10 @@ fn function(ast: &Ast, offset: u32, id: FunctionId) -> Option<Found> {
         if let Some(found) = find_at_offset_ty(offset, function.scope, ty) {
             return Some(found);
         }
+    }
+
+    if let Some(found) = find_at_offset_ty(offset, function.scope, &function.return_type) {
+        return Some(found);
     }
     Some(
         function

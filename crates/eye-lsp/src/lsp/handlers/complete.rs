@@ -66,8 +66,13 @@ impl Lsp {
                     completing_member_access: None,
                 };
                 // TODO: currently this doesn't properly handle closures!
-                let checked =
-                    compiler::check::function(&self.compiler, module, function_id, &mut hooks);
+                let checked = compiler::check::function(
+                    &self.compiler,
+                    module,
+                    function_id,
+                    false,
+                    &mut hooks,
+                );
                 if let BodyOrTypes::Body(hir) = &checked.body_or_types {
                     let signature = self.compiler.get_signature(module, function_id);
                     match hooks.completion_context {
@@ -436,6 +441,7 @@ fn base_kind(compiler: &Compiler, base: compiler::types::BaseType) -> Completion
     }
 }
 
+#[must_use]
 fn member_completion(
     compiler: &Compiler,
     signature: &Signature,
@@ -471,7 +477,8 @@ fn value_member_access_completion(
                 ResolvedTypeContent::Struct(struct_def) => {
                     for (name, ty, _default) in &struct_def.named_fields {
                         let ty = compiler.types.instantiate(*ty, ty_generics);
-                        member_completion(compiler, signature, name, ty, expected);
+                        completions
+                            .push(member_completion(compiler, signature, name, ty, expected));
                     }
                 }
             }
@@ -482,10 +489,16 @@ fn value_member_access_completion(
             named_members,
         } => {
             for (ty, i) in members.iter().zip(0..) {
-                member_completion(compiler, signature, &format!("{i}"), *ty, expected);
+                completions.push(member_completion(
+                    compiler,
+                    signature,
+                    &format!("{i}"),
+                    *ty,
+                    expected,
+                ));
             }
             for (name, ty) in named_members {
-                member_completion(compiler, signature, name, *ty, expected);
+                completions.push(member_completion(compiler, signature, name, *ty, expected));
             }
         }
         _ => {}

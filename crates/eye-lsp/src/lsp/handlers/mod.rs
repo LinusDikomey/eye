@@ -229,8 +229,13 @@ impl Lsp {
                     let ast = self.compiler.get_module_ast(module);
                     let def = if let ScopeContext::Function(id) = context {
                         let mut hooks = FindHooks::new(found.span, ast, &self.compiler, found.ty);
-                        let checked =
-                            compiler::check::function(&self.compiler, module, id, &mut hooks);
+                        let checked = compiler::check::function(
+                            &self.compiler,
+                            module,
+                            id,
+                            false,
+                            &mut hooks,
+                        );
                         tracing::info!(
                             "Found for definition handler: {:?} {:?}",
                             hooks.local_item,
@@ -404,5 +409,14 @@ impl<'a> compiler::check::Hooks for FindHooks<'a> {
             return;
         }
         self.handle_found_expr(expr, hir, scope, ty, true);
+    }
+
+    fn on_checked_params(&mut self, hir: &mut HIRBuilder, scope: &mut LocalScope) {
+        if !matches!(self.find, FoundType::ParameterName) {
+            return;
+        }
+        let name = &self.ast.src()[self.span.range()];
+        let item = scope.resolve(name, self.span, self.compiler, &mut hir.vars);
+        self.local_item = Some(item);
     }
 }

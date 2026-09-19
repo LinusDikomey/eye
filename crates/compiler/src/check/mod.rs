@@ -61,6 +61,7 @@ pub trait Hooks {
         _ty: LocalTypeId,
     ) {
     }
+    fn on_checked_params(&mut self, _hir: &mut HIRBuilder, _scope: &mut LocalScope) {}
     fn on_exit_scope(&mut self, _scope: &mut LocalScope, _hir: &mut HIRBuilder) {}
 }
 impl Hooks for () {}
@@ -69,6 +70,7 @@ pub fn function<H: Hooks>(
     compiler: &Compiler,
     module: ModuleId,
     id: parser::ast::FunctionId,
+    put_closures: bool,
     hooks: &mut H,
 ) -> crate::compiler::CheckedFunction {
     let parsed = compiler.modules[module.idx()].parsed.get().unwrap();
@@ -119,6 +121,7 @@ pub fn function<H: Hooks>(
             return_type,
             &name,
             LocalScopeParent::None,
+            put_closures,
             hooks,
         );
         BodyOrTypes::Body(hir)
@@ -170,6 +173,7 @@ pub fn check<H: Hooks>(
     expected: LocalTypeId,
     name: &str,
     parent_scope: LocalScopeParent,
+    put_closures: bool,
     hooks: &mut H,
 ) -> Hir {
     let params = params.into_iter();
@@ -188,6 +192,7 @@ pub fn check<H: Hooks>(
         module,
         static_scope: Some(scope),
     };
+    hooks.on_checked_params(&mut hir, &mut scope);
     let mut check_ctx = Ctx {
         compiler,
         ast,
@@ -208,7 +213,7 @@ pub fn check<H: Hooks>(
     check_ctx
         .hooks
         .on_exit_scope(&mut scope, &mut check_ctx.hir);
-    check_ctx.finish(root, param_vars, name)
+    check_ctx.finish(root, param_vars, name, put_closures)
 }
 
 pub struct ProjectErrors {
@@ -392,7 +397,13 @@ impl<H: Hooks> Ctx<'_, H> {
         value
     }
 
-    pub(crate) fn finish(self, root: Node, params: Vec<VarId>, name: &str) -> Hir {
+    pub(crate) fn finish(
+        self,
+        root: Node,
+        params: Vec<VarId>,
+        name: &str,
+        put_closures: bool,
+    ) -> Hir {
         let mut hir = self
             .hir
             .finish(root, self.compiler, self.generics, self.module, params);
@@ -404,7 +415,9 @@ impl<H: Hooks> Ctx<'_, H> {
                 closure.root,
                 closure.params.iter().map(|(_name, id)| *id).collect(),
             );
-            symbols.function_signatures[closure.id.idx()].start_resolving();
+            if put_closures {
+                symbols.function_signatures[closure.id.idx()].start_resolving();
+            }
             let generic_count = closure.generics.count();
             let params: Box<[_]> = closure
                 .params
@@ -421,25 +434,27 @@ impl<H: Hooks> Ctx<'_, H> {
                     &named_params,
                 )
                 .expect("todo: handle invalid callconv");
-            symbols.function_signatures[closure.id.idx()].put(Signature {
-                params,
-                named_params,
-                varargs: false,
-                return_type: hir[closure.return_type],
-                generics: closure.generics,
-                span: parsed.ast[closure.id].signature_span,
-                callconv,
-            });
-            symbols.functions[closure.id.idx()].start_resolving();
-            symbols.functions[closure.id.idx()].put(CheckedFunction {
-                name: format!("{name}$closure{}", closure.id.idx()),
-                params: closure.param_types,
-                varargs: false,
-                return_type: closure.return_type,
-                generic_count,
-                body_or_types: BodyOrTypes::Body(hir),
-                context: FunctionContext::None, // TODO: could encode closure context here in the future
-            });
+            if put_closures {
+                symbols.function_signatures[closure.id.idx()].put(Signature {
+                    params,
+                    named_params,
+                    varargs: false,
+                    return_type: hir[closure.return_type],
+                    generics: closure.generics,
+                    span: parsed.ast[closure.id].signature_span,
+                    callconv,
+                });
+                symbols.functions[closure.id.idx()].start_resolving();
+                symbols.functions[closure.id.idx()].put(CheckedFunction {
+                    name: format!("{name}$closure{}", closure.id.idx()),
+                    params: closure.param_types,
+                    varargs: false,
+                    return_type: closure.return_type,
+                    generic_count,
+                    body_or_types: BodyOrTypes::Body(hir),
+                    context: FunctionContext::None, // TODO: could encode closure context here in the future
+                });
+            }
         }
         for (exhaustion, ty, pat) in self.deferred_exhaustions {
             if let Ok(false) = exhaustion.is_exhausted(hir[ty], self.compiler) {

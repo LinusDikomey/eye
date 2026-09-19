@@ -843,7 +843,7 @@ impl Compiler {
         let checked = &self.modules[module.idx()].parsed.get().unwrap().symbols;
         checked.functions[id.idx()].get_or_resolve_with(
             || panic!("checked function depends on itself recursively"),
-            || check::function(self, module, id, &mut ()),
+            || check::function(self, module, id, true, &mut ()),
         )
     }
 

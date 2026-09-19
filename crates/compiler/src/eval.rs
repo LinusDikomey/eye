@@ -231,6 +231,7 @@ pub fn value_expr(
         expected,
         &name,
         crate::compiler::LocalScopeParent::None,
+        true,
         &mut (),
     );
     let ty = hir[expected];

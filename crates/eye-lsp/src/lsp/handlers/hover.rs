@@ -49,64 +49,69 @@ impl Lsp {
                         .resolve_in_scope(module, found.scope, name, ModuleSpan::MISSING);
                 hover(self.hover_def(def, name))
             }
-            FoundType::Ident | FoundType::Literal | FoundType::EnumLiteral | FoundType::Member => {
-                match context {
-                    ScopeContext::TopLevel => Hover::default(),
-                    ScopeContext::Function(function_id) => {
-                        let ast = self.compiler.get_module_ast(module);
-                        let mut hooks = FindHooks::new(found.span, ast, &self.compiler, found.ty);
-                        let checked = compiler::check::function(
-                            &self.compiler,
-                            module,
-                            function_id,
-                            &mut hooks,
-                        );
-                        let BodyOrTypes::Body(hir) = checked.body_or_types else {
-                            return Hover::default();
-                        };
-                        let signature = self.compiler.get_signature(module, function_id);
-                        let hover_var = |var: VarId| {
-                            let ty = hir.vars[var.idx()].ty();
-                            let val = &ast.src()[found.span.range()];
-                            let ty = self
-                                .compiler
-                                .types
-                                .display(hir[ty], &signature.generics)
-                                .to_string();
-                            let mut text = format!("```eye\n{val}: {ty}\n```");
-                            if let compiler::hir::Var::Capture { outer, .. } = hir.vars[var.idx()] {
-                                write!(text, "\n---\nCapture of #{}", outer.0).unwrap();
-                            }
-                            Hover {
-                                contents: text.into(),
-                                range: Some(Range::from_span(found.span, ast.src())),
-                            }
-                        };
-                        let name_or_literal = &ast.src()[found.span.range()];
-                        let Some(item) = hooks.local_item else {
-                            let Some(ty) = hooks.ty else {
-                                return hover("expr not found".into());
-                            };
-                            let ty = self.compiler.types.display(hir[ty], &signature.generics);
-                            return hover(format!("{name_or_literal} : {ty}").into());
-                        };
-                        match item {
-                            LocalItem::Var(var_id) => hover_var(var_id),
-                            LocalItem::Invalid | LocalItem::Def(Def::Invalid) => {
-                                hover("<invalid value>".into())
-                            }
-                            LocalItem::Def(def) => hover(self.hover_def(def, name_or_literal)),
+            FoundType::Ident
+            | FoundType::Literal
+            | FoundType::EnumLiteral
+            | FoundType::Member
+            | FoundType::ParameterName => match context {
+                ScopeContext::TopLevel => Hover::default(),
+                ScopeContext::Function(function_id) => {
+                    let ast = self.compiler.get_module_ast(module);
+                    let mut hooks = FindHooks::new(found.span, ast, &self.compiler, found.ty);
+                    let checked = compiler::check::function(
+                        &self.compiler,
+                        module,
+                        function_id,
+                        false,
+                        &mut hooks,
+                    );
+                    let BodyOrTypes::Body(hir) = checked.body_or_types else {
+                        return Hover::default();
+                    };
+                    let signature = self.compiler.get_signature(module, function_id);
+                    let hover_var = |var: VarId| {
+                        let ty = hir.vars[var.idx()].ty();
+                        let val = &ast.src()[found.span.range()];
+                        let ty = self
+                            .compiler
+                            .types
+                            .display(hir[ty], &signature.generics)
+                            .to_string();
+                        let mut text = format!("```eye\n{val}: {ty}\n```");
+                        if let compiler::hir::Var::Capture { outer, .. } = hir.vars[var.idx()] {
+                            write!(text, "\n---\nCapture of #{}", outer.0).unwrap();
                         }
+                        Hover {
+                            contents: text.into(),
+                            range: Some(Range::from_span(found.span, ast.src())),
+                        }
+                    };
+                    let name_or_literal = &ast.src()[found.span.range()];
+                    let Some(item) = hooks.local_item else {
+                        let Some(ty) = hooks.ty else {
+                            return hover("expr not found".into());
+                        };
+                        let ty = self.compiler.types.display(hir[ty], &signature.generics);
+                        return hover(format!("{name_or_literal} : {ty}").into());
+                    };
+                    match item {
+                        LocalItem::Var(var_id) => hover_var(var_id),
+                        LocalItem::Invalid | LocalItem::Def(Def::Invalid) => {
+                            hover("<invalid value>".into())
+                        }
+                        LocalItem::Def(def) => hover(self.hover_def(def, name_or_literal)),
                     }
                 }
-            }
+            },
             FoundType::Primitive(p) => hover(HoverContents::MarkedStrings(vec![
                 text("primitive type "),
                 code(p.into_str()),
             ])),
             FoundType::Path(path) => {
                 let def = self.compiler.resolve_path(module, found.scope, path);
-                hover(format!("Definition {def:?}").into())
+                let ast = self.compiler.get_module_ast(module);
+                let text = ast[path.span()].to_owned().replace([' ', '\n', '\r'], "");
+                hover(self.hover_def(def, &text))
             }
             // FoundType::TypePlaceholder => todo!(),
             // FoundType::Underscore => todo!(),
@@ -117,7 +122,6 @@ impl Lsp {
                         .module_path(self.compiler.modules[module.idx()].root),
                 ),
             ])),
-            // FoundType::ParameterName => todo!(),
             FoundType::Keyword => hover(HoverContents::MarkedStrings(vec![
                 MarkedString::String("Keyword ".into()),
                 MarkedString::Code {
@@ -160,18 +164,7 @@ impl Lsp {
             Def::Function(function_module, function) => {
                 let signature = self.compiler.get_signature(function_module, function);
                 let mut text = format!("```eye\n{name} :: fn");
-                if signature.generics.count() > 0 {
-                    text.push('[');
-                    for i in 0..signature.generics.count() {
-                        if i != 0 {
-                            text.push_str(", ");
-                        }
-                        // TODO: not displaying bounds here for now, should be
-                        // displayed here or in where clause when it is supported
-                        text.push_str(signature.generics.get_name(i));
-                    }
-                    text.push(']');
-                }
+                write_generics(&mut text, &signature.generics);
                 if signature.params.len() + signature.named_params.len() > 0 {
                     let mut first = true;
                     let mut param_delimiter = |text: &mut String| {
@@ -204,8 +197,31 @@ impl Lsp {
                 }
                 text.into()
             }
+            Def::Trait(module, id) => {
+                let mut text = format!("```eye\n{name} :: trait");
+                if let Some(trait_) = self.compiler.get_checked_trait(module, id) {
+                    write_generics(&mut text, &trait_.generics);
+                }
+                text.push_str(" { ... }");
+                text.into()
+            }
             // TODO: handle each case separately and produce proper hover text
             def => format!("Definition {def:?}").into(),
         }
+    }
+}
+
+fn write_generics(text: &mut String, generics: &Generics) {
+    if generics.count() > 0 {
+        text.push('[');
+        for i in 0..generics.count() {
+            if i != 0 {
+                text.push_str(", ");
+            }
+            // TODO: not displaying bounds here for now, should be
+            // displayed here or in where clause when it is supported
+            text.push_str(generics.get_name(i));
+        }
+        text.push(']');
     }
 }

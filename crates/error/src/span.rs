@@ -41,7 +41,7 @@ impl TSpan {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IdentPath(TSpan); // just save the span and reparse when it is resolved
 impl IdentPath {
     pub fn new(span: TSpan) -> Self {
