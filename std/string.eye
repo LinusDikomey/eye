@@ -10,7 +10,7 @@ use root.int.Int
 # represents a string slice
 str :: struct {
     ptr *u8
-    len u64
+    len usize
 
     from_cstr :: fn(ptr *i8) -> str: str(ptr: ptr as *u8, len: len(ptr))
 

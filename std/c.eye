@@ -14,7 +14,7 @@ atoi :: fn(s *i8) -> i32 extern
 
 
 FILE :: struct {
-    invalid :: fn -> *FILE: root.null()
+  invalid :: fn -> *FILE: root.null()
 }
 
 

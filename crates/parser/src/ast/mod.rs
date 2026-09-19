@@ -1241,8 +1241,13 @@ impl UnresolvedType {
                     "fn "
                 });
                 func.params.to_string(s, src);
-                s.push_str(") -> ");
-                func.return_ty.to_string(s, src);
+                // write the return type unless its unit and we have params and they are not unit
+                if !matches!(&func.return_ty, UnresolvedType::Tuple(p, _) if p.is_empty())
+                    || matches!(&func.params, UnresolvedType::Tuple(p, _) if p.is_empty())
+                {
+                    s.push_str(" -> ");
+                    func.return_ty.to_string(s, src);
+                }
             }
             UnresolvedType::Infer(_) => s.push('_'),
         }

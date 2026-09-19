@@ -11,9 +11,13 @@ use serde::{Deserialize, Serialize};
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Uri(String);
 impl Uri {
-    pub fn from_path(path: &Path) -> Self {
+    pub fn from_path(path: &Path, root_mod: bool) -> Self {
         // TODO: this could probably be handled more gracefully
-        let ending = if path.is_dir() { "/main.eye" } else { "" };
+        let ending = if path.is_dir() {
+            if root_mod { "/main.eye" } else { "/mod.eye" }
+        } else {
+            ""
+        };
         Self(format!("file://{}{ending}", path.to_string_lossy()))
     }
 

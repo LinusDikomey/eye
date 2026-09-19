@@ -136,7 +136,8 @@ impl Lsp {
     }
 
     pub fn uri_from_module(&self, module: ModuleId) -> Uri {
-        Uri::from_path(self.compiler.modules[module.idx()].storage.path().unwrap())
+        let info = &self.compiler.modules[module.idx()];
+        Uri::from_path(info.storage.path().unwrap(), info.root == module)
     }
 
     pub fn find_module_of_uri(&mut self, uri: &Uri) -> Option<ModuleId> {
@@ -348,9 +349,7 @@ impl Lsp {
                 emit(&errors.warnings, types::DiagnosticSeverity::Warning);
 
                 let params = types::notification::PublishDiagnosticsParams {
-                    uri: Uri::from_path(
-                        self.compiler.modules[module.idx()].storage.path().unwrap(),
-                    ),
+                    uri: self.uri_from_module(module),
                     version,
                     diagnostics,
                 };

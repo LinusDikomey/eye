@@ -1,11 +1,14 @@
 use std::{
+    collections::hash_map,
     fmt,
     ops::{Add, Div, Mul, Rem, Sub},
 };
 
+use dmap::DHashMap;
+
 use crate::{
-    Argument, BlockId, BlockInfo, BlockTarget, Environment, FunctionId, FunctionIr, ModuleOf,
-    PrimitiveInfo, Ref, Type, TypeId, Types,
+    Argument, BlockId, BlockInfo, BlockTarget, Environment, FunctionId, FunctionIr, GlobalId,
+    ModuleOf, PrimitiveInfo, Ref, Type, TypeId, Types,
     dialect::Primitive,
     layout::{Layout, type_layout},
     slots::slot_count,
@@ -32,6 +35,7 @@ const STACK_BIT: u32 = 1 << 31;
 pub struct Mem {
     stack: Vec<u8>,
     heap: Vec<u8>,
+    globals: DHashMap<GlobalId, Ptr>,
 }
 impl Default for Mem {
     fn default() -> Self {
@@ -43,6 +47,7 @@ impl Mem {
         Self {
             stack: Vec::new(),
             heap: vec![0], // to cover null pointers
+            globals: DHashMap::default(),
         }
     }
 
@@ -66,7 +71,9 @@ impl Mem {
         debug_assert!(sp <= self.stack.len() as u32);
         self.stack.truncate(sp as usize);
     }
+
     pub fn malloc(&mut self, layout: Layout) -> Result<Ptr, OomError> {
+        // ignores alignment for now
         if self.heap.len() as u64 + layout.size >= STACK_BIT as u64 {
             return Err(OomError);
         }
@@ -77,6 +84,26 @@ impl Mem {
         self.heap
             .extend(std::iter::repeat_n(0, layout.size as usize));
         Ok(addr)
+    }
+
+    pub fn get_global(&mut self, id: GlobalId, env: &Environment) -> Result<Ptr, OomError> {
+        Ok(match self.globals.entry(id) {
+            hash_map::Entry::Occupied(entry) => *entry.get(),
+            hash_map::Entry::Vacant(entry) => {
+                // ignores alignment for now
+                let global = &env[id];
+                let size: u32 = global.value.len().try_into().map_err(|_| OomError)?;
+                if self.heap.len() as u32 + size >= STACK_BIT {
+                    return Err(OomError);
+                }
+                let addr = Ptr {
+                    addr: self.heap.len() as u32,
+                    size,
+                };
+                self.heap.extend_from_slice(&global.value);
+                *entry.insert(addr)
+            }
+        })
     }
 
     pub fn load_n<const N: usize>(&mut self, mut ptr: Ptr) -> [u8; N] {
@@ -92,8 +119,8 @@ impl Mem {
     }
 
     pub fn store(&mut self, mut ptr: Ptr, value: &[u8]) {
-        let mem = if ptr.addr & STACK_BIT != 0 {
-            ptr.addr &= !STACK_BIT;
+        let mem = if let Some(addr) = ptr.into_stack() {
+            ptr.addr = addr;
             &mut self.stack
         } else {
             &mut self.heap
@@ -103,6 +130,27 @@ impl Mem {
 
     pub fn free(&mut self, _ptr: Ptr, _layout: Layout) {
         // TODO: proper allocator that can free, also: verify that free call was valid
+    }
+
+    pub fn memcpy(&mut self, src: Ptr, dst: Ptr, count: u64) -> Result<(), ProvenanceError> {
+        let count: u32 = count.try_into().map_err(|_| ProvenanceError)?;
+        if count > src.size || count > dst.size {
+            return Err(ProvenanceError);
+        }
+        match (src.into_stack(), dst.into_stack()) {
+            (Some(src), Some(dst)) => self
+                .stack
+                .copy_within(src as usize..(src + count) as usize, dst as usize),
+            (Some(src), None) => self.heap[dst.addr as usize..(dst.addr + count) as usize]
+                .copy_from_slice(&self.stack[src as usize..(src + count) as usize]),
+            (None, Some(dst)) => self.stack[dst as usize..(dst + count) as usize]
+                .copy_from_slice(&self.heap[src.addr as usize..(src.addr + count) as usize]),
+            (None, None) => self.heap.copy_within(
+                src.addr as usize..(src.addr + count) as usize,
+                dst.addr as usize,
+            ),
+        }
+        Ok(())
     }
 }
 
@@ -157,6 +205,10 @@ impl Ptr {
             size,
         })
     }
+
+    pub fn into_stack(self) -> Option<u32> {
+        (self.addr & STACK_BIT != 0).then_some(self.addr & !STACK_BIT)
+    }
 }
 
 pub struct ProvenanceError;
@@ -174,6 +226,11 @@ impl From<ProvenanceError> for Error {
         Self::ProvenanceViolation
     }
 }
+impl From<OomError> for Error {
+    fn from(OomError: OomError) -> Self {
+        Self::OutOfMemory
+    }
+}
 
 pub trait EvalEnvironment {
     fn env(&self) -> &Environment;
@@ -184,8 +241,10 @@ pub trait EvalEnvironment {
         _id: FunctionId,
         _args: &[Val],
         _mem: &mut Mem,
-    ) -> Result<Val, Box<str>> {
-        Err("Can't evaluate extern functions".into())
+    ) -> Result<Val, Error> {
+        Err(Error::ExternCallFailed(
+            "Can't evaluate extern functions".into(),
+        ))
     }
 }
 impl EvalEnvironment for Environment {
@@ -628,10 +687,22 @@ pub fn eval<E: EvalEnvironment>(
                         })
                     }
                     I::PtrToInt => {
-                        Val::Int(get_ptr_ref(&values, ir.args(inst, env.env())).addr.into())
+                        Val::Int(get_ptr_ref(&values, ir.typed_args(&typed_inst)).addr.into())
                     }
-                    I::FunctionPtr => todo!("function pointers"),
-                    I::Global => todo!("globals"),
+                    I::FunctionPtr => {
+                        let id: FunctionId = ir.typed_args(&typed_inst);
+                        // Note that we don't encode the module of the function.
+                        // This is because the normal compiler use case only uses function
+                        // pointers to its main module. This might need to change in the future
+                        Val::Ptr(Ptr {
+                            addr: id.function.0,
+                            size: 0,
+                        })
+                    }
+                    I::Global => {
+                        let id: GlobalId = ir.typed_args(&typed_inst);
+                        Val::Ptr(mem.get_global(id, env.env())?)
+                    }
                     I::ArrayIndex => {
                         let (array_ptr, elem_ty, idx) = ir.args(inst, env.env());
                         let ptr = get_ptr_ref(&values, array_ptr);
@@ -725,9 +796,7 @@ pub fn eval<E: EvalEnvironment>(
                     // this will fetch ir and types again based on current_function
                     continue 'outer;
                 } else {
-                    let res = env
-                        .call_extern(inst.function, &args, &mut mem)
-                        .map_err(Error::ExternCallFailed)?;
+                    let res = env.call_extern(inst.function, &args, &mut mem)?;
                     values.store(pc, &res);
                     pc += 1;
                     continue 'outer;

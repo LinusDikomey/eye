@@ -144,6 +144,7 @@ impl Lsp {
                 ConstValue::Int(i) => i.to_string(),
                 ConstValue::Float(f) => f.to_string(),
                 ConstValue::Aggregate(_) => "TODO: display aggregate const values".to_owned(),
+                ConstValue::Function(_, _) => "TODO: display const function values".to_owned(),
             };
             format!("{kind_text}\n```eye\n{name}: {ty} {assign} {value}\n```").into()
         };

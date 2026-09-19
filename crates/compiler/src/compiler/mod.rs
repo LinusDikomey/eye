@@ -2268,6 +2268,20 @@ impl Instances {
     ) -> Option<ir::GlobalId> {
         *self.const_values.entry(id).or_insert_with(create)
     }
+
+    pub fn reverse_lookup(
+        &self,
+        function: ir::LocalFunctionId,
+    ) -> &(ModuleId, FunctionId, Box<[Type]>) {
+        // PERF: this is obviously slow for large amounts of instances. This is currently only used
+        // in consteval which has per-eval instances, so mostly very small function counts. Maybe
+        // it will need a specific reverse-lookup table in the future just for htis
+        self.functions
+            .iter()
+            .find(|(_, v)| v.function == function)
+            .expect("Couldn't find the original function")
+            .0
+    }
 }
 
 pub struct FunctionToGenerate {

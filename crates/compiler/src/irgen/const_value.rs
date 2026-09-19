@@ -120,6 +120,7 @@ pub fn translate(
                 unreachable!()
             }
         },
+        &eval::ConstValue::Function(_, _) => todo!("translate function consts"),
     }
     Ok(())
 }

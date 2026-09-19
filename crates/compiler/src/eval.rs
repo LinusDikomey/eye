@@ -1,9 +1,10 @@
 use std::num::NonZeroU64;
 
-use error::{Error, span::TSpan};
-use ir::eval::Val;
+use error::span::TSpan;
+use ir::eval::{Error, Val};
 use parser::ast::{
-    Ast, Expr, ExprId, FloatLiteral, IntLiteral, ModuleId, Primitive, ScopeId, UnresolvedType,
+    Ast, Expr, ExprId, FloatLiteral, FunctionId, IntLiteral, ModuleId, Primitive, ScopeId,
+    UnresolvedType,
 };
 
 use crate::{
@@ -11,7 +12,7 @@ use crate::{
     callconv::CallConv,
     compiler::{Dialects, Generics, Instance, Instances, ModuleSpan},
     hir::HIRBuilder,
-    types::TypeFull,
+    types::{BaseType, TypeFull},
     typing::TypeTable,
 };
 
@@ -25,6 +26,7 @@ pub enum ConstValue {
     Int(u64),
     Float(f64),
     Aggregate(Box<[ConstValue]>),
+    Function(ModuleId, FunctionId),
 }
 impl ConstValue {
     pub fn dump(&self) {
@@ -46,6 +48,9 @@ impl ConstValue {
                     elem.dump();
                 }
             }
+            Self::Function(module, function) => {
+                print!("Function({},{})", module.idx(), function.idx());
+            }
         }
     }
 }
@@ -65,7 +70,7 @@ pub fn def_expr(
         ty.to_string(&mut expected, ast.src());
         compiler.errors.emit(
             module,
-            Error::MismatchedType { expected, found }.at_span(ast[expr].span(ast)),
+            error::Error::MismatchedType { expected, found }.at_span(ast[expr].span(ast)),
         );
     };
 
@@ -193,11 +198,22 @@ pub fn def_expr(
             tracing::debug!(target: "eval", "Running evaluator for definition of {name}:");
             let value_name = compiler.module_path(module) + "." + name;
             match value_expr(compiler, module, scope, ast, expr, ty, &value_name) {
-                Ok((val, ty)) => Def::ConstValue(compiler.add_const_value(val, ty)),
+                Ok((val, ty)) => {
+                    if let ConstValue::Function(module, id) = val {
+                        // HACK: this shouldn't be the place where functions are converted.
+                        // Ideally the definitions of Def and ConstValue are merged somehow
+                        // so that they don't overlap.
+                        // For now this is enough to define simple function switches at comptime
+                        Def::Function(module, id)
+                    } else {
+                        Def::ConstValue(compiler.add_const_value(val, ty))
+                    }
+                }
                 Err(err) => {
-                    compiler
-                        .errors
-                        .emit(module, Error::EvalFailed(err).at_span(ast[expr].span(ast)));
+                    compiler.errors.emit(
+                        module,
+                        error::Error::EvalFailed(err).at_span(ast[expr].span(ast)),
+                    );
                     Def::Invalid
                 }
             }
@@ -299,20 +315,38 @@ pub fn value_expr(
         }
     }
     let mut env = LazyEvalEnv { env: &env };
-    ir::eval::eval(&ir, &ir_types, &[], &mut env).map(|val| (to_const_val(val), ty))
+    ir::eval::eval(&ir, &ir_types, &[], &mut env)
+        .map(|val| (to_const_val(compiler, val, ty, &instances), ty))
 }
 
-fn to_const_val(val: Val) -> ConstValue {
+fn to_const_val(compiler: &Compiler, val: Val, ty: Type, instances: &Instances) -> ConstValue {
     match val {
         Val::Invalid => ConstValue::Undefined,
         Val::Unit => ConstValue::Unit,
         Val::Int(n) => ConstValue::Int(n),
         Val::F32(n) => ConstValue::Float(n as f64),
         Val::F64(n) => ConstValue::Float(n),
-        Val::Ptr(_) => todo!("handle constants with compile-time pointers"),
-        Val::Array(elems) | Val::Tuple(elems) => {
-            ConstValue::Aggregate(elems.into_iter().map(to_const_val).collect())
-        }
+        Val::Ptr(ptr) => match compiler.types.lookup(ty) {
+            TypeFull::Instance(BaseType::Pointer, &[_pointee]) => {
+                todo!("convert compile-time pointers to consts")
+            }
+            TypeFull::Instance(BaseType::Function, ..) => {
+                // pointer encodes the ir FunctionId as its addr
+                let id = ir::LocalFunctionId(ptr.addr);
+                let (module, function, instance) = instances.reverse_lookup(id);
+                if !instance.is_empty() {
+                    todo!("allow function instances as constants")
+                }
+                ConstValue::Function(*module, *function)
+            }
+            _ => unreachable!(),
+        },
+        Val::Array(elems) | Val::Tuple(elems) => ConstValue::Aggregate(
+            elems
+                .into_iter()
+                .map(|val| to_const_val(compiler, val, ty, instances))
+                .collect(),
+        ),
     }
 }
 
@@ -340,25 +374,36 @@ impl ir::eval::EvalEnvironment for LazyEvalEnv<'_> {
         id: ir::FunctionId,
         args: &[Val],
         mem: &mut ir::eval::Mem,
-    ) -> Result<Val, Box<str>> {
+    ) -> Result<Val, Error> {
         let func = &self.env[id];
         Ok(match &*func.name {
             "malloc" => {
                 let &[Val::Int(size)] = args else {
-                    return Err("invalid signature for malloc".into());
+                    return Err(Error::ExternCallFailed(
+                        "invalid signature for malloc".into(),
+                    ));
                 };
                 let ptr = mem
                     .malloc(ir::Layout {
                         size,
                         align: NonZeroU64::new(16).unwrap(),
                     })
-                    .map_err(|_| "out of compile-time memory")?;
+                    .map_err(|_| Error::ExternCallFailed("out of compile-time memory".into()))?;
                 Val::Ptr(ptr)
             }
+            "memcpy" => {
+                let &[Val::Ptr(dest), Val::Ptr(src), Val::Int(count)] = args else {
+                    return Err(Error::ExternCallFailed(
+                        "invalid signature for memcpy".into(),
+                    ));
+                };
+                mem.memcpy(src, dest, count)?;
+                Val::Unit
+            }
             name => {
-                return Err(
+                return Err(Error::ExternCallFailed(
                     format!("Can't evaluate extern function {name} at compile-time").into(),
-                );
+                ));
             }
         })
     }
