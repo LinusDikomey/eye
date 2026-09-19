@@ -10,9 +10,12 @@ Os :: enum {
 
 OS : Os : root.intrinsics.intrinsic("os")
 
+is_comptime :: fn -> bool: root.intrinsics.intrinsic("is_comptime")
+
 
 write_stdout : fn(str) : match OS {
-  .None: os_not_implemented(),
+  # TODO: error here (currently erroring involves write_stdout)
+  .None: unix.write_stdout,
   # TODO: or patterns would be useful here
   .Linux: unix.write_stdout,
   .Darwin: unix.write_stdout,

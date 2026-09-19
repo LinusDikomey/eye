@@ -118,6 +118,17 @@ impl Mem {
         arr
     }
 
+    pub fn get_slice(&mut self, ptr: Ptr, len: u32) -> Result<&[u8], ProvenanceError> {
+        if ptr.size < len {
+            return Err(ProvenanceError);
+        }
+        Ok(if let Some(stack_addr) = ptr.into_stack() {
+            &self.stack[stack_addr as usize..(stack_addr + len) as usize]
+        } else {
+            &self.heap[ptr.addr as usize..(ptr.addr + len) as usize]
+        })
+    }
+
     pub fn store(&mut self, mut ptr: Ptr, value: &[u8]) {
         let mem = if let Some(addr) = ptr.into_stack() {
             ptr.addr = addr;
@@ -327,6 +338,9 @@ pub fn eval<E: EvalEnvironment>(
         };
         let get_ref = |values: &Values, r: Ref| -> Val { get_ref_and_ty(values, r).0 };
         let get_int_ref = |values: &Values, r: Ref| -> u64 {
+            if let Some(v) = r.into_bool() {
+                return v as u64;
+            }
             debug_assert!(
                 matches!(types[ir.get_inst(r).ty()], Type::Primitive(p) if Primitive::try_from(p).unwrap().is_int())
             );

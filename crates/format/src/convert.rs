@@ -335,8 +335,8 @@ impl<'a> Converter<'a> {
                 self.generics(nodes, &def.generics);
                 nodes.push(" ".into());
                 self.tok(nodes, def.t_lbrace);
-                nodes.push("\n".into());
                 let mut group = Vec::new();
+                group.push(Cond::Broken.then("\n"));
                 match &def.content {
                     parser::ast::TypeContent::Struct { members } => {
                         for member in members {
@@ -380,6 +380,7 @@ impl<'a> Converter<'a> {
                     self.impl_body(&mut group, base);
                     group.push("\n".into());
                 }
+                dbg!(&group);
                 self.close_group(nodes, group, def.t_rbrace);
             }
             &Expr::Trait { id } => {

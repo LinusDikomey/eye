@@ -224,6 +224,10 @@ impl Ref {
         }
     }
 
+    pub fn from_bool(value: bool) -> Ref {
+        if value { Self::TRUE } else { Self::FALSE }
+    }
+
     pub fn idx(self) -> usize {
         self.0 as usize
     }

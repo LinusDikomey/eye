@@ -1080,6 +1080,7 @@ impl Compiler {
         let (body, types) = irgen::lower_hir(
             self,
             dialects,
+            false,
             instances,
             builder,
             body,

@@ -3,13 +3,24 @@ use option.Option
 
 print :: fn[T: ToString](value T) {
   s := ToString.to_string(&value)
-  os.write_stdout(s)
+  # currently need to invoke the raw intrinsic here to allow constant folding the branches
+  if intrinsics.intrinsic("is_comptime") {
+    os.comptime.comptime_print(s)
+  } else {
+    os.write_stdout(s)
+  }
   c.free(s.ptr)
 }
+
 println :: fn[T: ToString](value T) {
   s := ToString.to_string(&value)
-  os.write_stdout(s)
-  os.write_stdout("\n")
+  # currently need to invoke the raw intrinsic here to allow constant folding the branches
+  if intrinsics.intrinsic("is_comptime") {
+    os.comptime.comptime_println(s)
+  } else {
+    os.write_stdout(s)
+    os.write_stdout("\n")
+  }
   c.free(s.ptr)
 }
 
@@ -75,6 +86,7 @@ buf_write :: fn(buf Buf, ptr *u8, len u64) -> Buf {
 }
 
 panic :: fn(msg str) -> Never {
+  # should be redefined in terms of print/write_stdout
   c.printf("[PANIC]: %.*s\n".ptr as *i8, msg.len as i32, msg.ptr)
   c.exit(1)
 }

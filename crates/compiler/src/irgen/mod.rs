@@ -147,6 +147,7 @@ macro_rules! crash_point {
 pub fn lower_hir(
     compiler: &Compiler,
     dialects: &Dialects,
+    is_comptime: bool,
     instances: &mut Instances,
     mut builder: Builder,
     hir: &Hir,
@@ -218,6 +219,7 @@ pub fn lower_hir(
     let mut ctx = Ctx {
         compiler,
         dialects,
+        is_comptime,
         instances,
         to_generate,
         hir,
@@ -247,6 +249,7 @@ pub fn lower_hir(
 struct Ctx<'a> {
     compiler: &'a Compiler,
     dialects: &'a Dialects,
+    is_comptime: bool,
     instances: &'a mut Instances,
     to_generate: &'a mut Vec<FunctionToGenerate>,
     hir: &'a Hir,
@@ -600,7 +603,11 @@ fn lower_expr(ctx: &mut Ctx, node: NodeId) -> Result<ValueOrPlace> {
         }
         &Node::Not(value) => {
             let value = lower(ctx, value)?;
-            ctx.builder.append(arith.Not(value, ctx.i1_ty))
+            if let Some(value) = value.into_bool() {
+                Ref::from_bool(!value)
+            } else {
+                ctx.builder.append(arith.Not(value, ctx.i1_ty))
+            }
         }
         &Node::AddressOf { value, value_ty: _ } => lower_lval(ctx, value)?,
         &Node::Deref { value, deref_ty } => {
@@ -758,15 +765,25 @@ fn lower_expr(ctx: &mut Ctx, node: NodeId) -> Result<ValueOrPlace> {
             resulting_ty,
         } => {
             let cond = lower(ctx, cond)?;
-            let then_block = ctx.builder.create_block();
-            let else_block = ctx.builder.create_block();
-            ctx.builder.append(cf.Branch(
-                cond,
-                BlockTarget::new(then_block),
-                BlockTarget::new(else_block),
-            ));
-            ctx.builder.begin_block(then_block, []);
-            lower_if_else_branches(ctx, then, else_, else_block, resulting_ty)?
+            if let Some(trivial_value) = cond.into_bool() {
+                let taken_branch = if trivial_value { then } else { else_ };
+                let val = lower(ctx, taken_branch)?;
+                if ctx.get_hir_type(resulting_ty)?.is_unit() {
+                    Ref::UNIT
+                } else {
+                    val
+                }
+            } else {
+                let then_block = ctx.builder.create_block();
+                let else_block = ctx.builder.create_block();
+                ctx.builder.append(cf.Branch(
+                    cond,
+                    BlockTarget::new(then_block),
+                    BlockTarget::new(else_block),
+                ));
+                ctx.builder.begin_block(then_block, []);
+                lower_if_else_branches(ctx, then, else_, else_block, resulting_ty)?
+            }
         }
         &Node::IfPatElse {
             pat,
@@ -1166,12 +1183,20 @@ fn lower_lval(ctx: &mut Ctx, lval: LValueId) -> Result<Ref> {
 
 /// Lower a pattern, jumping to the on_mismatch block if the pattern doesn't match.
 /// When on_mismatch is set to BlockIndex::MISSING, all patterns are assumed to always match
+/// If the pattern trivially does or doesn't match, returns Some(true/false)
 fn lower_pattern(
     ctx: &mut Ctx,
     pattern: PatternId,
     value: Ref,
     on_mismatch: Option<BlockId>,
-) -> Result<()> {
+) -> Result<Option<bool>> {
+    fn trivial_combine(a: Option<bool>, b: Option<bool>) -> Option<bool> {
+        match (a, b) {
+            (Some(a), Some(b)) => Some(a && b),
+            _ => None,
+        }
+    }
+
     let Dialects {
         arith,
         tuple,
@@ -1191,24 +1216,30 @@ fn lower_pattern(
         ));
         ctx.builder.begin_block(on_match, []);
     };
-    match &ctx.hir[pattern] {
+    Ok(match &ctx.hir[pattern] {
         Pattern::Invalid => crash_point!(ctx),
         Pattern::Variable(id) => {
             ctx.builder.append(mem.Store(ctx.vars[id.idx()].0, value));
+            Some(true)
         }
-        Pattern::Ignore => {}
+        Pattern::Ignore => Some(true),
         &Pattern::Tuple {
             member_count,
             patterns,
             types,
         } => {
+            let mut trivial = Some(true);
             for i in 0..member_count {
                 let member_pat = PatternId(patterns + i);
                 let member_ty = ctx.get_hir_type(LocalTypeId(types + i))?;
                 let member_ty = ctx.builder.types.add(member_ty);
                 let member_value = ctx.builder.append(tuple.MemberValue(value, i, member_ty));
-                lower_pattern(ctx, member_pat, member_value, on_mismatch)?;
+                trivial = trivial_combine(
+                    trivial,
+                    lower_pattern(ctx, member_pat, member_value, on_mismatch)?,
+                );
             }
+            trivial
         }
         &Pattern::Int(sign, val, ty) => {
             let ir_ty = ctx.get_hir_type(ty)?;
@@ -1219,10 +1250,11 @@ fn lower_pattern(
                 .builder
                 .append(arith.Eq(value, pattern_value, ctx.i1_ty));
             branch_bool(ctx, cond);
+            None
         }
         &Pattern::Bool(b) => {
             let Some(on_mismatch) = on_mismatch else {
-                return Ok(());
+                return Ok(None);
             };
             let on_match = ctx.builder.create_block();
             let (on_true, on_false) = if b {
@@ -1236,6 +1268,7 @@ fn lower_pattern(
                 BlockTarget::new(on_false),
             ));
             ctx.builder.begin_block(on_match, []);
+            None
         }
         Pattern::String(s) => {
             let str_eq = builtins::get_str_eq(ctx.compiler);
@@ -1244,6 +1277,7 @@ fn lower_pattern(
             let (expected, _str_ty) = lower_string_literal(ctx, s);
             let matches = ctx.builder.append((str_eq, (value, expected), ctx.i1_ty));
             branch_bool(ctx, matches);
+            None
         }
         &Pattern::Range {
             min_max: (min, max),
@@ -1264,6 +1298,7 @@ fn lower_pattern(
                 ctx.builder.append(arith.LT(value, max, ty))
             };
             branch_bool(ctx, right);
+            None
         }
         &Pattern::EnumVariant {
             ordinal,
@@ -1307,7 +1342,7 @@ fn lower_pattern(
                 }
             }
             if args.count == 0 {
-                return Ok(());
+                return Ok(None);
             }
             let ir_types_tuple = ctx.builder.types.add(ir::Type::Tuple(ir_types));
             for ((arg, i), ty) in args.iter().zip(1..).zip(arg_types.iter()) {
@@ -1319,9 +1354,9 @@ fn lower_pattern(
                 let arg_value = ctx.builder.append(mem.Load(arg_ptr, ty));
                 lower_pattern(ctx, arg, arg_value, on_mismatch)?;
             }
+            None
         }
-    }
-    Ok(())
+    })
 }
 
 fn int_pat(
@@ -1460,12 +1495,12 @@ fn lower_if_else_branches(
     resulting_ty: LocalTypeId,
 ) -> Result<Ref> {
     let Dialects { cf, .. } = ctx.dialects;
-    // after_block is a closure that creates the block lazily and returns it
-    let else_is_trival = matches!(ctx.hir[else_], Node::Unit);
+    let else_is_empty = matches!(ctx.hir[else_], Node::Unit);
     let ty = ctx.get_hir_type(resulting_ty)?;
     let returns_value = !ty.is_unit();
+    // after_block is a closure that creates the block lazily and returns it
     let mut after_block = {
-        let mut after_block = else_is_trival.then_some(else_block);
+        let mut after_block = else_is_empty.then_some(else_block);
         move |ctx: &mut Ctx| {
             after_block.unwrap_or_else(|| {
                 let block = ctx.builder.create_block();
@@ -1485,7 +1520,7 @@ fn lower_if_else_branches(
     };
     let then_val = check_branch(ctx, then);
     ctx.builder.begin_block(else_block, []);
-    if else_is_trival {
+    if else_is_empty {
         return Ok(Ref::UNIT);
     }
     let else_val = check_branch(ctx, else_);
@@ -1495,8 +1530,10 @@ fn lower_if_else_branches(
             let after_block = after_block(ctx);
             let ty = ctx.get_hir_type(resulting_ty)?;
             Ok(if returns_value {
-                let types = ctx.builder.types.add_multiple([ty]);
-                ctx.builder.begin_block(after_block, types.iter()).nth(0)
+                let ty = ctx.builder.types.add(ty);
+                ctx.builder
+                    .begin_block(after_block, std::iter::once(ty))
+                    .nth(0)
             } else {
                 ctx.builder.begin_block(after_block, []);
                 Ref::UNIT

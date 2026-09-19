@@ -1,4 +1,4 @@
-use std::num::NonZeroU64;
+use std::{io::Write, num::NonZeroU64};
 
 use error::span::TSpan;
 use ir::eval::{Error, Val};
@@ -282,6 +282,7 @@ pub fn value_expr(
     let (ir, ir_types) = crate::irgen::lower_hir(
         compiler,
         &dialects,
+        true,
         &mut instances,
         builder,
         &hir,
@@ -301,6 +302,7 @@ pub fn value_expr(
             let (body, types) = crate::irgen::lower_hir(
                 compiler,
                 &dialects,
+                true,
                 &mut instances,
                 builder,
                 body,
@@ -314,7 +316,10 @@ pub fn value_expr(
             env[f.ir_id].overwrite_types(types);
         }
     }
-    let mut env = LazyEvalEnv { env: &env };
+    let mut env = LazyEvalEnv {
+        env: &env,
+        comptime_print_mid_line: false,
+    };
     ir::eval::eval(&ir, &ir_types, &[], &mut env)
         .map(|val| (to_const_val(compiler, val, ty, &instances), ty))
 }
@@ -352,6 +357,7 @@ fn to_const_val(compiler: &Compiler, val: Val, ty: Type, instances: &Instances) 
 
 struct LazyEvalEnv<'a> {
     env: &'a ir::Environment,
+    comptime_print_mid_line: bool,
 }
 impl ir::eval::EvalEnvironment for LazyEvalEnv<'_> {
     fn env(&self) -> &ir::Environment {
@@ -391,6 +397,13 @@ impl ir::eval::EvalEnvironment for LazyEvalEnv<'_> {
                     .map_err(|_| Error::ExternCallFailed("out of compile-time memory".into()))?;
                 Val::Ptr(ptr)
             }
+            "free" => {
+                let &[Val::Ptr(_ptr)] = args else {
+                    return Err(Error::ExternCallFailed("Invalid signature for free".into()));
+                };
+                // ignore free calls
+                Val::Unit
+            }
             "memcpy" => {
                 let &[Val::Ptr(dest), Val::Ptr(src), Val::Int(count)] = args else {
                     return Err(Error::ExternCallFailed(
@@ -398,6 +411,39 @@ impl ir::eval::EvalEnvironment for LazyEvalEnv<'_> {
                     ));
                 };
                 mem.memcpy(src, dest, count)?;
+                Val::Unit
+            }
+            "comptime_print" | "comptime_println" => {
+                let [Val::Tuple(str)] = args else {
+                    return Err(Error::ExternCallFailed(
+                        "Invalid signature for comptime_print".into(),
+                    ));
+                };
+                let &[Val::Ptr(ptr), Val::Int(len)] = &**str else {
+                    return Err(Error::ExternCallFailed(
+                        "Invalid signature for comptime_print".into(),
+                    ));
+                };
+                let len: u32 = len.try_into().map_err(|_| {
+                    Error::ExternCallFailed("Invalid length for comptime_print".into())
+                })?;
+                let value = mem.get_slice(ptr, len)?;
+                let mut stdout = std::io::stdout().lock();
+                for line in value.split(|&b| b == b'\n') {
+                    if self.comptime_print_mid_line {
+                        stdout.write_all(line).unwrap();
+                    } else {
+                        stdout.write_all(b"[comptime] ").unwrap();
+                    }
+                    stdout.write_all(line).unwrap();
+
+                    self.comptime_print_mid_line = false;
+                }
+                if &*func.name == "comptime_println" {
+                    stdout.write_all(b"\n").unwrap();
+                    self.comptime_print_mid_line = false;
+                }
+                stdout.flush().unwrap();
                 Val::Unit
             }
             name => {

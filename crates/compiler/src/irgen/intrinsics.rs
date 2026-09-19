@@ -69,6 +69,13 @@ pub fn call_intrinsic(
             let return_ty = ctx.builder.types.add(return_ty);
             ctx.builder.append((call_ptr, args, return_ty))
         }
+        "is_comptime" => {
+            if ctx.is_comptime {
+                Ref::TRUE
+            } else {
+                Ref::FALSE
+            }
+        }
         _ => panic!("called unknown intrinsic: {intrinsic}"),
     }))
 }
