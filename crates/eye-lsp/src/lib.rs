@@ -1,4 +1,5 @@
 mod lsp;
+mod render;
 mod types;
 
 use std::io::{BufRead, Read};

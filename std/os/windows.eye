@@ -1,10 +1,8 @@
 
-HANDLE :: struct {
-}
+HANDLE :: struct {}
 DWORD :: u32
 BOOL :: i32
-OVERLAPPED :: struct {
-}
+OVERLAPPED :: struct {}
 
 STD_OUTPUT_HANDLE : DWORD : {
   x: i32 = -11

@@ -1017,7 +1017,7 @@ fn lower_expr(ctx: &mut Ctx, node: NodeId) -> Result<ValueOrPlace> {
                     tracing::debug!(
                         target: "irgen",
                         "Failed to select a trait instance for {trait_name} with {}. Candidates: {candidates:?}",
-                        ctx.compiler.types.display(self_ty, &Generics::EMPTY),
+                        ctx.compiler.display_type(self_ty, &Generics::EMPTY),
                     );
                     crash_point!(ctx);
                 }

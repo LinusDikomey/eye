@@ -40,7 +40,7 @@ impl<'a> fmt::Display for HirDisplay<'a> {
         let display_indented = |node| hir.display(node, compiler, generics, indent_count + 1);
         let display_pattern = |node| hir.display_pattern(node, compiler, generics);
         let display_lvalue = |node| hir.display_lvalue(node, compiler, generics, indent_count);
-        let display_ty = |ty| compiler.types.display(ty, generics);
+        let display_ty = |ty| compiler.display_type(ty, generics);
         match &hir[node] {
             Node::Invalid => {
                 cwrite!(f, "(#b<invalid>)")?;
@@ -456,7 +456,7 @@ impl<'a> fmt::Display for PatternDisplay<'a> {
             compiler,
             generics,
         } = self;
-        let display_ty = |ty| compiler.types.display(ty, generics);
+        let display_ty = |ty| compiler.display_type(ty, generics);
         match &hir[pattern] {
             Pattern::Invalid => cwrite!(f, "#m<invalid>"),
             Pattern::Variable(id) => {
@@ -568,7 +568,7 @@ impl<'a> fmt::Display for LValueDisplay<'a> {
         let indent_count = *indent_count;
         let display = |node| hir.display(node, compiler, generics, indent_count);
         let display_lvalue = |node| hir.display_lvalue(node, compiler, generics, indent_count);
-        let display_ty = |ty| compiler.types.display(ty, generics);
+        let display_ty = |ty| compiler.display_type(ty, generics);
         match hir[*lval] {
             LValue::Invalid => cwrite!(f, "(#b<invalid>)"),
             LValue::Variable(id) => cwrite!(f, "(#b<var> #y<{}>)", id.0),

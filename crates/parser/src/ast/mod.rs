@@ -163,6 +163,10 @@ impl<T: TreeToken> Ast<T> {
         (0..self.traits.len() as _).map(TraitId)
     }
 
+    pub fn def_expr_ids(&self) -> impl Iterator<Item = DefExprId> {
+        (0..self.def_exprs.len() as _).map(DefExprId)
+    }
+
     pub fn top_level_scope_id(&self) -> ScopeId {
         self.top_level_scope
     }

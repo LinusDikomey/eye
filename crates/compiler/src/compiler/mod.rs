@@ -37,7 +37,7 @@ use crate::{
     helpers::IteratorExt,
     hir::{HIRBuilder, Hir, Var},
     irgen,
-    types::{BaseType, BuiltinType, TypeFull, Types},
+    types::{self, BaseType, BuiltinType, TypeFull, Types},
     typing::{
         Bound, LocalOrGlobalInstance, LocalTypeId, LocalTypeIds, TypeInfo, TypeInfoOrIdx, TypeTable,
     },
@@ -563,8 +563,7 @@ impl Compiler {
                                 func_id.0,
                                 Error::MismatchedType {
                                     expected: self
-                                        .types
-                                        .display(ty, &signature.generics)
+                                        .display_type(ty, &signature.generics)
                                         .to_string(),
                                     found: "a function".to_owned(),
                                 }
@@ -587,8 +586,7 @@ impl Compiler {
                                     func_id.0,
                                     Error::MismatchedType {
                                         expected: self
-                                            .types
-                                            .display(ty, &signature.generics)
+                                            .display_type(ty, &signature.generics)
                                             .to_string(),
                                         found: "TODO: display function type".to_owned(),
                                     }
@@ -1304,7 +1302,7 @@ impl Compiler {
                     "{}.{}@{}.",
                     self.module_path(trait_id.0),
                     self.get_trait_name(trait_id.0, trait_id.1),
-                    &self.types.display(impl_.impl_ty, &impl_.generics)
+                    &self.display_type(impl_.impl_ty, &impl_.generics)
                 )
             }
         };
@@ -1325,7 +1323,7 @@ impl Compiler {
                 // don't print colors in mangled name
                 color_format::config::set_override(false);
                 // this type is instantiated so we can pass empty generics here
-                write!(name, "{}", self.types.display(ty, &Generics::EMPTY)).unwrap();
+                write!(name, "{}", self.display_type(ty, &Generics::EMPTY)).unwrap();
                 color_format::config::unset_override();
             }
             name.push(']');
@@ -1339,6 +1337,14 @@ impl Compiler {
             .parent
             .map_or_else(String::new, |parent| self.module_path(parent) + ".")
             + &module.name
+    }
+
+    pub fn display_type<'a>(&'a self, ty: Type, generics: &'a Generics) -> types::TypeDisplay<'a> {
+        types::TypeDisplay {
+            compiler: self,
+            generics,
+            ty,
+        }
     }
 }
 
@@ -1615,7 +1621,7 @@ impl Def {
             Self::ConstValue(value) => {
                 let (val, ty) = &compiler.const_values[value.idx()];
                 val.dump();
-                print!(": {}", compiler.types.display(*ty, &Generics::EMPTY));
+                print!(": {}", compiler.display_type(*ty, &Generics::EMPTY));
             }
             Self::Module(id) => print!("Module({})", id.idx()),
             Self::Global(module, id) => print!("Global({}, {})", module.idx(), id.idx()),

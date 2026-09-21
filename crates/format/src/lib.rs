@@ -21,7 +21,7 @@ pub fn format(src: Box<str>) -> (String, Errors) {
     (render::render(dom), errors)
 }
 
-pub fn render_cst<T: parser::ast::TreeToken>(cst: &Cst) -> String {
+pub fn render_cst(cst: &Cst) -> String {
     let dom = convert::module(cst);
     render::render(dom)
 }
