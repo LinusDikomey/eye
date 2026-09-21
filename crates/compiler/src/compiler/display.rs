@@ -38,7 +38,7 @@ impl<'a> fmt::Display for CheckedFunctionDisplay<'a> {
             cwrite!(
                 f,
                 "#g<${i}>: {}",
-                self.compiler.types.display(function[param], generics)
+                self.compiler.display_type(function[param], generics)
             )?;
         }
         if function.varargs {
@@ -52,8 +52,7 @@ impl<'a> fmt::Display for CheckedFunctionDisplay<'a> {
             ") -{} {}",
             ">",
             self.compiler
-                .types
-                .display(function[function.return_type], generics),
+                .display_type(function[function.return_type], generics),
         )?; // TODO: problem in color-format: can't escape >
         cwrite!(f, "\n  ")?;
         match &function.body_or_types {

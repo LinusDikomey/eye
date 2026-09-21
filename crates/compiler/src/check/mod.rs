@@ -599,8 +599,7 @@ pub fn verify_main_signature(
         _ => Err(Some(
             Error::InvalidMainReturnType(
                 compiler
-                    .types
-                    .display(signature.return_type, &signature.generics)
+                    .display_type(signature.return_type, &signature.generics)
                     .to_string(),
             )
             .at_span(signature.span),

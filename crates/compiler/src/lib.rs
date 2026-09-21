@@ -14,7 +14,7 @@ pub mod compiler;
 /// compiler errors and error formatting
 pub mod error;
 /// compile-time code evaluation
-mod eval;
+pub mod eval;
 /// various helpers
 mod helpers;
 /// high-level intermediate representation that knows type information and resolved identifiers

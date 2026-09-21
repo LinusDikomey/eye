@@ -333,6 +333,7 @@ struct FindHooks<'a> {
     find: FoundType,
     local_item: Option<LocalItem>,
     ty: Option<LocalTypeId>,
+    deferred_param: Option<ExprId>,
 }
 impl<'a> FindHooks<'a> {
     pub fn new(span: TSpan, ast: &'a Ast, compiler: &'a Compiler, find: FoundType) -> Self {
@@ -343,6 +344,7 @@ impl<'a> FindHooks<'a> {
             find,
             local_item: None,
             ty: None,
+            deferred_param: None,
         }
     }
 
@@ -362,6 +364,10 @@ impl<'a> FindHooks<'a> {
             self.local_item = Some(item);
         }
     }
+
+    pub fn has_found(&self) -> bool {
+        self.ty.is_some() || self.local_item.is_some()
+    }
 }
 impl<'a> compiler::check::Hooks for FindHooks<'a> {
     fn on_check_expr(
@@ -373,14 +379,31 @@ impl<'a> compiler::check::Hooks for FindHooks<'a> {
         _return_ty: compiler::typing::LocalTypeId,
         _noreturn: &mut bool,
     ) {
-        // TODO: for members, check the left type immediately after checking (similar to what
-        // happens in the complete handler) to find method items etc.
-        if matches!(self.find, FoundType::Member)
-            && let Expr::MemberAccess { name, .. } = self.ast[expr]
-            && name == self.span
-        {
-        } else if self.ast[expr].span(self.ast) != self.span {
+        if self.has_found() {
             return;
+        }
+        if let Some(deferred) = self.deferred_param {
+            if expr != deferred {
+                return;
+            }
+            eprintln!("Found deferred {deferred:?} of type {ty:?}");
+            self.ty = Some(ty);
+            return;
+        } else {
+            match (&self.find, &self.ast[expr]) {
+                (FoundType::Member, &Expr::MemberAccess { name, .. }) if name == self.span => {}
+                (FoundType::CallParameterLabel, &Expr::FunctionCall(id)) => {
+                    let call = &self.ast[id];
+                    for &(name, value) in &call.named_args {
+                        if name == self.span {
+                            self.deferred_param = Some(value);
+                            eprintln!("Deferring {name:?}");
+                        }
+                    }
+                }
+                (_, expr) if expr.span(self.ast) == self.span => {}
+                _ => return,
+            };
         }
         self.handle_found_expr(expr, hir, scope, ty, false);
     }
@@ -392,7 +415,7 @@ impl<'a> compiler::check::Hooks for FindHooks<'a> {
         scope: &mut compiler::compiler::LocalScope,
         ty: LocalTypeId,
     ) {
-        if self.ast[expr].span(self.ast) != self.span {
+        if self.has_found() || self.ast[expr].span(self.ast) != self.span {
             return;
         }
         self.handle_found_expr(expr, hir, scope, ty, false);
@@ -405,18 +428,21 @@ impl<'a> compiler::check::Hooks for FindHooks<'a> {
         scope: &mut LocalScope,
         ty: LocalTypeId,
     ) {
-        if self.ast[expr].span(self.ast) != self.span {
+        if self.has_found() || self.ast[expr].span(self.ast) != self.span {
             return;
         }
         self.handle_found_expr(expr, hir, scope, ty, true);
     }
 
     fn on_checked_params(&mut self, hir: &mut HIRBuilder, scope: &mut LocalScope) {
-        if !matches!(self.find, FoundType::ParameterName) {
+        if self.has_found() || !matches!(self.find, FoundType::Parameter) {
             return;
         }
         let name = &self.ast.src()[self.span.range()];
         let item = scope.resolve(name, self.span, self.compiler, &mut hir.vars);
+        if let LocalItem::Var(var) = item {
+            self.ty = Some(hir.get_var(var).ty());
+        }
         self.local_item = Some(item);
     }
 }

@@ -3,7 +3,9 @@ use std::fmt::Write;
 use compiler::{
     ConstValue, Def, ModuleSpan, Type,
     compiler::{BodyOrTypes, Generics, LocalItem, VarId},
+    typing::TypeTable,
 };
+use error::span::TSpan;
 
 use crate::{
     lsp::{
@@ -53,56 +55,43 @@ impl Lsp {
             | FoundType::Literal
             | FoundType::EnumLiteral
             | FoundType::Member
-            | FoundType::ParameterName => match context {
-                ScopeContext::TopLevel => Hover::default(),
-                ScopeContext::Function(function_id) => {
-                    let ast = self.compiler.get_module_ast(module);
-                    let mut hooks = FindHooks::new(found.span, ast, &self.compiler, found.ty);
-                    let checked = compiler::check::function(
-                        &self.compiler,
-                        module,
-                        function_id,
-                        false,
-                        &mut hooks,
-                    );
-                    let BodyOrTypes::Body(hir) = checked.body_or_types else {
-                        return Hover::default();
-                    };
-                    let signature = self.compiler.get_signature(module, function_id);
-                    let hover_var = |var: VarId| {
-                        let ty = hir.vars[var.idx()].ty();
-                        let val = &ast.src()[found.span.range()];
-                        let ty = self
-                            .compiler
-                            .types
-                            .display(hir[ty], &signature.generics)
-                            .to_string();
-                        let mut text = format!("```eye\n{val}: {ty}\n```");
-                        if let compiler::hir::Var::Capture { outer, .. } = hir.vars[var.idx()] {
-                            write!(text, "\n---\nCapture of #{}", outer.0).unwrap();
-                        }
-                        Hover {
-                            contents: text.into(),
-                            range: Some(Range::from_span(found.span, ast.src())),
-                        }
-                    };
-                    let name_or_literal = &ast.src()[found.span.range()];
-                    let Some(item) = hooks.local_item else {
-                        let Some(ty) = hooks.ty else {
-                            return hover("expr not found".into());
-                        };
-                        let ty = self.compiler.types.display(hir[ty], &signature.generics);
-                        return hover(format!("{name_or_literal} : {ty}").into());
-                    };
-                    match item {
-                        LocalItem::Var(var_id) => hover_var(var_id),
-                        LocalItem::Invalid | LocalItem::Def(Def::Invalid) => {
-                            hover("<invalid value>".into())
-                        }
-                        LocalItem::Def(def) => hover(self.hover_def(def, name_or_literal)),
+            | FoundType::Parameter
+            | FoundType::CallParameterLabel => {
+                let mut hooks = FindHooks::new(found.span, ast, &self.compiler, found.ty);
+                let Some((hir, generics)) =
+                    context.check(&self.compiler, module, found.scope, &mut hooks)
+                else {
+                    return Hover::default();
+                };
+                let hover_var = |var: VarId| {
+                    let ty = hir.vars[var.idx()].ty();
+                    let val = &ast.src()[found.span.range()];
+                    let ty = self.compiler.display_type(hir[ty], &generics).to_string();
+                    let mut text = format!("```eye\n{val}: {ty}\n```");
+                    if let compiler::hir::Var::Capture { outer, .. } = hir.vars[var.idx()] {
+                        write!(text, "\n---\nCapture of #{}", outer.0).unwrap();
                     }
+                    Hover {
+                        contents: text.into(),
+                        range: Some(Range::from_span(found.span, ast.src())),
+                    }
+                };
+                let name_or_literal = &ast.src()[found.span.range()];
+                let Some(item) = hooks.local_item else {
+                    let Some(ty) = hooks.ty else {
+                        return hover("expr not found".into());
+                    };
+                    let ty = self.compiler.display_type(hir[ty], &generics);
+                    return hover(format!("{name_or_literal} : {ty}").into());
+                };
+                match item {
+                    LocalItem::Var(var_id) => hover_var(var_id),
+                    LocalItem::Invalid | LocalItem::Def(Def::Invalid) => {
+                        hover(format!("invalid value for {:?}", hooks.find).into())
+                    }
+                    LocalItem::Def(def) => hover(self.hover_def(def, name_or_literal)),
                 }
-            },
+            }
             FoundType::Primitive(p) => hover(HoverContents::MarkedStrings(vec![
                 text("primitive type "),
                 code(p.into_str()),
@@ -137,7 +126,7 @@ impl Lsp {
     fn hover_def(&self, def: Def, name: &str) -> HoverContents {
         let hover_const_value = |value: &ConstValue, ty: Type, kind_text: &str, assign: &str| {
             let generics = Generics::EMPTY;
-            let ty = self.compiler.types.display(ty, &generics);
+            let ty_display = self.compiler.display_type(ty, &generics);
             let value = match value {
                 ConstValue::Undefined => "undefined".to_owned(),
                 ConstValue::Unit => "()".to_owned(),
@@ -146,7 +135,7 @@ impl Lsp {
                 ConstValue::Aggregate(_) => "TODO: display aggregate const values".to_owned(),
                 ConstValue::Function(_, _) => "TODO: display const function values".to_owned(),
             };
-            format!("{kind_text}\n```eye\n{name}: {ty} {assign} {value}\n```").into()
+            format!("{kind_text}\n```eye\n{name}: {ty_display} {assign} {value}\n```").into()
         };
 
         match def {
@@ -181,7 +170,7 @@ impl Lsp {
                         write!(
                             text,
                             "{name} {}",
-                            self.compiler.types.display(*ty, &signature.generics),
+                            self.compiler.display_type(*ty, &signature.generics),
                         )
                         .unwrap();
                     }
@@ -190,7 +179,7 @@ impl Lsp {
                         write!(
                             text,
                             "{name} {} = <TODO: display default>",
-                            self.compiler.types.display(*ty, &signature.generics)
+                            self.compiler.display_type(*ty, &signature.generics)
                         )
                         .unwrap();
                     }

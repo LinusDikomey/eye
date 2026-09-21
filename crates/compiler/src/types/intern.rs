@@ -14,7 +14,7 @@ use parser::ast::{self, FunctionId, ModuleId};
 use segment_list::SegmentList;
 
 use crate::{
-    Type,
+    Compiler, Type,
     compiler::{Generics, Resolvable, ResolvableTypeDef, ResolvedTypeDef},
     types::{BaseType, BuiltinType, TypeFull},
 };
@@ -289,66 +289,44 @@ impl Types {
             TypeFull::Const(_) => ty,
         }
     }
-
-    pub fn display<'a>(&'a self, ty: Type, generics: &'a Generics) -> TypeDisplay<'a> {
-        TypeDisplay {
-            types: self,
-            generics,
-            ty,
-        }
-    }
 }
 
 #[must_use]
 pub struct TypeDisplay<'a> {
-    types: &'a Types,
-    generics: &'a Generics,
-    ty: Type,
+    pub compiler: &'a Compiler,
+    pub generics: &'a Generics,
+    pub ty: Type,
 }
 impl<'a> fmt::Display for TypeDisplay<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.types.lookup(self.ty) {
+        let types = &self.compiler.types;
+        let t = |ty| self.compiler.display_type(ty, self.generics);
+        match types.lookup(self.ty) {
             TypeFull::Instance(base, generics) => match base {
                 BaseType::Invalid => write!(f, "<invalid>"),
-                BaseType::Array => write!(
-                    f,
-                    "[{}; {}]",
-                    self.types.display(generics[0], self.generics),
-                    self.types.display(generics[1], self.generics)
-                ),
+                BaseType::Array => write!(f, "[{}; {}]", t(generics[0]), t(generics[1])),
                 BaseType::Pointer => {
-                    write!(f, "*{}", self.types.display(generics[0], self.generics))
+                    write!(f, "*{}", t(generics[0]))
                 }
                 BaseType::Function => {
                     write!(f, "fn")?;
                     let &[params, return_ty] = generics else {
                         unreachable!()
                     };
-                    if !matches!(self.types.lookup(params), TypeFull::Tuple { .. }) {
+                    if !matches!(self.compiler.types.lookup(params), TypeFull::Tuple { .. }) {
                         write!(f, " ")?;
                     }
-                    write!(
-                        f,
-                        "{} -> {}",
-                        self.types.display(params, self.generics),
-                        self.types.display(return_ty, self.generics)
-                    )
+                    write!(f, "{} -> {}", t(params), t(return_ty),)
                 }
                 _ => {
-                    let name = &self.types.get_base(base).name;
+                    let name = &self.compiler.types.get_base(base).name;
                     cwrite!(f, "#r<{name}>")?;
                     self.write_generics(f, generics)
                 }
             },
             TypeFull::FunctionItem { function, generics } => {
-                // TODO: display function items differently than just their id, maybe by the
-                // showing the function's mangled name
-                cwrite!(
-                    f,
-                    "#m<fn item>{}:{}",
-                    function.0.into_inner(),
-                    function.1.into_inner()
-                )?;
+                let name = self.compiler.get_function_name(function.0, function.1);
+                cwrite!(f, "#m<fn> {name}",)?;
                 self.write_generics(f, generics)
             }
             TypeFull::Tuple {
@@ -363,7 +341,7 @@ impl<'a> fmt::Display for TypeDisplay<'a> {
                     } else {
                         cwrite!(f, ", ")?;
                     }
-                    cwrite!(f, "{}", self.types.display(member, self.generics))?;
+                    cwrite!(f, "{}", t(member))?;
                 }
                 for (name, member) in named_members {
                     if first {
@@ -371,7 +349,7 @@ impl<'a> fmt::Display for TypeDisplay<'a> {
                     } else {
                         cwrite!(f, ", ")?;
                     }
-                    cwrite!(f, "{name}: {}", self.types.display(*member, self.generics))?;
+                    cwrite!(f, "{name}: {}", t(*member))?;
                 }
                 if members.len() == 1 && named_members.is_empty() {
                     cwrite!(f, ",")?;
@@ -399,7 +377,7 @@ impl<'a> TypeDisplay<'a> {
                 f,
                 "{}",
                 TypeDisplay {
-                    types: self.types,
+                    compiler: self.compiler,
                     generics: self.generics,
                     ty: generic
                 }

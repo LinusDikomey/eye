@@ -1,6 +1,6 @@
 mod intern;
 
-pub use intern::Types;
+pub use intern::{TypeDisplay, Types};
 
 use parser::ast::{FloatType, FunctionId, IntType, ModuleId, Primitive};
 

@@ -134,8 +134,7 @@ pub fn def_expr(
                 mismatched_type(
                     compiler,
                     compiler
-                        .types
-                        .display(Type::Unit, &Generics::EMPTY)
+                        .display_type(Type::Unit, &Generics::EMPTY)
                         .to_string(),
                 );
                 return Def::Invalid;

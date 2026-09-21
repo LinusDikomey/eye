@@ -34,8 +34,8 @@ pub fn check(
         }
         _ => {
             error = Some(Error::InvalidCast {
-                from: compiler.types.display(from_ty, generics).to_string(),
-                to: compiler.types.display(to_ty, generics).to_string(),
+                from: compiler.display_type(from_ty, generics).to_string(),
+                to: compiler.display_type(to_ty, generics).to_string(),
             });
             CastType::Invalid
         }

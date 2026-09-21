@@ -1069,7 +1069,7 @@ impl TypeTable {
             }
             TypeInfo::UnknownConst => s.push_str("<unknown constant>"),
             TypeInfo::Known(ty) => {
-                write!(s, "{}", compiler.types.display(ty, function_generics)).unwrap();
+                write!(s, "{}", compiler.display_type(ty, function_generics)).unwrap();
             }
             TypeInfo::Integer => s.push_str("<integer>"),
             TypeInfo::Float => s.push_str("<float>"),
