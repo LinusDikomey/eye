@@ -18,6 +18,7 @@ pub enum ScopeContext {
     TopLevel,
     Function(ast::FunctionId),
     DefExpr(ast::DefExprId),
+    TypeDef(ast::TypeId),
 }
 impl ScopeContext {
     pub fn check<H: Hooks>(
@@ -28,7 +29,7 @@ impl ScopeContext {
         hooks: &mut H,
     ) -> Option<(Hir, compiler::compiler::Generics)> {
         match self {
-            ScopeContext::TopLevel => None,
+            ScopeContext::TopLevel | ScopeContext::TypeDef(_) => None,
             &ScopeContext::Function(function_id) => {
                 let checked =
                     compiler::check::function(compiler, module, function_id, false, hooks);
@@ -60,16 +61,7 @@ impl ScopeContext {
                     false,
                     hooks,
                 );
-                let def = compiler::eval::def_expr(
-                    compiler,
-                    module,
-                    scope,
-                    ast,
-                    *expr,
-                    "",
-                    TSpan::EMPTY,
-                    ty,
-                );
+                compiler::eval::def_expr(compiler, module, scope, ast, *expr, "", TSpan::EMPTY, ty);
                 Some((hir, compiler::compiler::Generics::EMPTY))
             }
         }
@@ -89,6 +81,8 @@ pub enum FoundType {
     Underscore,
     RootModule,
     Member,
+    /// definition of a struct member or enum variant name
+    MemberDef,
     Parameter,
     Keyword,
     Generic,
@@ -220,29 +214,51 @@ fn find_at_offset_expr(
         &Expr::Primitive { primitive, .. } => found(FoundType::Primitive(primitive), span),
         // TODO: find in trait/type definitions
         &Expr::TypeDeclaration { id } => {
+            let context = ScopeContext::TypeDef(id);
+            #[allow(unused)]
+            let rec = ();
             let def = &ast[id];
             let scope = def.scope;
             if let Some(found) = generics(offset, scope, context, &def.generics) {
                 return Some(found);
             }
             (match &def.content {
-                ast::TypeContent::Struct { members } => {
-                    keyword(TSpan::new(span.start, span.start + Keyword::Struct.len())).or_else(
-                        || {
-                            members.iter().find_map(|member| {
-                                find_at_offset_ty(offset, scope, context, &member.ty)
+                ast::TypeContent::Struct { members } => keyword(TSpan::new(
+                    span.start,
+                    span.start + Keyword::Struct.len(),
+                ))
+                .or_else(|| {
+                    members.iter().find_map(|member| {
+                        member
+                            .name
+                            .contains(offset)
+                            .then_some(Found {
+                                ty: FoundType::MemberDef,
+                                span: member.name,
+                                scope,
+                                context,
                             })
-                        },
-                    )
-                }
+                            .or_else(|| find_at_offset_ty(offset, scope, context, &member.ty))
+                    })
+                }),
                 ast::TypeContent::Enum { variants } => {
                     keyword(TSpan::new(span.start, span.start + Keyword::Enum.len())).or_else(
                         || {
                             variants.iter().find_map(|variant| {
                                 variant
-                                    .args
-                                    .iter()
-                                    .find_map(|arg| find_at_offset_ty(offset, scope, context, arg))
+                                    .name_span
+                                    .contains(offset)
+                                    .then_some(Found {
+                                        ty: FoundType::MemberDef,
+                                        span: variant.name_span,
+                                        scope,
+                                        context,
+                                    })
+                                    .or_else(|| {
+                                        variant.args.iter().find_map(|arg| {
+                                            find_at_offset_ty(offset, scope, context, arg)
+                                        })
+                                    })
                             })
                         },
                     )

@@ -4,9 +4,14 @@ use compiler::{
     ConstValue, Def, ModuleSpan, Type,
     compiler::{Generics, LocalItem, VarId},
 };
+use parser::ast::TypeContent;
 
 use crate::{
-    lsp::{Lsp, find_in_ast::FoundType, handlers::FindHooks},
+    lsp::{
+        Lsp,
+        find_in_ast::{FoundType, ScopeContext},
+        handlers::FindHooks,
+    },
     render,
     types::{
         Range,
@@ -45,6 +50,25 @@ impl Lsp {
                     self.compiler
                         .resolve_in_scope(module, found.scope, name, ModuleSpan::MISSING);
                 hover(self.hover_def(def, name))
+            }
+            FoundType::MemberDef => {
+                let ScopeContext::TypeDef(id) = context else {
+                    return Hover::default();
+                };
+                let name = &ast[found.span];
+                let checked = self.compiler.get_parsed_module(module);
+                let base = checked.symbols.get
+                match &ast[id].content {
+                    TypeContent::Struct { members } => {
+                        let a = self.compiler.get_base_type_def()
+                        let Some(member) = members.iter().find(|member| member.name == found.span) else {
+                            return Hover::default();
+                        };
+                        let ty = self.compiler.display_type(member.ty, generics)
+                        hover(format!("{name} {ty}"))
+                    }
+                    TypeContent::Enum { variants } => todo!(),
+                }
             }
             FoundType::Ident
             | FoundType::Literal
@@ -134,6 +158,7 @@ impl Lsp {
         };
 
         match def {
+            Def::Invalid => "{invalid definition}".into(),
             Def::ConstValue(id) => {
                 let (value, ty) = &self.compiler.const_values[id.idx()];
                 hover_const_value(value, *ty, "constant", ":")
@@ -187,13 +212,11 @@ impl Lsp {
                 if let Some(trait_) = self.compiler.get_checked_trait(module, id) {
                     write_generics(&mut text, &trait_.generics);
                 }
-                text.push_str(" { ... }");
+                text.push_str(" { ... }\n```");
                 text.into()
             }
             Def::Type(ty) => render::ty(&self.compiler, ty).into(),
             Def::BaseType(base) => render::base_type(&self.compiler, base).into(),
-            // TODO: handle each case separately and produce proper hover text
-            def => format!("Definition {def:?}").into(),
         }
     }
 }
