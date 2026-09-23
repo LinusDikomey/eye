@@ -2,11 +2,16 @@ use std::fmt::Write;
 
 use compiler::{
     ConstValue, Def, ModuleSpan, Type,
-    compiler::{Generics, LocalItem, VarId},
+    compiler::{Generics, LocalItem, ResolvedTypeContent, VarId},
+    types::BaseType,
 };
 
 use crate::{
-    lsp::{Lsp, find_in_ast::FoundType, handlers::FindHooks},
+    lsp::{
+        Lsp,
+        find_in_ast::{FoundType, ScopeContext},
+        handlers::FindHooks,
+    },
     render,
     types::{
         Range,
@@ -30,7 +35,6 @@ impl Lsp {
         let Some((module, _offset, found)) = self.find_document_position(&hover.position) else {
             return Hover::default();
         };
-        let context = self.find_context_for_scope(module, found.scope);
         let ast = self.compiler.get_module_ast(module);
         let hover = |contents| Hover {
             contents,
@@ -46,6 +50,62 @@ impl Lsp {
                         .resolve_in_scope(module, found.scope, name, ModuleSpan::MISSING);
                 hover(self.hover_def(def, name))
             }
+            FoundType::MemberDef => {
+                let ScopeContext::TypeDef(id, def_expr) = found.context else {
+                    // this shouldn't usually happen
+                    return Hover::default();
+                };
+                let name = &ast[found.span];
+                // base type here will be used for defining inherent impls. Since we don't insert
+                // the resolved definition into the compiler, this is fine
+                let def = compiler::check::type_def(&self.compiler, module, id, BaseType::Invalid);
+                let type_name =
+                    def_expr.map_or("<anonymous>", |def_expr| &ast[ast[def_expr].name_span]);
+                let mut text = self.compiler.module_path(module) + "." + type_name + "\n\n```\n";
+                match &def.def {
+                    ResolvedTypeContent::Builtin(_) => {
+                        unreachable!("impossible to hover a builtin type definition")
+                    }
+                    ResolvedTypeContent::Struct(struct_) => {
+                        let Some((_, field_ty)) = struct_
+                            .all_fields()
+                            .find(|&(field_name, _)| field_name == name)
+                        else {
+                            return Hover::default();
+                        };
+                        let ty = self.compiler.display_type(field_ty, &def.generics);
+                        write!(text, "{name}: {ty}").unwrap();
+                    }
+                    ResolvedTypeContent::Enum(enum_) => {
+                        let Some((variant_name, ordinal, params)) = enum_
+                            .variants
+                            .iter()
+                            .find(|&(variant_name, _ordinal, _params)| &**variant_name == name)
+                        else {
+                            return Hover::default();
+                        };
+                        text.push_str(variant_name);
+                        if !params.is_empty() {
+                            text.push('(');
+                            for (i, param) in params.iter().enumerate() {
+                                if i != 0 {
+                                    text.push_str(", ");
+                                }
+                                write!(
+                                    text,
+                                    "{}",
+                                    self.compiler.display_type(*param, &def.generics)
+                                )
+                                .unwrap();
+                            }
+                            text.push(')');
+                        }
+                        write!(text, " # = {ordinal}").unwrap();
+                    }
+                }
+                text.push_str("\n```");
+                hover(text.into())
+            }
             FoundType::Ident
             | FoundType::Literal
             | FoundType::EnumLiteral
@@ -54,7 +114,9 @@ impl Lsp {
             | FoundType::CallParameterLabel => {
                 let mut hooks = FindHooks::new(found.span, ast, &self.compiler, found.ty);
                 let Some((hir, generics)) =
-                    context.check(&self.compiler, module, found.scope, &mut hooks)
+                    found
+                        .context
+                        .check(&self.compiler, module, found.scope, &mut hooks)
                 else {
                     return Hover::default();
                 };
@@ -134,6 +196,7 @@ impl Lsp {
         };
 
         match def {
+            Def::Invalid => "{invalid definition}".into(),
             Def::ConstValue(id) => {
                 let (value, ty) = &self.compiler.const_values[id.idx()];
                 hover_const_value(value, *ty, "constant", ":")
@@ -187,13 +250,11 @@ impl Lsp {
                 if let Some(trait_) = self.compiler.get_checked_trait(module, id) {
                     write_generics(&mut text, &trait_.generics);
                 }
-                text.push_str(" { ... }");
+                text.push_str(" { ... }\n```");
                 text.into()
             }
             Def::Type(ty) => render::ty(&self.compiler, ty).into(),
             Def::BaseType(base) => render::base_type(&self.compiler, base).into(),
-            // TODO: handle each case separately and produce proper hover text
-            def => format!("Definition {def:?}").into(),
         }
     }
 }

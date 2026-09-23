@@ -3,10 +3,10 @@ use dmap::DHashMap;
 use std::collections::hash_map::Entry;
 
 use crate::ast::{
-    self, Attribute, Attributes, Definition, EnumVariantDefinition, Expr, ExprId, ExprIdPairs,
-    ExprIds, Function, FunctionContext, GenericDef, Generics, Global, Impl, InherentImpl, Item,
-    ItemValue, Method, StructMember, TraitDefinition, TreeToken, UnOp, UnresolvedFunctionType,
-    UnresolvedType,
+    self, Attribute, Attributes, DefExpr, Definition, EnumVariantDefinition, Expr, ExprId,
+    ExprIdPairs, ExprIds, Function, FunctionContext, GenericDef, Generics, Global, Impl,
+    InherentImpl, Item, ItemValue, Method, StructMember, TraitDefinition, TreeToken, UnOp,
+    UnresolvedFunctionType, UnresolvedType,
 };
 
 use crate::unexpected;
@@ -211,12 +211,13 @@ impl<T: TreeToken> Parser<'_, T> {
                             );
                         }
                         Entry::Vacant(vacant_entry) => {
-                            vacant_entry.insert(Definition::Expr {
+                            vacant_entry.insert(Definition::Expr(self.ast.def_expr(DefExpr {
                                 t_name,
                                 name_span,
                                 t_colon_colon,
-                                id: self.ast.def_expr(value, annotated_ty),
-                            });
+                                annotated_ty,
+                                value,
+                            })));
                         }
                     }
                 }

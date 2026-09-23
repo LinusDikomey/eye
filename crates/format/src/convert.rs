@@ -91,7 +91,7 @@ impl<'a> Converter<'a> {
 
     fn def_start(&self, def: &Definition<Token>) -> u32 {
         match def {
-            Definition::Expr { t_name, .. } => t_name.start,
+            &Definition::Expr(id) => self.cst[id].t_name.start,
             Definition::Use { t_use, .. } => t_use.start,
             &Definition::Global(global_id) => self.cst[global_id].t_name.start,
             Definition::Module(_) | Definition::Generic(_) => 0,
@@ -101,26 +101,21 @@ impl<'a> Converter<'a> {
     fn def(&mut self, nodes: &mut Vec<Node>, item: &Definition<Token>) {
         self.keep_user_newlines_scope();
         match item {
-            &Definition::Expr {
-                t_name,
-                t_colon_colon,
-                id,
-                ..
-            } => {
-                let (expr, ty) = &self.cst[id];
-                self.tok_s(nodes, t_name);
-                match t_colon_colon {
+            &Definition::Expr(id) => {
+                let def_expr = &self.cst[id];
+                self.tok_s(nodes, def_expr.t_name);
+                match def_expr.t_colon_colon {
                     parser::ast::Either::A(t) => {
                         self.tok_s(nodes, t);
                     }
                     parser::ast::Either::B((a, b)) => {
                         self.tok_s(nodes, a);
-                        nodes.push(self.ty(ty));
+                        nodes.push(self.ty(&def_expr.annotated_ty));
                         nodes.push(" ".into());
                         self.tok_s(nodes, b);
                     }
                 }
-                self.expr(nodes, *expr);
+                self.expr(nodes, def_expr.value);
             }
             &Definition::Use { t_use, path, id: _ } => {
                 self.tok_s(nodes, t_use);

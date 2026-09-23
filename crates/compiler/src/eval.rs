@@ -61,10 +61,10 @@ pub fn def_expr(
     scope: ScopeId,
     ast: &Ast,
     expr: ExprId,
-    name: &str,
     name_span: TSpan,
     ty: &UnresolvedType,
 ) -> Def {
+    let name = &ast[name_span];
     let mismatched_type = |compiler: &Compiler, found| {
         let mut expected = String::new();
         ty.to_string(&mut expected, ast.src());
@@ -141,9 +141,7 @@ pub fn def_expr(
             }
             Def::ConstValue(compiler.add_const_value(ConstValue::Unit, ty))
         }
-        &Expr::Return { val, .. } => {
-            def_expr(compiler, module, scope, ast, val, name, name_span, ty)
-        }
+        &Expr::Return { val, .. } => def_expr(compiler, module, scope, ast, val, name_span, ty),
         &Expr::Function { id } => {
             if compiler
                 .check_signature_with_type((module, id), ty, scope, module)
@@ -163,11 +161,8 @@ pub fn def_expr(
                 mismatched_type(compiler, Primitive::Type.to_string());
                 return Def::Invalid;
             }
-            let symbols = &compiler.get_parsed_module(module).symbols;
-            let base = *symbols.types[id.idx()].get_or_init(|| {
-                let generic_count = ast[id].generic_count();
-                compiler.add_type_def(module, id, name.into(), name_span, generic_count)
-            });
+            let parsed_module = compiler.get_parsed_module(module);
+            let base = compiler.get_base_type_for_type_def(module, parsed_module, id, name_span);
             let generic_count = compiler.get_base_type_generic_count(base);
             if generic_count == 0 {
                 Def::Type(compiler.types.intern(TypeFull::Instance(base, &[])))

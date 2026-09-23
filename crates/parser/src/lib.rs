@@ -77,10 +77,10 @@ mod tests {
         let ast = test_parse("f :: fn { x := 3 }");
         let scope = &ast[ast.top_level_scope_id()];
         assert_eq!(scope.definitions.len(), 1);
-        let Definition::Expr { id: f_def, .. } = scope.definitions["f"] else {
+        let Definition::Expr(f_def) = scope.definitions["f"] else {
             panic!("expected definition f");
         };
-        let Expr::Function { id } = ast[ast[f_def].0] else {
+        let Expr::Function { id } = ast[ast[f_def].value] else {
             panic!("expected function definition");
         };
         let body = ast[id].body.unwrap();

@@ -316,9 +316,7 @@ impl Compiler {
         let &def = parsed.ast[scope].definitions.get(name)?;
         let def = match def {
             // PERF: return reference here instead of cloning if possible
-            ast::Definition::Expr { id, name_span, .. } => {
-                *self.get_def_expr(module, scope, name, name_span, id)
-            }
+            ast::Definition::Expr(id) => *self.get_def_expr(module, scope, id),
             ast::Definition::Use { path, id, .. } => {
                 self.resolve_use(parsed, module, scope, id, path)
             }
@@ -347,29 +345,29 @@ impl Compiler {
         )
     }
 
-    pub fn get_def_expr(
-        &self,
-        module: ModuleId,
-        scope: ScopeId,
-        name: &str,
-        name_span: TSpan,
-        id: DefExprId,
-    ) -> &Def {
+    pub fn get_def_expr(&self, module: ModuleId, scope: ScopeId, id: DefExprId) -> &Def {
         let parsed = self.get_parsed_module(module);
         parsed.symbols.def_exprs[id.idx()].get_or_resolve_with(
             || {
                 let ast = self.get_module_ast(module);
-                let (value, _) = ast[id];
-                let span = ast[value].span(ast);
+                let def_expr = &ast[id];
+                let span = ast[def_expr.value].span(ast);
                 self.errors
                     .emit(module, Error::RecursiveDefinition.at_span(span));
                 Def::Invalid
             },
             || {
                 let ast = &parsed.ast;
-                let (value, ty) = &ast[id];
-                let value = *value;
-                eval::def_expr(self, module, scope, ast, value, name, name_span, ty)
+                let def_expr = &ast[id];
+                eval::def_expr(
+                    self,
+                    module,
+                    scope,
+                    ast,
+                    def_expr.value,
+                    def_expr.name_span,
+                    &def_expr.annotated_ty,
+                )
             },
         )
     }
@@ -855,10 +853,30 @@ impl Compiler {
     }
 
     pub fn get_base_type_def(&self, ty: BaseType) -> &ResolvedTypeDef {
-        self.types.get_base(ty).resolved.get_or_resolve_with(
+        let base_def = self.types.get_base(ty);
+        base_def.resolved.get_or_resolve_with(
             || todo!("handle recursive type definition"),
-            || check::type_def(self, ty),
+            || check::type_def(self, base_def.module, base_def.id, ty),
         )
+    }
+
+    pub fn get_base_type_for_type_def(
+        &self,
+        module: ModuleId,
+        parsed: &ParsedModule,
+        id: ast::TypeId,
+        name_span: TSpan,
+    ) -> BaseType {
+        *parsed.symbols.types[id.idx()].get_or_init(|| {
+            let generic_count = parsed.ast[id].generic_count();
+            self.add_type_def(
+                module,
+                id,
+                parsed.ast[name_span].into(),
+                name_span,
+                generic_count,
+            )
+        })
     }
 
     pub fn is_uninhabited(&self, ty: Type, instance: &Instance) -> Result<bool, InvalidTypeError> {
@@ -928,7 +946,6 @@ impl Compiler {
                     global.scope,
                     ast,
                     global.val,
-                    &global.name,
                     global.name_span,
                     &global.ty,
                 ) {
@@ -953,13 +970,13 @@ impl Compiler {
         while let Some(module) = modules_to_check.pop_front() {
             let parsed = self.get_parsed_module(module);
             for scope in parsed.ast.scope_ids() {
-                for (name, def) in &parsed.ast[scope].definitions {
+                for def in parsed.ast[scope].definitions.values() {
                     match *def {
                         ast::Definition::Use { path, id, .. } => {
                             self.resolve_use(parsed, module, scope, id, path);
                         }
-                        ast::Definition::Expr { id, name_span, .. } => {
-                            let def = self.get_def_expr(module, scope, name, name_span, id);
+                        ast::Definition::Expr(id) => {
+                            let def = self.get_def_expr(module, scope, id);
                             if let &Def::Function(module, id) = def {
                                 self.get_hir(module, id);
                             }
@@ -1267,6 +1284,13 @@ impl Compiler {
         self.builtins = Builtins::resolve(std, self);
     }
 
+    pub fn qualified_base_type_name(&self, base: BaseType) -> String {
+        self.module_path(self.get_base_type_def(base).module)
+            + "."
+            + &self.types.get_base(base).name
+            + "."
+    }
+
     pub fn mangle_name(
         &self,
         checked: &CheckedFunction,
@@ -1279,16 +1303,9 @@ impl Compiler {
         color_format::config::set_override(false);
         let mut name = match checked.context {
             FunctionContext::None => self.module_path(module) + ".",
-            FunctionContext::Method(base) => {
-                self.module_path(self.get_base_type_def(base).module)
-                    + "."
-                    + &self.types.get_base(base).name
-                    + "."
-            }
+            FunctionContext::Method(base) => self.qualified_base_type_name(base),
             FunctionContext::InherentImpl(base, trait_id) => {
-                self.module_path(self.get_base_type_def(base).module)
-                    + "."
-                    + &self.types.get_base(base).name
+                self.qualified_base_type_name(base)
                     + "."
                     + self.get_trait_name(trait_id.0, trait_id.1)
                     + "."

@@ -1,9 +1,7 @@
 use compiler::{
     Compiler, Def, ModuleSpan, Type,
     check::traits,
-    compiler::{
-        BodyOrTypes, Generics, LocalScope, ResolvedTypeContent, ResolvedTypeDef, Signature, VarId,
-    },
+    compiler::{Generics, LocalScope, ResolvedTypeContent, ResolvedTypeDef, Signature, VarId},
     hir::{HIRBuilder, TypeProperty},
     types::{BaseType, TypeFull},
     typing::{LocalTypeId, TypeInfo},
@@ -12,10 +10,7 @@ use error::span::{IdentPath, TSpan};
 use parser::ast::{self, Ast, Expr, ExprId, ModuleId, ScopeId, TraitId};
 
 use crate::{
-    lsp::{
-        Lsp,
-        find_in_ast::{FoundType, ScopeContext},
-    },
+    lsp::{Lsp, find_in_ast::FoundType},
     render,
     types::request::{
         CompletionItem, CompletionItemKind, CompletionItemLabelDetails, CompletionParams,
@@ -524,6 +519,8 @@ fn function_completion(
         preselect,
     }
 }
+
+#[allow(unused)] // TODO: show when hovering/completing a function call
 fn display_signature(compiler: &Compiler, signature: &Signature) -> String {
     use std::fmt::Write;
 

@@ -126,7 +126,7 @@ pub struct Ast<T: TreeToken = ()> {
     top_level_scope: ScopeId,
     scopes: Box<[Scope<T>]>,
     pub exprs: Box<[Expr<T>]>,
-    def_exprs: Box<[(ExprId, UnresolvedType)]>,
+    def_exprs: Box<[DefExpr<T>]>,
     calls: Box<[Call<T>]>,
     functions: Box<[Function<T>]>,
     types: Box<[TypeDef<T>]>,
@@ -219,7 +219,7 @@ impl<T: TreeToken> Index<ExprId> for Ast<T> {
     }
 }
 impl<T: TreeToken> Index<DefExprId> for Ast<T> {
-    type Output = (ExprId, UnresolvedType);
+    type Output = DefExpr<T>;
     fn index(&self, index: DefExprId) -> &Self::Output {
         &self.def_exprs[index.0 as usize]
     }
@@ -268,7 +268,7 @@ impl<T: TreeToken> Index<GlobalId> for Ast<T> {
 pub struct AstBuilder<T: TreeToken> {
     scopes: Vec<Scope<T>>,
     exprs: Vec<Expr<T>>,
-    def_exprs: Vec<(ExprId, UnresolvedType)>,
+    def_exprs: Vec<DefExpr<T>>,
     calls: Vec<Call<T>>,
     functions: Vec<Function<T>>,
     types: Vec<TypeDef<T>>,
@@ -312,9 +312,9 @@ impl<T: TreeToken> AstBuilder<T> {
         id
     }
 
-    pub fn def_expr(&mut self, value: ExprId, ty: UnresolvedType) -> DefExprId {
+    pub fn def_expr(&mut self, def_expr: DefExpr<T>) -> DefExprId {
         let id = DefExprId(self.def_exprs.len() as _);
-        self.def_exprs.push((value, ty));
+        self.def_exprs.push(def_expr);
         id
     }
 
@@ -537,12 +537,7 @@ impl<T: TreeToken> Scope<T> {
 
 #[derive(Debug, Clone, Copy)]
 pub enum Definition<T: TreeToken = ()> {
-    Expr {
-        t_name: T,
-        name_span: TSpan,
-        t_colon_colon: T::Either<T, (T, T)>,
-        id: DefExprId,
-    },
+    Expr(DefExprId),
     Use {
         t_use: T,
         id: UseId,
@@ -1128,6 +1123,15 @@ impl<T: TreeToken> Expr<T> {
         self.span_inner(exprs, functions, types, traits, calls, scopes)
             .end
     }
+}
+
+#[derive(Debug)]
+pub struct DefExpr<T: TreeToken = ()> {
+    pub t_name: T,
+    pub name_span: TSpan,
+    pub t_colon_colon: T::Either<T, (T, T)>,
+    pub annotated_ty: UnresolvedType,
+    pub value: ExprId,
 }
 
 #[derive(Debug)]

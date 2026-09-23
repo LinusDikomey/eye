@@ -10,10 +10,12 @@ use crate::{
 
 use super::traits;
 
-pub fn type_def(compiler: &Compiler, ty: BaseType) -> ResolvedTypeDef {
-    let resolved_ty = &compiler.types.get_base(ty);
-    let module = resolved_ty.module;
-    let ast_id = resolved_ty.id;
+pub fn type_def(
+    compiler: &Compiler,
+    module: ModuleId,
+    ast_id: ast::TypeId,
+    base: BaseType,
+) -> ResolvedTypeDef {
     let ast = compiler.get_module_ast(module);
     let def = &ast[ast_id];
     let generics = compiler.resolve_generics(&def.generics.types, module, def.scope, ast);
@@ -66,7 +68,7 @@ pub fn type_def(compiler: &Compiler, ty: BaseType) -> ResolvedTypeDef {
         .collect();
     let implemented_ty = compiler
         .types
-        .intern(TypeFull::Instance(ty, &implemented_generics));
+        .intern(TypeFull::Instance(base, &implemented_generics));
     for trait_impl in &def.impls {
         let trait_def = compiler.resolve_path(module, def.scope, trait_impl.implemented_trait);
         let trait_id = match trait_def {

@@ -25,12 +25,13 @@ impl Ast<()> {
 
     fn eq_definition(&self, other: &Self, a: &Definition, b: &Definition) -> bool {
         match *a {
-            Definition::Expr { id: a, .. } => {
-                let &Definition::Expr { id: b, .. } = b else {
+            Definition::Expr(a) => {
+                let &Definition::Expr(b) = b else {
                     return false;
                 };
-                let ((a, a_ty), (b, b_ty)) = (&self[a], &other[b]);
-                self.eq_ty(other, a_ty, b_ty) && self.eq_expr(other, *a, *b)
+                let (a_def, b_def) = (&self[a], &other[b]);
+                self.eq_ty(other, &a_def.annotated_ty, &b_def.annotated_ty)
+                    && self.eq_expr(other, a_def.value, b_def.value)
             }
             Definition::Use { path: a, .. } => {
                 let &Definition::Use { path: b, .. } = b else {

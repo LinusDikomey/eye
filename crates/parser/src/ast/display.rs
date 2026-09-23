@@ -28,13 +28,13 @@ impl<'a> fmt::Display for ScopeDisplay<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for (name, def) in &self.ast[self.scope].definitions {
             match def {
-                Definition::Expr { id, .. } => write!(
+                Definition::Expr(id) => write!(
                     f,
                     "{name} :: {}",
                     ExprDisplay {
                         ast: self.ast,
                         indent: self.indent,
-                        expr: self.ast[*id].0,
+                        expr: self.ast[*id].value,
                     }
                 )?,
                 Definition::Use { path, .. } => write!(f, "use {}", &self.ast[path.span()])?,
