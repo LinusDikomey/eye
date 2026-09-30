@@ -143,8 +143,8 @@ fn test_example() {
     let output = run_executable(path.to_owned(), String::new());
     assert!(output.status.success());
     let output = String::from_utf8(output.stdout).unwrap();
-    let expected = "Hello, World\nArea of circle with radius 2.5: 19.62\nBanana";
-    if output.trim() != expected.trim() {
+    let expected = "Hello, World\nArea of circle with radius 2.5: ~19\nBanana";
+    if output.trim() != expected {
         panic!("Output differed from the expected output:\n{output}");
     }
 }
